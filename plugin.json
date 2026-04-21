@@ -1,0 +1,30 @@
+{
+  "id": "dev.yoursdk.photon-quic-bridge",
+  "name": "Photon QUIC Bridge",
+  "description": "High-performance QUIC transport layer for Photon clients.",
+  "homepage_url": "https://github.com/yoursdk/photon-plugin",
+  "support_url": "https://github.com/yoursdk/photon-plugin/issues",
+  "release_notes_url": "https://github.com/yoursdk/photon-plugin/releases",
+  "version": "0.3.0",
+  "min_server_version": "9.0.0",
+  "server": {
+    "executables": {
+      "linux-amd64": "server/dist/plugin-linux-amd64",
+      "linux-arm64": "server/dist/plugin-linux-arm64",
+      "darwin-amd64": "server/dist/plugin-darwin-amd64",
+      "windows-amd64": "server/dist/plugin-windows-amd64.exe"
+    }
+  },
+  "settings_schema": {
+    "header": "Photon QUIC Bridge settings",
+    "settings": [
+      {
+        "key": "DebugMode",
+        "display_name": "Debug logging",
+        "type": "bool",
+        "default": false,
+        "help_text": "Включить подробное логирование QUIC-событий и хуков."
+      }
+    ]
+  }
+}
