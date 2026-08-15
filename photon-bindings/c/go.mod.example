@@ -1,0 +1,12 @@
+module github.com/wiloris/photon-bindings-c
+
+go 1.22.2
+
+require github.com/wiloris/photon-core v0.0.0
+
+require google.golang.org/protobuf v1.34.2
+
+replace github.com/wiloris/photon-core => /home/claude/photon-core-scaffold
+replace google.golang.org/protobuf => /home/claude/protobuf-go
+replace go.etcd.io/bbolt => /home/claude/bbolt
+replace golang.org/x/sys => /home/claude/sys

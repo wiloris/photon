@@ -1,0 +1,680 @@
+syntax = "proto3";
+
+package photon;
+
+option go_package = "github.com/wiloris/photon-core/protobuf";
+option java_package = "dev.yoursdk.photon";
+option java_outer_classname = "PhotonProto";
+option java_multiple_files = true;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Wire protocol
+//
+//  Handshake stream (first stream per connection):
+//    Frame 1 → AuthFrame
+//    Frame 2 → ModeFrame
+//    Frame 3 ← HandshakeResponse
+//
+//  Action stream (one stream per action):
+//    Frame 1 → PhotonRequest
+//    Frame 2 ← PhotonResponse
+//
+//  Push stream (server → client, UniStream):
+//    Frame 1 ← PushEvent
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+enum Resource {
+  RESOURCE_UNSPECIFIED = 0;
+  RESOURCE_POST        = 1;
+  RESOURCE_USER        = 2;
+  RESOURCE_CHANNEL     = 3;
+  RESOURCE_ENGRAM      = 4;
+  RESOURCE_FILE        = 5;
+  RESOURCE_WALL        = 6;
+  // 7-99 reserved for future resources
+}
+
+// Action — явные именованные action-коды. Номера здесь совпадают с
+// номерами полей oneof в PhotonRequest/PhotonResponse ниже (не
+// случайно: одно и то же число значит одно и то же действие в обоих
+// местах), но protoc-gen-go не генерирует Go-константы из номеров
+// полей oneof — только из значений enum. Этот enum — единственный
+// источник именованных action-кодов для Go-кода (ранее дублировался
+// как package-level consts в photon-quic-bridge/server/protocol.go;
+// перенесено сюда, чтобы Bridge импортировал определения, а не
+// объявлял их заново — см. ARCHITECTURE.md раздел 7.6, ADR про
+// Photon Protocol).
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+
+  // ── PostResource (100-114) ──────────────────────────────────────
+  ACTION_CREATE_POST         = 100;
+  ACTION_GET_FEED            = 101;
+  ACTION_DELETE_POST         = 102;
+  ACTION_UPDATE_POST         = 103;
+  ACTION_GET_THREAD          = 104;
+  ACTION_REPLY_TO_POST       = 105;
+  ACTION_PIN_POST            = 106;
+  ACTION_UNPIN_POST          = 107;
+  ACTION_GET_PINNED_POSTS    = 108;
+  ACTION_SEARCH_POSTS        = 109;
+  ACTION_ADD_REACTION        = 110;
+  ACTION_REMOVE_REACTION     = 111;
+  ACTION_GET_REACTIONS       = 112;
+  ACTION_TOGGLE_LIKE         = 113;
+  ACTION_GET_POST_SOCIAL_INFO = 114;
+
+  // ── UserResource (200-210) ──────────────────────────────────────
+  ACTION_GET_ME            = 200;
+  ACTION_GET_USER          = 201;
+  ACTION_GET_USERS         = 202;
+  ACTION_GET_USER_STATUS   = 203;
+  ACTION_GET_USER_PROFILE  = 204;
+  ACTION_SEARCH_USERS      = 205;
+  ACTION_GET_USERS_BY_IDS  = 206;
+  ACTION_PATCH_ME          = 207;
+  ACTION_SET_STATUS        = 208;
+  ACTION_UPLOAD_AVATAR     = 209;
+  ACTION_GET_USER_AVATAR   = 210;
+
+  // ── ChannelResource (300-314) ───────────────────────────────────
+  ACTION_LIST_CHANNELS                = 300;
+  ACTION_GET_CHANNEL_MEMBERS          = 301;
+  ACTION_GET_MY_CHANNELS              = 302;
+  ACTION_GET_CHANNEL                  = 303;
+  ACTION_GET_CHANNEL_BY_NAME          = 304;
+  ACTION_CREATE_CHANNEL               = 305;
+  ACTION_CREATE_DIRECT_CHANNEL        = 306;
+  ACTION_GET_DIRECT_CHANNELS          = 307;
+  ACTION_GET_OR_CREATE_DIRECT_CHANNEL = 308;
+  ACTION_ADD_MEMBER                   = 309;
+  ACTION_REMOVE_MEMBER                = 310;
+  ACTION_UPDATE_CHANNEL                = 311;
+  ACTION_GET_UNREAD_FOR_CHANNEL       = 312;
+  ACTION_MARK_AS_READ                 = 313;
+  ACTION_GET_CHANNEL_MEMBER           = 314;
+
+  // ── EngramResource (400-405) ────────────────────────────────────
+  ACTION_ENGRAM_STORE       = 400;
+  ACTION_ENGRAM_QUERY       = 401;
+  ACTION_ENGRAM_DELETE      = 402;
+  ACTION_ENGRAM_LIST        = 403;
+  ACTION_ENGRAM_BATCH_STORE = 404;
+  ACTION_ENGRAM_BATCH_QUERY = 405;
+
+  // ── FileResource (500-505) ──────────────────────────────────────
+  ACTION_UPLOAD_FILE   = 500;
+  ACTION_DOWNLOAD_FILE = 501;
+  ACTION_GET_FILE_INFO = 502;
+  ACTION_GET_THUMBNAIL = 503;
+  ACTION_GET_PREVIEW   = 504;
+  ACTION_GET_IMAGE_URL = 505;
+
+  // ── WallResource (600-602) ──────────────────────────────────────
+  ACTION_GET_OR_CREATE_WALL = 600;
+  ACTION_GET_WALL_POSTS     = 601;
+  ACTION_PUBLISH_WALL_POST  = 602;
+}
+
+enum EventType {
+  EVENT_UNSPECIFIED    = 0;
+  POST_CREATED         = 1;
+  POST_UPDATED         = 2;
+  POST_DELETED         = 3;
+  REACTION_ADDED       = 4;
+  REACTION_REMOVED     = 5;
+  TYPING               = 6;
+  USER_ADDED           = 7;
+  USER_REMOVED         = 8;
+  STATUS_CHANGED       = 9;
+  CHANNEL_UPDATED      = 10;
+  NEW_UNREAD           = 11;
+  // 12-99 reserved
+}
+
+// ── Handshake ─────────────────────────────────────────────────────────────────
+
+message AuthFrame {
+  string session_token = 1;
+}
+
+message ModeFrame {
+  string mode = 1; // "action" | "subscribe"
+}
+
+message HandshakeResponse {
+  bool   ok     = 1;
+  string error  = 2;
+  string status = 3; // "ready" | "subscribed"
+}
+
+// ── Main envelope ─────────────────────────────────────────────────────────────
+
+message PhotonRequest {
+  int32    action   = 1; // 100-699 action codes
+  Resource resource = 2;
+
+  oneof payload {
+    // ── UserResource (200-210) ────────────────────────── field numbers 200-210
+    GetUserPayload      get_user       = 201;
+    GetUsersPayload     get_users      = 202;
+    GetUserPayload      get_status     = 203; // reuse — just needs user_id
+    GetUserPayload      get_profile    = 204; // reuse
+    SearchUsersPayload  search_users   = 205;
+    GetUsersByIdsPayload get_users_by_ids = 206;
+    PatchMePayload      patch_me       = 207;
+    SetStatusPayload    set_status     = 208;
+    UploadAvatarPayload upload_avatar  = 209;
+    GetUserPayload      get_avatar     = 210; // reuse
+
+    // ── PostResource (100-114) ────────────────────────── field numbers 100-114
+    CreatePostPayload   create_post      = 100;
+    GetFeedPayload      get_feed         = 101;
+    PostIDPayload       delete_post      = 102;
+    UpdatePostPayload   update_post      = 103;
+    PostIDPayload       get_thread       = 104;
+    ReplyToPostPayload  reply_to_post    = 105;
+    PostIDPayload       pin_post         = 106;
+    PostIDPayload       unpin_post       = 107;
+    ChannelIDPayload    get_pinned_posts = 108;
+    SearchPostsPayload  search_posts     = 109;
+    ReactionPayload     add_reaction     = 110;
+    ReactionPayload     remove_reaction  = 111;
+    PostIDPayload       get_reactions    = 112;
+    PostIDPayload       toggle_like      = 113;
+    PostIDPayload       get_social_info  = 114;
+
+    // ── ChannelResource (300-314) ─────────────────────── field numbers 300-314
+    ListChannelsPayload       list_channels         = 300;
+    GetChannelMembersPayload  get_channel_members   = 301;
+    TeamIDPayload             get_my_channels       = 302;
+    ChannelIDPayload          get_channel           = 303;
+    GetChannelByNamePayload   get_channel_by_name   = 304;
+    CreateChannelPayload      create_channel        = 305;
+    DirectChannelPayload      create_direct_channel = 306;
+    TeamIDPayload             get_direct_channels   = 307;
+    DirectChannelPayload      get_or_create_direct  = 308;
+    ChannelMemberPayload      add_member            = 309;
+    ChannelMemberPayload      remove_member         = 310;
+    UpdateChannelPayload      update_channel        = 311;
+    ChannelIDPayload          get_unread            = 312;
+    ChannelIDPayload          mark_as_read          = 313;
+    ChannelMemberPayload      get_channel_member    = 314;
+
+    // ── EngramResource (400-405) ──────────────────────── field numbers 400-405
+    EngramStorePayload      engram_store       = 400;
+    EngramKeyPayload        engram_query       = 401;
+    EngramKeyPayload        engram_delete      = 402;
+    EngramListPayload       engram_list        = 403;
+    EngramBatchStorePayload engram_batch_store = 404;
+    EngramBatchQueryPayload engram_batch_query = 405;
+
+    // ── FileResource (500-505) ────────────────────────── field numbers 500-505
+    UploadFilePayload  upload_file  = 500;
+    FileIDPayload      download_file = 501;
+    FileIDPayload      get_file_info = 502;
+    FileIDPayload      get_thumbnail = 503;
+    FileIDPayload      get_preview   = 504;
+    GetImageURLPayload get_image_url = 505;
+
+    // ── WallResource (600-602) ────────────────────────── field numbers 600-602
+    WallPayload          get_or_create_wall = 600;
+    WallPostsPayload     get_wall_posts     = 601;
+    PublishWallPostPayload publish_wall_post = 602;
+  }
+}
+
+message PhotonResponse {
+  bool   ok    = 1;
+  string error = 2;
+  int32  code  = 3; // internal error code, 0 = success
+
+  oneof data {
+    // ── UserResource responses ────────────────────────── field numbers 200-210
+    User           user         = 201;
+    UsersResponse  users        = 202;
+    StatusResponse status       = 203;
+    AvatarResponse avatar       = 210;
+
+    // ── PostResource responses ────────────────────────── field numbers 100-114
+    Post                post          = 100;
+    PostsResponse       posts         = 101;
+    ReactionsResponse   reactions     = 112;
+    SocialInfoResponse  social_info   = 114;
+    PinnedPostsResponse pinned_posts  = 108;
+    LikeResponse        like          = 113;
+
+    // ── ChannelResource responses ─────────────────────── field numbers 300-314
+    Channel              channel          = 303;
+    ChannelsResponse     channels         = 300;
+    ChannelMembersResponse channel_members = 301;
+    ChannelMember        channel_member   = 314;
+    UnreadResponse       unread           = 312;
+
+    // ── EngramResource responses ──────────────────────── field numbers 400-405
+    EngramStoreResponse      engram_stored       = 400;
+    EngramEntry              engram_entry        = 401;
+    EngramListResponse       engram_keys         = 403;
+    EngramBatchStoreResponse engram_batch_stored = 404;
+    EngramBatchQueryResponse engram_batch_result = 405;
+
+    // ── FileResource responses ────────────────────────── field numbers 500-505
+    FileInfo         file_info   = 502;
+    FileBytesResponse file_bytes = 501;
+    FileURLResponse  file_url    = 503;
+
+    // ── Generic (для простых ответов) ─────────────────── field number 999
+    GenericResponse generic = 999;
+  }
+}
+
+// ── Push ──────────────────────────────────────────────────────────────────────
+
+message PushEvent {
+  EventType event_type = 1;
+  string    user_id    = 2; // пустой = широковещательно
+
+  oneof data {
+    Post            post            = 10;
+    Reaction        reaction        = 11;
+    ChannelMember   member_added    = 12;
+    ChannelMember   member_removed  = 13;
+    StatusResponse  status_change   = 14;
+    Channel         channel_updated = 15;
+    UnreadResponse  new_unread      = 16;
+    TypingEvent     typing          = 17;
+  }
+}
+
+message TypingEvent {
+  string channel_id = 1;
+  string user_id    = 2;
+}
+
+// ── Common types ──────────────────────────────────────────────────────────────
+
+message PageRequest {
+  int32 page     = 1;
+  int32 per_page = 2;
+}
+
+message GenericResponse {
+  map<string, string> fields = 1;
+}
+
+// Переиспользуемые payload с одним полем
+message PostIDPayload    { string post_id    = 1; }
+message ChannelIDPayload { string channel_id = 1; }
+message TeamIDPayload    { string team_id    = 1; }
+message FileIDPayload    { string file_id    = 1; }
+message EngramKeyPayload { string key        = 1; }
+
+// ── Entities ──────────────────────────────────────────────────────────────────
+
+message User {
+  string id         = 1;
+  string username   = 2;
+  string email      = 3;
+  string first_name = 4;
+  string last_name  = 5;
+  string nickname   = 6;
+  string roles      = 7;
+  string locale     = 8;
+  string position   = 9;
+  int64  create_at  = 10;
+  int64  update_at  = 11;
+  int64  delete_at  = 12;
+  map<string, string> props = 13;
+  map<string, string> extra = 14; // forward compatibility
+}
+
+message Post {
+  string id         = 1;
+  string channel_id = 2;
+  string user_id    = 3;
+  string root_id    = 4;
+  string message    = 5;
+  string type       = 6;
+  bool   is_pinned  = 7;
+  int64  create_at  = 8;
+  int64  update_at  = 9;
+  int64  delete_at  = 10;
+  repeated string file_ids = 11;
+  bool   has_reactions     = 12;
+  map<string, string> extra = 13; // forward compatibility
+}
+
+message Channel {
+  string id              = 1;
+  string team_id         = 2;
+  string type            = 3;
+  string display_name    = 4;
+  string name            = 5;
+  string header          = 6;
+  string purpose         = 7;
+  string creator_id      = 8;
+  int64  create_at       = 9;
+  int64  update_at       = 10;
+  int64  delete_at       = 11;
+  int64  last_post_at    = 12;
+  int64  total_msg_count = 13;
+  map<string, string> extra = 14; // forward compatibility
+}
+
+message ChannelMember {
+  string channel_id     = 1;
+  string user_id        = 2;
+  string roles          = 3;
+  int64  last_viewed_at = 4;
+  int64  msg_count      = 5;
+  int64  mention_count  = 6;
+}
+
+message Reaction {
+  string user_id    = 1;
+  string post_id    = 2;
+  string emoji_name = 3;
+}
+
+message FileInfo {
+  string id         = 1;
+  string name       = 2;
+  string mime_type  = 3;
+  int64  size       = 4;
+  string channel_id = 5;
+  string user_id    = 6;
+  int64  create_at  = 7;
+}
+
+// ── UserResource payloads ─────────────────────────────────────────────────────
+
+message GetUserPayload {
+  string user_id = 1;
+}
+
+message GetUsersPayload {
+  PageRequest page = 1;
+}
+
+message SearchUsersPayload {
+  string term    = 1;
+  string in_team = 2;
+  int32  limit   = 3;
+}
+
+message GetUsersByIdsPayload {
+  repeated string user_ids = 1;
+}
+
+message PatchMePayload {
+  string first_name           = 1;
+  string last_name            = 2;
+  string nickname             = 3;
+  string username             = 4;
+  map<string, string> props   = 5;
+}
+
+message SetStatusPayload {
+  string status = 1; // "online" | "away" | "dnd" | "offline"
+}
+
+message UploadAvatarPayload {
+  bytes image_bytes = 1;
+}
+
+// ── UserResource responses ────────────────────────────────────────────────────
+
+message UsersResponse {
+  repeated User users = 1;
+  bool has_more       = 2;
+}
+
+message StatusResponse {
+  string user_id = 1;
+  string status  = 2;
+}
+
+message AvatarResponse {
+  string user_id    = 1;
+  bytes  image_bytes = 2;
+}
+
+// ── PostResource payloads ─────────────────────────────────────────────────────
+
+message CreatePostPayload {
+  string channel_id        = 1;
+  string message           = 2;
+  string root_id           = 3;
+  repeated string file_ids = 4;
+}
+
+message GetFeedPayload {
+  string      channel_id = 1;
+  PageRequest page       = 2;
+}
+
+message UpdatePostPayload {
+  string post_id  = 1;
+  string message  = 2;
+}
+
+message ReplyToPostPayload {
+  string root_id           = 1;
+  string message           = 2;
+  repeated string file_ids = 3;
+}
+
+message ReactionPayload {
+  string post_id    = 1;
+  string emoji_name = 2;
+}
+
+message SearchPostsPayload {
+  string team_id      = 1;
+  string query        = 2;
+  bool   is_or_search = 3;
+}
+
+// ── PostResource responses ────────────────────────────────────────────────────
+
+message PostsResponse {
+  repeated Post   posts = 1;
+  repeated string order = 2;
+}
+
+message ReactionsResponse {
+  repeated Reaction reactions = 1;
+  int32             count     = 2;
+}
+
+message SocialInfoResponse {
+  map<string, int32> reaction_counts = 1;
+  repeated string    my_reactions    = 2;
+  repeated string    top_user_ids    = 3;
+  int32              total           = 4;
+}
+
+message PinnedPostsResponse {
+  repeated Post posts = 1;
+  int32         count = 2;
+}
+
+message LikeResponse {
+  bool liked = 1;
+}
+
+// ── ChannelResource payloads ──────────────────────────────────────────────────
+
+message ListChannelsPayload {
+  string      team_id = 1;
+  PageRequest page    = 2;
+}
+
+message GetChannelByNamePayload {
+  string team_id = 1;
+  string name    = 2;
+}
+
+message CreateChannelPayload {
+  string team_id      = 1;
+  string name         = 2;
+  string display_name = 3;
+  bool   is_private   = 4;
+  string purpose      = 5;
+  string header       = 6;
+}
+
+message DirectChannelPayload {
+  string target_user_id = 1;
+}
+
+message ChannelMemberPayload {
+  string channel_id = 1;
+  string user_id    = 2;
+}
+
+message GetChannelMembersPayload {
+  string      channel_id = 1;
+  PageRequest page       = 2;
+}
+
+message UpdateChannelPayload {
+  string channel_id   = 1;
+  string display_name = 2;
+  string purpose      = 3;
+  string header       = 4;
+}
+
+// ── ChannelResource responses ─────────────────────────────────────────────────
+
+message ChannelsResponse {
+  repeated Channel channels = 1;
+  bool             has_more = 2;
+}
+
+message ChannelMembersResponse {
+  repeated ChannelMember members = 1;
+  bool                   has_more = 2;
+}
+
+message UnreadResponse {
+  string channel_id     = 1;
+  int64  msg_count      = 2;
+  int64  mention_count  = 3;
+  int64  unread_count   = 4;
+  int64  last_viewed_at = 5;
+}
+
+// ── EngramResource payloads ───────────────────────────────────────────────────
+
+message EngramStorePayload {
+  string key              = 1;
+  bytes  value            = 2; // клиент сам решает структуру
+  int32  ttl_secs         = 3;
+  bool   preserve_ttl     = 4;
+  int64  expected_version = 5; // 0 = не проверять (CAS)
+}
+
+message EngramListPayload {
+  string      prefix = 1;
+  PageRequest page   = 2;
+}
+
+message EngramBatchStorePayload {
+  repeated EngramStorePayload entries = 1;
+}
+
+message EngramBatchQueryPayload {
+  repeated string keys = 1;
+}
+
+// ── EngramResource responses ──────────────────────────────────────────────────
+
+message EngramEntry {
+  string key        = 1;
+  bytes  value      = 2;
+  int64  version    = 3;
+  int64  created_at = 4;
+  int64  updated_at = 5;
+  int64  expires_at = 6;
+}
+
+message EngramStoreResponse {
+  string key        = 1;
+  int64  version    = 2;
+  int64  created_at = 3;
+  int64  updated_at = 4;
+  int64  expires_at = 5;
+}
+
+message EngramListResponse {
+  repeated string keys     = 1;
+  int32           total    = 2;
+  bool            has_more = 3;
+}
+
+message EngramBatchStoreResponse {
+  repeated string     stored = 1;
+  repeated EngramBatchError errors = 2;
+}
+
+message EngramBatchError {
+  string key   = 1;
+  string error = 2;
+}
+
+message EngramBatchQueryResponse {
+  map<string, EngramEntry> entries = 1;
+  repeated string          missing = 2;
+}
+
+// ── FileResource payloads ─────────────────────────────────────────────────────
+
+message UploadFilePayload {
+  string channel_id = 1;
+  string file_name  = 2;
+  bytes  file_bytes = 3;
+}
+
+message GetImageURLPayload {
+  string file_id   = 1;
+  string file_type = 2; // "FULL" | "PREVIEW" | "THUMB"
+}
+
+// ── FileResource responses ────────────────────────────────────────────────────
+
+message FileBytesResponse {
+  string file_id = 1;
+  bytes  bytes   = 2;
+}
+
+message FileURLResponse {
+  string file_id   = 1;
+  string file_type = 2;
+  string url       = 3;
+}
+
+// ── WallResource payloads ─────────────────────────────────────────────────────
+
+message WallPayload {
+  string team_id = 1;
+  string user_id = 2;
+}
+
+message WallPostsPayload {
+  string      channel_id = 1;
+  PageRequest page       = 2;
+}
+
+message PublishWallPostPayload {
+  string            channel_id = 1;
+  string            message    = 2;
+  repeated WallFile files      = 3;
+}
+
+message WallFile {
+  string name  = 1;
+  bytes  bytes = 2;
+}

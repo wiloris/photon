@@ -1,0 +1,24 @@
+# Compiled binaries and shared libraries — never source, always rebuilt.
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.o
+
+# Go build/test artifacts that sometimes land in-tree.
+/photon-bindings/c/photon_test
+/photon-bindings/c/leakcheck_handles
+/photon-bindings/c/leakcheck_strings
+
+# go.sum is intentionally NOT ignored — it is checked in and reviewed like any
+# other dependency-integrity file (see CLAUDE.md, "Замечания по окружению").
+
+# Editor/OS noise.
+.DS_Store
+*.swp
+
+# Claude Code local tooling config — personal permission allowlist, not
+# project source. A future .claude/settings.json (without .local) would be
+# the shared, checked-in variant.
+.claude/settings.local.json
