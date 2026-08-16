@@ -380,11 +380,11 @@ model runtime**.
 
 - [x] Тестовый плагин `hello` — базовый путь через настоящий процесс: `exec.Command` → handshake → авторизованная операция → `STOP` → `STOP_ACK` → чистый `exit(0)`, `ExitCleanStop`. Именно этот плагин нашёл первый реальный баг Phase 11 (`host.Stop` убивал процесс раньше, чем тот успевал выйти сам — см. IMPLEMENTATION_LOG.md)
 - [x] Тестовый плагин `crash` — четыре режима падения (`exit`, `panic`, `mid-request`, `before-handshake`) через `PHOTON_TEST_MODE`, все как настоящие процессы. `tests/lifecycle/crash_test.go`: классификация верна для каждого режима (`exit`/`panic`/`mid-request` → `ExitCrash`, `before-handshake` → `ExitHandshakeFailure`, не `ExitCrash`); runtime остаётся работоспособным после всех четырёх режимов подряд (проверено полным циклом `hello` сразу после); `crash` и `before-handshake` перезапускаются через настоящий `supervisor` с backoff, обе серии ограничены `MaxAttempts`; падающий в цикле плагин не мешает параллельно работающему `hello`
-- [ ] Тестовый плагин `permission`
+- [x] Тестовый плагин `permission` — все семь атак `docs/test-laboratory.md` §3, каждая отдельным тестом в `tests/lifecycle/permission_test.go`: без права → `FORBIDDEN`; `storage.read` не подразумевает `storage.write`; обращение к чужому namespace явным указанием изолировано реальным per-caller prefixing на двух настоящих процессах (victim/attacker); неизвестная операция → `UNSUPPORTED`, не `FORBIDDEN`; `plugin_id` другого плагина в теле запроса проигнорирован (identity из канала); отзыв права на живой сессии блокирует немедленно, без переподключения; 1000 запросов без прав подряд — все отклонены, runtime не деградирует. Две атаки (`unsupported-op`, `plugin_id`-в-теле) обходят SDK целиком и говорят по проводу напрямую — иначе тест доказывал бы только поведение SDK, не runtime. Багов в runtime не найдено — подтверждение, что граница держится под реальной атакой, а не только в юнит-тестах `Authorizer` (см. IMPLEMENTATION_LOG.md)
 - [ ] Тестовый плагин `storage`
 - [ ] Тестовый плагин `stress`
 - [x] Проверка: падение плагина не роняет ядро (`crash`, все режимы, включая ограниченность crash-loop через `supervisor`)
-- [ ] Проверка: нарушение прав блокируется
+- [x] Проверка: нарушение прав блокируется (`permission`, все семь атак из test-laboratory.md §3)
 - [ ] Проверка: поведение под нагрузкой
 - [ ] Проверка: восстановление после сбоя
 
