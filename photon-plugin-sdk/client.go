@@ -44,6 +44,13 @@ type Config struct {
 	Capabilities []string
 }
 
+// reentrancyMarker is the context.Value key handleEvent/handleStop
+// attach to the ctx they pass into the user's handler. call() checks
+// for it to catch the handler calling back into the SDK synchronously
+// — see ErrReentrantCall for why that deadlocks and what this check
+// does and doesn't catch.
+type reentrancyMarker struct{}
+
 type client struct {
 	conn io.ReadWriteCloser
 
@@ -122,6 +129,15 @@ func (c *client) handshake(ctx context.Context) error {
 func (c *client) call(ctx context.Context, op string, req any, resp any) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	// Fail fast, before writing anything: a call made with the ctx (or
+	// a descendant of it) handed to an OnEvent/OnStop handler would
+	// otherwise block forever waiting for a RESPONSE that only Run's
+	// own read loop can deliver — the same read loop currently blocked
+	// calling this handler. See ErrReentrantCall.
+	if ctx.Value(reentrancyMarker{}) != nil {
+		return ErrReentrantCall
 	}
 
 	c.mu.Lock()
@@ -256,7 +272,10 @@ func (c *client) handleEvent(ctx context.Context, m *message) {
 	// Последовательно, в потоке Run: параллельная доставка потребовала
 	// бы от автора плагина синхронизации, которую SDK не может
 	// обеспечить за него.
-	_ = h(ctx, Event{Type: m.EventType, Payload: m.Payload})
+	//
+	// Marked so call() can catch the handler calling back into the SDK
+	// synchronously — see reentrancyMarker/ErrReentrantCall.
+	_ = h(context.WithValue(ctx, reentrancyMarker{}, true), Event{Type: m.EventType, Payload: m.Payload})
 }
 
 func (c *client) handleStop(ctx context.Context) {
@@ -265,7 +284,9 @@ func (c *client) handleStop(ctx context.Context) {
 	c.mu.Unlock()
 
 	if h != nil {
-		h(ctx)
+		// Same reentrancy marker as handleEvent, same reason: this
+		// runs synchronously in Run's read loop too.
+		h(context.WithValue(ctx, reentrancyMarker{}, true))
 	}
 	_ = c.write(&message{Type: msgStopAck})
 	c.closeWith(nil)
