@@ -85,11 +85,7 @@ func (execSpawner) Spawn(ctx context.Context, entrypoint string, iso Isolation, 
 		return waitErr
 	}
 
-	kill := func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	}
+	kill := func() { killProcess(cmd) }
 
 	return conn, wait, kill, applied, nil
 }

@@ -80,7 +80,7 @@
 | 8 | ✅ | Security Foundation — переформулирована из «4 пакета» в аудит (ADR-029) |
 | 9 | ✅ | Plugin Runtime, **178 тестов**, race чист |
 | 10 | ✅ | Plugin SDK, **11 E2E-тестов через настоящий runtime** (`tests/integration`, часть счёта Plugin Runtime выше) |
-| 11 | 🟡 | Plugin Test Laboratory — `hello`/`crash`/`permission`/`storage` готовы (см. ROADMAP.md), `stress` в работе |
+| 11 | 🟡 | Plugin Test Laboratory — все пять плагинов готовы (см. ROADMAP.md); открыто: «восстановление после сбоя» частично — persistence смоделирована `storage`, не проверена против реального `ports.Storage` (после Phase 13) |
 
 **Методика подсчёта тестов** (принята, чтобы расхождение между документами и
 реальным прогоном не всплывало при каждом аудите): `go test -v ./... 2>&1 | grep
