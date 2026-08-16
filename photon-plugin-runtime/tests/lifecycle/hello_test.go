@@ -50,14 +50,17 @@ func helloManifest(entrypoint string) *manifest.Manifest {
 	}
 }
 
-// TestHello_RealProcessEndToEnd is the base-path check the rest of the
-// laboratory depends on: a real process goes through exec.Command ->
-// stdin/stdout -> handshake -> authorized operation -> STOP -> STOP_ACK ->
-// process exit, and host classifies the result as ExitCleanStop.
+// runHelloOnce builds and runs the hello plugin through a full clean
+// lifecycle (handshake -> authorized storage.get -> STOP -> STOP_ACK ->
+// process exit), failing the test immediately on any deviation, and
+// returns the resulting exit status for the caller's own assertions.
 //
-// Failure here means the other four plugins (crash, permission, storage,
-// stress) are pointless to run — see docs/test-laboratory.md, "hello".
-func TestHello_RealProcessEndToEnd(t *testing.T) {
+// Factored out so other plugins' tests (crash, in particular) can use a
+// known-good hello run as a "the runtime still works" check, without
+// duplicating the whole setup.
+func runHelloOnce(t *testing.T, caller string) host.ExitStatus {
+	t.Helper()
+
 	dir := t.TempDir()
 	entrypoint := buildPlugin(t, "hello", dir)
 
@@ -76,7 +79,7 @@ func TestHello_RealProcessEndToEnd(t *testing.T) {
 	h := host.New(host.Config{
 		Manifest:    m,
 		PackageRoot: dir,
-		Caller:      ports.PublicKey("hello-test-caller"),
+		Caller:      ports.PublicKey(caller),
 		Policy:      policy,
 		Authorizer:  auth,
 		Handler: ipc.HandlerFunc(func(_ context.Context, op string, _ []byte) ([]byte, error) {
@@ -144,4 +147,16 @@ func TestHello_RealProcessEndToEnd(t *testing.T) {
 	if h.IsRunning() {
 		t.Fatalf("host still reports running after clean stop")
 	}
+	return status
+}
+
+// TestHello_RealProcessEndToEnd is the base-path check the rest of the
+// laboratory depends on: a real process goes through exec.Command ->
+// stdin/stdout -> handshake -> authorized operation -> STOP -> STOP_ACK ->
+// process exit, and host classifies the result as ExitCleanStop.
+//
+// Failure here means the other four plugins (crash, permission, storage,
+// stress) are pointless to run — see docs/test-laboratory.md, "hello".
+func TestHello_RealProcessEndToEnd(t *testing.T) {
+	runHelloOnce(t, "hello-test-caller")
 }

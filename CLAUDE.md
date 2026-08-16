@@ -80,7 +80,7 @@
 | 8 | ✅ | Security Foundation — переформулирована из «4 пакета» в аудит (ADR-029) |
 | 9 | ✅ | Plugin Runtime, **178 тестов**, race чист |
 | 10 | ✅ | Plugin SDK, **11 E2E-тестов через настоящий runtime** (`tests/integration`, часть счёта Plugin Runtime выше) |
-| 11 | 🔲 | Plugin Test Laboratory — **следующая**, спецификация готова |
+| 11 | 🟡 | Plugin Test Laboratory — `hello`/`crash` готовы (см. ROADMAP.md), `permission`/`storage`/`stress` в работе |
 
 **Методика подсчёта тестов** (принята, чтобы расхождение между документами и
 реальным прогоном не всплывало при каждом аудите): `go test -v ./... 2>&1 | grep

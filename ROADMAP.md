@@ -376,14 +376,14 @@ model runtime**.
 
 ---
 
-### Phase 11 — Plugin Test Laboratory 🔲
+### Phase 11 — Plugin Test Laboratory 🟡
 
-- [ ] Тестовый плагин `hello`
-- [ ] Тестовый плагин `crash`
+- [x] Тестовый плагин `hello` — базовый путь через настоящий процесс: `exec.Command` → handshake → авторизованная операция → `STOP` → `STOP_ACK` → чистый `exit(0)`, `ExitCleanStop`. Именно этот плагин нашёл первый реальный баг Phase 11 (`host.Stop` убивал процесс раньше, чем тот успевал выйти сам — см. IMPLEMENTATION_LOG.md)
+- [x] Тестовый плагин `crash` — четыре режима падения (`exit`, `panic`, `mid-request`, `before-handshake`) через `PHOTON_TEST_MODE`, все как настоящие процессы. `tests/lifecycle/crash_test.go`: классификация верна для каждого режима (`exit`/`panic`/`mid-request` → `ExitCrash`, `before-handshake` → `ExitHandshakeFailure`, не `ExitCrash`); runtime остаётся работоспособным после всех четырёх режимов подряд (проверено полным циклом `hello` сразу после); `crash` и `before-handshake` перезапускаются через настоящий `supervisor` с backoff, обе серии ограничены `MaxAttempts`; падающий в цикле плагин не мешает параллельно работающему `hello`
 - [ ] Тестовый плагин `permission`
 - [ ] Тестовый плагин `storage`
 - [ ] Тестовый плагин `stress`
-- [ ] Проверка: падение плагина не роняет ядро
+- [x] Проверка: падение плагина не роняет ядро (`crash`, все режимы, включая ограниченность crash-loop через `supervisor`)
 - [ ] Проверка: нарушение прав блокируется
 - [ ] Проверка: поведение под нагрузкой
 - [ ] Проверка: восстановление после сбоя
