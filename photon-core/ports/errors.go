@@ -74,3 +74,15 @@ var (
 	// удалось.
 	ErrTokenInvalid = errors.New("ports: token invalid")
 )
+
+// Plugin (Authorizer)
+var (
+	// ErrUnknownCaller — субъект не установлен: caller не
+	// зарегистрирован ни с одним известным субъектом (RegisterCaller
+	// не вызывался для этого PublicKey). Отличается от (false, nil):
+	// тот означает «субъект известен, права нет» (FORBIDDEN); эта
+	// ошибка означает «субъект неизвестен» (UNAUTHORIZED) — то же
+	// разделение, что уже зафиксировано в docs/ipc.md, раздел 5.
+	// См. ADR-033.
+	ErrUnknownCaller = errors.New("ports: unknown caller")
+)

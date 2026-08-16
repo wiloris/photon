@@ -29,6 +29,19 @@ var (
 
 	ErrSessionClosed = errors.New("ipc: session is closed")
 
+	// ErrHandshakeFailed — handshake не завершился успешно по причине,
+	// не являющейся нарушением протокола: не удалось отправить/принять
+	// сообщение (плагин умер/не отвечает), либо истёк
+	// HandshakeTimeout. Отличие от ErrProtocolViolation существенно
+	// для supervisor (docs/lifecycle.md §5): это восстанавливается
+	// перезапуском с backoff, протокольное нарушение — нет.
+	//
+	// Все три места, где handshake() возвращает эту ошибку, оборачивают
+	// её через %w вместе с исходной причиной — host.classify() матчит
+	// по errors.Is, не по подстроке (см. IMPLEMENTATION_LOG.md: строчный
+	// матчинг здесь уже один раз чуть не воскресил забытый плагин).
+	ErrHandshakeFailed = errors.New("ipc: handshake failed")
+
 	// ErrClosedDuringHandshake — сессию закрыли, пока шла валидация
 	// handshake. Не нарушение протокола и не сбой плагина: инициатором
 	// выступил Runtime (см. setStateIfNotClosed), а не сам handshake
@@ -40,6 +53,14 @@ var (
 	// завершиться хоть как-то, успешно или неуспешно. Слияние отняло бы
 	// у вызывающего кода (host.classify) возможность различить
 	// «закрыли работающую сессию» и «закрыли на рукопожатии».
+	//
+	// В host.classify() эта ошибка практически всегда перекрывается
+	// проверкой stopRequested (единственный код, закрывающий сессию во
+	// время handshake, — host.Stop, который выставляет stopRequested
+	// раньше, чем может дойти до Close) — но матчится и отдельно как
+	// ErrHandshakeFailed-подобная, на случай будущего вызывающего кода,
+	// который закроет сессию во время handshake, не проходя через
+	// host.Stop.
 	ErrClosedDuringHandshake = errors.New("ipc: session closed during handshake")
 )
 
@@ -184,7 +205,7 @@ func (s *Session) handshake(ctx context.Context) error {
 		Type:                 MsgHello,
 		HelloProtocolVersion: s.cfg.ProtocolVersion,
 	}); err != nil {
-		return fmt.Errorf("ipc: send HELLO: %w", err)
+		return fmt.Errorf("ipc: send HELLO: %w: %w", ErrHandshakeFailed, err)
 	}
 
 	type result struct {
@@ -201,11 +222,11 @@ func (s *Session) handshake(ctx context.Context) error {
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			return fmt.Errorf("ipc: read HELLO_ACK: %w", r.err)
+			return fmt.Errorf("ipc: read HELLO_ACK: %w: %w", ErrHandshakeFailed, r.err)
 		}
 		m = r.msg
 	case <-hctx.Done():
-		return fmt.Errorf("ipc: handshake timeout: %w", hctx.Err())
+		return fmt.Errorf("ipc: handshake timeout: %w: %w", ErrHandshakeFailed, hctx.Err())
 	}
 
 	if m.Type != MsgHelloAck {
@@ -318,10 +339,14 @@ func (s *Session) handleRequest(ctx context.Context, m *Message) {
 	allowed, err := s.cfg.Authorizer.Authorize(reqCtx, s.cfg.Caller, ports.Permission(perm))
 	if err != nil {
 		// Техническая невозможность принять решение.
-		// ErrUnknownCaller -> UNAUTHORIZED (субъект не установлен),
-		// остальное -> INTERNAL_ERROR. Разделение по docs/ipc.md р.5.
+		// ports.ErrUnknownCaller -> UNAUTHORIZED (субъект не
+		// установлен), остальное -> INTERNAL_ERROR. Разделение по
+		// docs/ipc.md р.5. errors.Is, не подстрока (ADR-033): ipc
+		// по-прежнему не импортирует permissions, только ports, где и
+		// живёт sentinel, — контракт, а не конкретная реализация
+		// Authorizer.
 		code := ErrInternal
-		if isUnknownCaller(err) {
+		if errors.Is(err, ports.ErrUnknownCaller) {
 			code = ErrUnauthorized
 		}
 		s.respondError(m.RequestID, code, err.Error())
@@ -359,25 +384,6 @@ func (s *Session) executeAndRespond(ctx context.Context, m *Message) {
 	}
 
 	s.write(&Message{Type: MsgResponse, RequestID: m.RequestID, Payload: payload})
-}
-
-func isUnknownCaller(err error) bool {
-	// Строковое сравнение вместо errors.Is: ipc не импортирует
-	// permissions (это дало бы циклическую зависимость на уровне
-	// архитектуры — сессия не должна знать про конкретную реализацию
-	// Authorizer, только про контракт ports.Authorizer).
-	return err != nil && contains(err.Error(), "not a registered plugin")
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (func() bool {
-		for i := 0; i+len(sub) <= len(s); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	})()
 }
 
 func (s *Session) registerInflight(id uint64, cancel context.CancelFunc) bool {

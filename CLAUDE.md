@@ -19,7 +19,7 @@
 
 1. `ROADMAP.md` — 25 фаз со статусами. Источник истины о том, что сделано.
 2. `ARCHITECTURE.md` — как всё устроено вместе.
-3. `DECISIONS.md` — **32 ADR**. Не перечитывать целиком: смотреть те, что
+3. `DECISIONS.md` — **33 ADR**. Не перечитывать целиком: смотреть те, что
    упомянуты в коде и спецификациях.
 4. `REPOSITORY.md` — структура репозиториев.
 5. `IMPLEMENTATION_LOG.md` в каждом реализованном пакете — почему решения приняты
@@ -78,7 +78,7 @@
 | 7 | ✅ | `services/autodial`, 22 теста |
 | 7.5 | ⏸️ | quic-go fork — DEFERRED **с критерием возврата**, не «когда-нибудь» |
 | 8 | ✅ | Security Foundation — переформулирована из «4 пакета» в аудит (ADR-029) |
-| 9 | ✅ | Plugin Runtime, **177 тестов**, race чист |
+| 9 | ✅ | Plugin Runtime, **178 тестов**, race чист |
 | 10 | ✅ | Plugin SDK, **11 E2E-тестов через настоящий runtime** (`tests/integration`, часть счёта Plugin Runtime выше) |
 | 11 | 🔲 | Plugin Test Laboratory — **следующая**, спецификация готова |
 
@@ -92,8 +92,8 @@
 `Test*` было прежней ошибкой подсчёта.
 
 Итого (тем же методом, посчитано отдельно на каждый модуль): `photon-core`
-**165**, `photon-plugin-runtime` **177** (из них 11 — E2E `tests/integration`
-против настоящего runtime, входят в те же 177, не считаются дважды),
+**165**, `photon-plugin-runtime` **178** (из них 11 — E2E `tests/integration`
+против настоящего runtime, входят в те же 178, не считаются дважды),
 `photon-plugin-sdk` **3** (`TestADR031_NoForbiddenImports`,
 `TestADR031_NoModuleDependencies`, `TestOperationCatalogCoverage`).
 

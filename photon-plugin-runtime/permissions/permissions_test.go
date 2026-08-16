@@ -330,6 +330,15 @@ func TestAuthorizer_UnknownCallerIsErrorNotDeny(t *testing.T) {
 	if !errors.Is(err, ErrUnknownCaller) {
 		t.Fatalf("expected ErrUnknownCaller, got %v", err)
 	}
+	// ADR-033: ipc.Session matches ports.ErrUnknownCaller via errors.Is,
+	// not permissions.ErrUnknownCaller — it doesn't import permissions.
+	// This is the obligation the ADR calls out explicitly: if
+	// permissions ever stops wrapping the ports sentinel (e.g. during a
+	// refactor of the message text above), this must be the assertion
+	// that catches it, not a passing string-matched test elsewhere.
+	if !errors.Is(err, ports.ErrUnknownCaller) {
+		t.Fatalf("expected ErrUnknownCaller to wrap ports.ErrUnknownCaller (ADR-033), got %v", err)
+	}
 	if ok {
 		t.Fatal("unknown caller was authorized")
 	}

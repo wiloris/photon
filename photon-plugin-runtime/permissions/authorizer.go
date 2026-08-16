@@ -2,7 +2,6 @@ package permissions
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"sync"
@@ -29,7 +28,14 @@ func isValidPermission(perm string) bool {
 // Техническая ошибка, а не DENY: "я не знаю, кто ты" и "я знаю, и тебе
 // нельзя" — разные ситуации (docs/ipc.md, раздел 5: UNAUTHORIZED
 // против FORBIDDEN).
-var ErrUnknownCaller = errors.New("permissions: caller is not a registered plugin")
+//
+// Оборачивает ports.ErrUnknownCaller (ADR-033) через %w: сохраняет
+// собственное имя и текст для тех, кто уже проверяет
+// errors.Is(err, permissions.ErrUnknownCaller), но одновременно
+// удовлетворяет errors.Is(err, ports.ErrUnknownCaller) — это то, что
+// ipc.Session матчит, не импортируя permissions напрямую (ipc не
+// должен зависеть от конкретной реализации Authorizer).
+var ErrUnknownCaller = fmt.Errorf("permissions: caller is not a registered plugin: %w", ports.ErrUnknownCaller)
 
 // Authorizer реализует ports.Authorizer поверх Policy.
 //

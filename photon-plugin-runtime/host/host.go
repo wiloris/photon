@@ -283,23 +283,38 @@ func (h *Host) run(ctx context.Context, session *ipc.Session, wait func() error)
 
 // classify определяет причину завершения.
 //
-// Порядок проверок отражает приоритет причин: нарушение протокола
-// важнее кода возврата процесса, потому что оно объясняет, ПОЧЕМУ
-// процесс был убит.
+// Матчинг исходов — исключительно через errors.Is по sentinel-ошибкам
+// ipc (ErrProtocolViolation, ErrHandshakeFailed, ErrClosedDuringHandshake),
+// никогда по подстроке в тексте ошибки: строковый путь для этой же
+// классификации уже один раз ловил случайное совпадение подстроки
+// ("HELLO" внутри "expected HELLO_ACK, got ...") — по счастливой
+// случайности классифицировал верно, но не по причине корректности, а
+// по совпадению текста. См. IMPLEMENTATION_LOG.md.
+//
+// Порядок проверок:
+//  1. stopRequested — раньше матчинга исходов. Закрытие по нашей
+//     собственной инициативе (host.Stop) — всегда ExitCleanStop,
+//     независимо от того, на каком этапе жизненного цикла сессии оно
+//     случилось: сессия, сообщающая о протокольной ошибке или провале
+//     handshake ровно в момент нашего Close(), почти всегда описывает
+//     артефакт самого закрытия, а не решение о судьбе плагина —
+//     решение мы уже приняли сами.
+//  2. ErrProtocolViolation — до кода возврата процесса, потому что
+//     объясняет, ПОЧЕМУ процесс был убит.
+//  3. ErrHandshakeFailed / ErrClosedDuringHandshake — restart с backoff
+//     (lifecycle.md §5), в отличие от протокольного нарушения.
 func classify(sessErr, waitErr error, stopRequested bool) ExitStatus {
 	code := exitCode(waitErr)
 
 	switch {
+	case stopRequested:
+		return ExitStatus{Kind: ExitCleanStop, Code: code}
+
 	case errors.Is(sessErr, ipc.ErrProtocolViolation):
 		return ExitStatus{Kind: ExitProtocolViolation, Code: code, Err: sessErr}
 
-	case isHandshakeFailure(sessErr):
+	case errors.Is(sessErr, ipc.ErrHandshakeFailed), errors.Is(sessErr, ipc.ErrClosedDuringHandshake):
 		return ExitStatus{Kind: ExitHandshakeFailure, Code: code, Err: sessErr}
-
-	case stopRequested:
-		// Штатная остановка: даже если процесс пришлось добить, итог
-		// ожидаемый (docs/lifecycle.md, раздел 4).
-		return ExitStatus{Kind: ExitCleanStop, Code: code}
 
 	case waitErr != nil || code != 0:
 		return ExitStatus{Kind: ExitCrash, Code: code, Err: waitErr}
@@ -314,37 +329,6 @@ func classify(sessErr, waitErr error, stopRequested bool) ExitStatus {
 		// экземпляр исчез не по команде.
 		return ExitStatus{Kind: ExitCrash, Code: code, Err: sessErr}
 	}
-}
-
-func isHandshakeFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ipc.ErrClosedDuringHandshake) {
-		// Runtime закрыло сессию само (host.Stop) — плагин ничего не
-		// нарушил и ничего не провалил на своей стороне. Матчинг по
-		// подстроке ниже поймал бы это как handshake_failure (что
-		// перезапускается с backoff, docs/lifecycle.md §5) вместо
-		// clean_stop — то есть наказал бы плагина за наше собственное
-		// решение остановить его. Явное исключение здесь, а не
-		// перестановка порядка веток в classify: ErrProtocolViolation
-		// обязан оставаться приоритетнее stopRequested (плагин,
-		// нарушивший протокол ровно в момент чужой остановки, всё
-		// равно должен получить DISABLED, а не clean_stop), так что
-		// это не тот же случай.
-		return false
-	}
-	msg := err.Error()
-	return contains(msg, "HELLO") || contains(msg, "handshake")
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 func exitCode(err error) int {
