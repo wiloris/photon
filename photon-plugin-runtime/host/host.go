@@ -320,6 +320,20 @@ func isHandshakeFailure(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, ipc.ErrClosedDuringHandshake) {
+		// Runtime закрыло сессию само (host.Stop) — плагин ничего не
+		// нарушил и ничего не провалил на своей стороне. Матчинг по
+		// подстроке ниже поймал бы это как handshake_failure (что
+		// перезапускается с backoff, docs/lifecycle.md §5) вместо
+		// clean_stop — то есть наказал бы плагина за наше собственное
+		// решение остановить его. Явное исключение здесь, а не
+		// перестановка порядка веток в classify: ErrProtocolViolation
+		// обязан оставаться приоритетнее stopRequested (плагин,
+		// нарушивший протокол ровно в момент чужой остановки, всё
+		// равно должен получить DISABLED, а не clean_stop), так что
+		// это не тот же случай.
+		return false
+	}
 	msg := err.Error()
 	return contains(msg, "HELLO") || contains(msg, "handshake")
 }

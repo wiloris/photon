@@ -28,6 +28,19 @@ var (
 	ErrProtocolViolation = errors.New("ipc: protocol violation")
 
 	ErrSessionClosed = errors.New("ipc: session is closed")
+
+	// ErrClosedDuringHandshake — сессию закрыли, пока шла валидация
+	// handshake. Не нарушение протокола и не сбой плагина: инициатором
+	// выступил Runtime (см. setStateIfNotClosed), а не сам handshake
+	// провалился и не сам плагин что-то нарушил.
+	//
+	// Отдельный sentinel, а не ErrSessionClosed: тот означает «операция
+	// после закрытия» (сессия была полноценно установлена и уже
+	// закрыта), это же — закрытие ДО того, как handshake успел
+	// завершиться хоть как-то, успешно или неуспешно. Слияние отняло бы
+	// у вызывающего кода (host.classify) возможность различить
+	// «закрыли работающую сессию» и «закрыли на рукопожатии».
+	ErrClosedDuringHandshake = errors.New("ipc: session closed during handshake")
 )
 
 // Handler исполняет разрешённую операцию.
@@ -160,9 +173,9 @@ func (s *Session) Run(ctx context.Context) error {
 
 // handshake — docs/ipc.md, раздел 1.
 func (s *Session) handshake(ctx context.Context) error {
-	s.mu.Lock()
-	s.state = stateHandshaking
-	s.mu.Unlock()
+	if !s.setStateIfNotClosed(stateHandshaking) {
+		return fmt.Errorf("ipc: handshake: %w", ErrClosedDuringHandshake)
+	}
 
 	hctx, cancel := context.WithTimeout(ctx, s.cfg.HandshakeTimeout)
 	defer cancel()
@@ -220,9 +233,14 @@ func (s *Session) handshake(ctx context.Context) error {
 		}
 	}
 
-	s.mu.Lock()
-	s.state = stateRunning
-	s.mu.Unlock()
+	// Session may have been Close()d while we were reading/validating
+	// HELLO_ACK above (net.Pipe's Write returning to the caller only
+	// means the bytes were consumed, not that this goroutine has since
+	// finished processing them) — do not resurrect a closed session
+	// into stateRunning.
+	if !s.setStateIfNotClosed(stateRunning) {
+		return fmt.Errorf("ipc: handshake: %w", ErrClosedDuringHandshake)
+	}
 	return nil
 }
 
@@ -456,6 +474,10 @@ func (s *Session) closeWith(cause error) error {
 	var err error
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
+		// Unconditional: stateClosed is the terminal state, and this is
+		// the only place allowed to enter it. Every OTHER writer of
+		// s.state must check setStateIfNotClosed instead of writing
+		// directly — see its doc comment for why.
 		s.state = stateClosed
 		s.closeErr = cause
 		cancels := make([]context.CancelFunc, 0, len(s.inflight))
@@ -481,4 +503,31 @@ func (s *Session) IsClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.state == stateClosed
+}
+
+// setStateIfNotClosed transitions the session to next, unless it has
+// already been closed. Returns false if it has — the caller must treat
+// that as "the session closed while I was working", not proceed as if
+// the transition happened.
+//
+// stateClosed is terminal: nothing may leave it. Without this guard,
+// handshake() (the only other writer of s.state — see its two call
+// sites) can race Close(): Close() may set stateClosed while handshake()
+// is still validating HELLO_ACK in a separate goroutine, and handshake()
+// finishing afterward with an unconditional write would silently
+// overwrite stateClosed back to stateHandshaking/stateRunning. Both
+// writes are individually mutex-protected, so `go test -race` never
+// flags this — it's a logic race (last-writer-wins across two
+// independently-synchronized critical sections), not a data race. Found
+// via IsClosed() returning false immediately after Close() under -race,
+// which slows handshake() enough to widen the window
+// (photon-plugin-runtime/IMPLEMENTATION_LOG.md has the full story).
+func (s *Session) setStateIfNotClosed(next sessionState) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == stateClosed {
+		return false
+	}
+	s.state = next
+	return true
 }
