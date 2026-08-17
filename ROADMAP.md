@@ -36,7 +36,7 @@
 - [ ] Создать `engram-desktop`
 - [ ] Создать `engram-android`
 - [ ] Создать `enstor`
-- [ ] Прикрепить `ARCHITECTURE.md`, `ROADMAP.md`, `REPOSITORY.md` в `photon-core`
+- [ ] ~~Прикрепить `ARCHITECTURE.md`, `ROADMAP.md`, `REPOSITORY.md` в `photon-core`~~ — устарело: формулировка относилась к однорепозиторной структуре, когда `photon-core` был единственным репозиторием и документы верхнего уровня было физически некуда положить, кроме него. Сейчас репозиториев четыре (`photon-core`, `photon-plugin-runtime`, `photon-plugin-sdk`, `photon-bindings`), а оба документа описывают платформу целиком — `ARCHITECTURE.md` включает plugin runtime, транспорт, bindings, не только ядро; `REPOSITORY.md` описывает структуру всех репозиториев. Документы верхнего уровня (`CLAUDE.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `REPOSITORY.md`, `DECISIONS.md`) живут только в корне и ни к какому отдельному репозиторию не прикрепляются — см. `CLAUDE.md`, «Полнота репозитория»
 
 ---
 
