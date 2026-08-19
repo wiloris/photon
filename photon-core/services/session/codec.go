@@ -29,6 +29,28 @@ const (
 	ModeSubscribe Mode = "subscribe"
 )
 
+// StatusReady / StatusSubscribed — подтверждение режима, которое сервер
+// возвращает в ответе на handshake. Значения взяты не из схемы, а из кода
+// развёрнутого сервера: photon-quic-bridge/server/quic_listener.go:279 и
+// :287 отвечают Data: map[string]string{"status": "subscribed"|"ready"}.
+const (
+	StatusReady      = "ready"
+	StatusSubscribed = "subscribed"
+)
+
+// statusForMode — подтверждение, которого клиент ждёт для запрошенного
+// режима. Пустая строка означает "режим неизвестен этому слою" и не может
+// произойти: New отвергает любой Mode кроме двух (session.go).
+func statusForMode(m Mode) string {
+	switch m {
+	case ModeAction:
+		return StatusReady
+	case ModeSubscribe:
+		return StatusSubscribed
+	}
+	return ""
+}
+
 // Handshake — то, что клиент сообщает о себе при подключении.
 type Handshake struct {
 	SessionToken    string
@@ -46,6 +68,19 @@ type HandshakeAck struct {
 	// версиях не знает, и трактовать его молчание как несовместимость
 	// значило бы сломать работающую систему (bridge-session.md §5).
 	ProtocolVersion uint32
+
+	// Status — режим, который сервер ПОДТВЕРДИЛ ("ready" | "subscribed").
+	// Единственное место, где сервер сообщает, что он на самом деле принял,
+	// а не что у него попросили — и потому единственная защита от
+	// молчаливого отката subscribe→action (bridge-session.md §2.1).
+	//
+	// Пустая строка = сервер не сообщил; это НЕ ошибка, по той же причине,
+	// что и нулевой ProtocolVersion.
+	//
+	// Поле не раскрывает формат (§3.2): "ready"/"subscribed" — значения
+	// протокола, а не JSON. Где именно они лежат на проводе — у JSON-кодека
+	// внутри data, — знает только кодек.
+	Status string
 }
 
 // Request — запрос к серверу.

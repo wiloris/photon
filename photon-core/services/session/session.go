@@ -216,6 +216,20 @@ func (s *Session) handshake(ctx context.Context, conn ports.Connection) error {
 		return fmt.Errorf("%w: server %d, client %d",
 			ErrProtocolVersion, ack.ProtocolVersion, ProtocolVersion)
 	}
+
+	// Режим проверяется ПОСЛЕ версии: несовместимый протокол делает разговор
+	// о режимах бессмысленным.
+	//
+	// Пустой Status = сервер не сообщил, и это не ошибка (bridge-session.md
+	// §2.1). Но если сообщил — он обязан совпасть с запрошенным: сервер
+	// молча откатывается в "action" при любой ошибке чтения mode-фрейма
+	// (quic_listener.go:270-275), отвечая при этом ok:true. Без этой
+	// проверки такой откат обнаруживается не здесь, а много позже — вечным
+	// ожиданием в AcceptPush на соединении, где push'ей не будет.
+	if want := statusForMode(s.cfg.Mode); want != "" && ack.Status != "" && ack.Status != want {
+		return fmt.Errorf("%w: requested %q (expected status %q), server confirmed %q",
+			ErrModeNotAccepted, s.cfg.Mode, want, ack.Status)
+	}
 	return nil
 }
 

@@ -783,6 +783,135 @@ func TestT15_AcceptPushRequiresSubscribeMode(t *testing.T) {
 	}
 }
 
+// ── T-17: молчаливый откат режима сервером ──────────────────────────────────
+//
+// Сервер при ЛЮБОЙ ошибке чтения mode-фрейма подставляет "action" и отвечает
+// {"ok":true,"data":{"status":"ready"}} — quic_listener.go:270-275. Клиент,
+// запросивший subscribe и не читающий status, считает handshake удавшимся и
+// уходит в AcceptPush на соединении, где UniStream'ов не будет никогда.
+//
+// Тест ловит именно это: подтверждение режима обязано сверяться с
+// запрошенным. Проверено сломом правила — при снятой проверке в
+// session.go:229 подтест "subscribe downgraded to action" перестаёт падать и
+// сессия становится Ready.
+
+func TestT17_SilentModeDowngradeRejected(t *testing.T) {
+	ackWith := func(ack map[string]interface{}) streamHandler {
+		return func(t *testing.T, idx int, srv io.ReadWriteCloser) {
+			defer srv.Close()
+			var a, m map[string]interface{}
+			if err := readFrames(t, srv, &a, &m); err != nil {
+				return
+			}
+			writeJSON(t, srv, ack)
+		}
+	}
+
+	cases := []struct {
+		name string
+		mode Mode
+		ack  map[string]interface{}
+		want error // nil = handshake обязан пройти
+	}{
+		{
+			name: "subscribe downgraded to action",
+			mode: ModeSubscribe,
+			ack:  map[string]interface{}{"ok": true, "data": map[string]string{"status": "ready"}},
+			want: ErrModeNotAccepted,
+		},
+		{
+			// Обратный случай для полноты: сервер, подтвердивший subscribe
+			// на action-запрос, тоже не тот сервер, с которым продолжают.
+			name: "action confirmed as subscribe",
+			mode: ModeAction,
+			ack:  map[string]interface{}{"ok": true, "data": map[string]string{"status": "subscribed"}},
+			want: ErrModeNotAccepted,
+		},
+		{
+			name: "subscribe confirmed correctly",
+			mode: ModeSubscribe,
+			ack:  map[string]interface{}{"ok": true, "data": map[string]string{"status": "subscribed"}},
+		},
+		{
+			name: "action confirmed correctly",
+			mode: ModeAction,
+			ack:  map[string]interface{}{"ok": true, "data": map[string]string{"status": "ready"}},
+		},
+		{
+			// Регрессия совместимости: сервер вправе не прислать data вовсе.
+			// Если бы отсутствие подтверждения трактовалось как отказ, эта
+			// проверка сломала бы работающую систему — ровно та же ловушка,
+			// что у protocol_version в T-6.
+			name: "no data at all",
+			mode: ModeSubscribe,
+			ack:  map[string]interface{}{"ok": true},
+		},
+		{
+			name: "data without status field",
+			mode: ModeSubscribe,
+			ack:  map[string]interface{}{"ok": true, "data": map[string]string{"other": "x"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := New(Config{
+				Transport: &fakeTransport{conn: newFakeConn(t, ackWith(tc.ack))},
+				Endpoint:  "e", SessionToken: "t", Mode: tc.mode,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer s.Close()
+
+			err = s.Connect(context.Background())
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("Connect: %v, want success", err)
+				}
+				if s.State() != StateReady {
+					t.Errorf("state = %v, want ready", s.State())
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if s.State() == StateReady {
+				t.Error("session became ready despite a mode the server did not confirm")
+			}
+		})
+	}
+}
+
+// data не типизирована (§2.2): её неожиданная форма не должна ронять
+// handshake, который в остальном состоялся. Без снисходительного разбора в
+// statusFromAckData строгий тип превратил бы каждый такой ответ в
+// ErrMalformedFrame — отказ там, где сервер ничего не нарушил.
+func TestT17_NonObjectAckDataDoesNotBreakHandshake(t *testing.T) {
+	for _, data := range []string{`null`, `[]`, `"ready"`, `42`} {
+		t.Run(data, func(t *testing.T) {
+			raw := `{"ok":true,"data":` + data + `}`
+			conn := newFakeConn(t, func(t *testing.T, idx int, srv io.ReadWriteCloser) {
+				defer srv.Close()
+				var a, m map[string]interface{}
+				if err := readFrames(t, srv, &a, &m); err != nil {
+					return
+				}
+				io.WriteString(srv, raw+"\n")
+			})
+			s, _ := New(Config{
+				Transport: &fakeTransport{conn: conn},
+				Endpoint:  "e", SessionToken: "t", Mode: ModeSubscribe,
+			})
+			defer s.Close()
+			if err := s.Connect(context.Background()); err != nil {
+				t.Fatalf("Connect: %v, want success (data=%s)", err, data)
+			}
+		})
+	}
+}
+
 // ── Прочие контрактные проверки ─────────────────────────────────────────────
 
 func TestConnectIsIdempotentOnReadySession(t *testing.T) {

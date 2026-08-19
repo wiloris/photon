@@ -40,6 +40,18 @@ type ackFrame struct {
 	OK              bool   `json:"ok"`
 	Error           string `json:"error,omitempty"`
 	ProtocolVersion uint32 `json:"protocol_version,omitempty"`
+
+	// Data — на проводе сервер кладёт подтверждение режима СЮДА, а не
+	// полем верхнего уровня: {"ok":true,"data":{"status":"ready"}}
+	// (photon-quic-bridge/server/quic_listener.go:279, :287). Схема
+	// (photon.proto, message HandshakeResponse) объявляет status полем
+	// верхнего уровня — это ещё одно расхождение «схема ≠ провод»
+	// (ADR-034), проверенное по коду сервера, а не предположенное.
+	//
+	// Тип RawMessage, а не структура: data не типизирована (§2.2), и
+	// строгий тип превратил бы неожиданную форму (массив, null, число) в
+	// ошибку разбора всего handshake'а.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 func (JSONCodec) WriteHandshake(w io.Writer, h Handshake) error {
@@ -61,7 +73,32 @@ func (JSONCodec) ReadHandshakeAck(r io.Reader) (HandshakeAck, error) {
 		// в обоих случаях handshake не состоялся.
 		return HandshakeAck{}, fmt.Errorf("%w: handshake ack: %v", ErrMalformedFrame, err)
 	}
-	return HandshakeAck{OK: f.OK, Error: f.Error, ProtocolVersion: f.ProtocolVersion}, nil
+	return HandshakeAck{
+		OK:              f.OK,
+		Error:           f.Error,
+		ProtocolVersion: f.ProtocolVersion,
+		Status:          statusFromAckData(f.Data),
+	}, nil
+}
+
+// statusFromAckData достаёт подтверждение режима из data.
+//
+// Ошибка разбора намеренно проглатывается и даёт пустой Status, а не отказ:
+// data не типизирована, и её неожиданная форма не должна ронять handshake,
+// который в остальном состоялся. Пустая строка трактуется вызывающим как
+// "сервер не сообщил" — то же, что делает развёрнутый сервер при ответе без
+// data.
+func statusFromAckData(data json.RawMessage) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var d struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &d); err != nil {
+		return ""
+	}
+	return d.Status
 }
 
 // ── Action ──────────────────────────────────────────────────────────────────

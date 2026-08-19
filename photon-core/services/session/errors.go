@@ -33,6 +33,20 @@ var (
 	// (ADR-034 п.5), и он обязан быть отличим программно.
 	ErrProtocolVersion = errors.New("session: incompatible protocol version")
 
+	// ErrModeNotAccepted — сервер подтвердил не тот режим, который был
+	// запрошен. Отдельная ошибка, а не разновидность ErrHandshakeRejected:
+	// сервер при этом ответил ok:true, и по всем остальным признакам
+	// handshake состоялся.
+	//
+	// Сценарий не гипотетический. quic_listener.go:270-275 при ЛЮБОЙ ошибке
+	// чтения mode-фрейма молча подставляет "action" и отвечает
+	// {"ok":true,"data":{"status":"ready"}}. Клиент, запросивший subscribe и
+	// не проверяющий status, уходит в AcceptPush на соединении, где сервер
+	// UniStream'ов не откроет никогда, и висит там до отмены ctx. Симптом
+	// («push не приходит») отстоит от причины (фрейм, отправленный секундой
+	// раньше) настолько, что диагностируется часами.
+	ErrModeNotAccepted = errors.New("session: server confirmed a different mode")
+
 	// ErrUnknownAction — action-код отсутствует в enum Action
 	// (photon-core/protobuf). Соответствует PHOTON_ERR_INVALID_ACTION на
 	// границе ABI (ADR-026 п.5).
