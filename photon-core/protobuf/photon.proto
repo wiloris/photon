@@ -8,19 +8,44 @@ option java_outer_classname = "PhotonProto";
 option java_multiple_files = true;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Wire protocol
+//  СХЕМА, НЕ WIRE-ФОРМАТ (ADR-034)
 //
-//  Handshake stream (first stream per connection):
-//    Frame 1 → AuthFrame
-//    Frame 2 → ModeFrame
-//    Frame 3 ← HandshakeResponse
+//  Этот файл — каноническая СХЕМА протокола: источник action-кодов
+//  (enum Action), имён полей, типов и структуры payload'ов. На проводе
+//  Bridge-границы protobuf НЕ используется: сериализация — JSON.
+//  То же решение уже принято для границы C ABI (ADR-026 п.7:
+//  payload_json, protobuf как схема) — чтобы не тащить protobuf-runtime
+//  в каждый binding и в каждый bridge ради одного вызова.
 //
-//  Action stream (one stream per action):
-//    Frame 1 → PhotonRequest
-//    Frame 2 ← PhotonResponse
+//  Раньше на этом месте стоял заголовок "Wire protocol" с описанием
+//  "Frame 1 → PhotonRequest / Frame 2 ← PhotonResponse". Это было
+//  неверно: так провод не работал никогда. Описание исправлено, а не
+//  удалено, потому что ошибочная версия успела бы породить клиент,
+//  который сервер не понимает.
 //
-//  Push stream (server → client, UniStream):
-//    Frame 1 ← PushEvent
+//  Реальный провод (JSON, ALPN "photon-quic-v1") — источник истины:
+//  photon-quic-bridge/server/protocol.go (серверная сторона) и
+//  photon-quic-bridge/test-client/test_photon.go (клиент, проверенный
+//  против живого сервера):
+//
+//    handshake-стрим (bidi, первый на соединении):
+//      → {"session_token":"..."}
+//      → {"mode":"action"|"subscribe"}
+//      ← {"ok":true,...}                  затем стрим закрывается
+//
+//    action-стрим (bidi, по одному на action):
+//      → {"action":100,"resource":"PostResource"}   header
+//      → { ...payload... }                          {} если payload'а нет
+//      ← {"ok":true,"data":{...}} | {"ok":false,"error":"..."}
+//
+//    push-стрим (UniStream, сервер → клиент, только при mode=subscribe):
+//      ← {"event":"posted","user_id":"...","data":{...}}
+//
+//  Соответствие сообщений ниже проводу — НЕ взаимно однозначное
+//  (полная таблица расхождений — в ADR-034). В частности: на проводе
+//  resource — строка "PostResource", а не enum Resource; имя push-события
+//  — строка "posted", а не enum EventType; ответ — общий конверт
+//  {ok,data,error} без поля code.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
@@ -151,6 +176,28 @@ message HandshakeResponse {
 }
 
 // ── Main envelope ─────────────────────────────────────────────────────────────
+//
+// ВНИМАНИЕ (ADR-034): PhotonRequest и PhotonResponse НЕ сериализуются на
+// проводе — ни здесь, ни где-либо ещё. На проводе JSON (см. шапку файла),
+// и структура там другая: запрос — два отдельных фрейма (header, payload),
+// ответ — конверт {ok,data,error}. Ни один потребитель этих двух сообщений
+// в проекте не существует: вне этого файла и сгенерированного photon.pb.go
+// они не упоминаются нигде.
+//
+// Тогда зачем они здесь. Номера полей в oneof равны action-кодам:
+//
+//     CreatePostPayload create_post = 100;   ←→   ACTION_CREATE_POST = 100
+//
+// Это отображение «action → тип payload'а» не записано больше НИГДЕ в
+// проекте, и protoc проверяет его машинно — два payload'а не могут молча
+// занять один номер внутри oneof. Удалить конверты как «неиспользуемые»
+// значило бы потерять единственную машинно-проверяемую запись о том, какой
+// payload принадлежит какому action'у (и заодно заготовку на случай
+// перехода на protobuf-байты — критерий возврата в ADR-034 п.5).
+//
+// Правило при правке: добавляя action в enum Action, добавляй payload сюда
+// с ТЕМ ЖЕ номером. Расхождение здесь ничего не сломает на проводе прямо
+// сейчас — и именно поэтому его легко не заметить.
 
 message PhotonRequest {
   int32    action   = 1; // 100-699 action codes
