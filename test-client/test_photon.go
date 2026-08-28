@@ -31,6 +31,11 @@ var (
 			"subscribe — только приём push по uni-стриму, без единого action")
 	wait = flag.Duration("wait", 60*time.Second,
 		"сколько ждать push в режиме -only subscribe")
+	keepalive = flag.Duration("keepalive", 0,
+		"период QUIC keep-alive. 0 (по умолчанию) — как в проде: ни сервер, "+
+			"ни клиент keep-alive не шлют, и соединение умирает через 30 с "+
+			"простоя (DefaultIdleTimeout quic-go). Ненулевое значение нужно, "+
+			"чтобы проверять доставку push отдельно от этого обрыва")
 	insecure = flag.Bool("insecure", false,
 		"не проверять сертификат сервера. Только для самоподписанных "+
 			"сертификатов в тестовой среде: с -insecure клиент не заметит ни "+
@@ -72,7 +77,11 @@ func handshake(ctx context.Context, mode string) *quic.Conn {
 		NextProtos:         []string{"photon-quic-v1"},
 		MinVersion:         tls.VersionTLS13, // QUIC ниже 1.3 не бывает
 	}
-	conn, err := quic.DialAddr(ctx, *serverAddr, tlsConf, nil)
+	var qConf *quic.Config
+	if *keepalive > 0 {
+		qConf = &quic.Config{KeepAlivePeriod: *keepalive}
+	}
+	conn, err := quic.DialAddr(ctx, *serverAddr, tlsConf, qConf)
 	if err != nil {
 		log.Fatal("dial:", err)
 	}
@@ -104,6 +113,18 @@ func handshake(ctx context.Context, mode string) *quic.Conn {
 	if !resp.OK {
 		log.Fatal("handshake failed:", resp.Error)
 	}
+
+	// Сверяем ПОДТВЕРЖДЁННЫЙ режим с запрошенным. Сервер на неизвестный режим
+	// молча уходит в default-ветку, то есть в "action" (quic_listener.go:388),
+	// и без этой проверки клиент считал бы себя подписанным, не будучи им:
+	// ok:true приходит в обоих случаях. Тот же откат Core ловит тестом T-17.
+	want := map[string]string{"action": "ready", "subscribe": "subscribed"}[mode]
+	got, _ := resp.obj()["status"].(string)
+	if got != want {
+		log.Fatalf("режим не подтверждён: запрошен %q (ожидался status=%q), сервер ответил status=%q; полный data=%v",
+			mode, want, got, resp.Data)
+	}
+	fmt.Printf("  🔐 handshake ok — режим подтверждён: %s (status=%s)\n", mode, got)
 
 	stream.Close()
 	return conn
