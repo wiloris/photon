@@ -1,5 +1,9 @@
 package main
 
+import (
+	photonpb "github.com/wiloris/photon-core/protobuf"
+)
+
 // ─────────────────────────────────────────────
 //  Wire protocol (every QUIC stream follows this):
 //
@@ -20,74 +24,85 @@ package main
 //    { "event": "posted", "user_id": "...", "data": { ... } }
 // ─────────────────────────────────────────────
 
+// Action-коды. Не объявлены заново — алиасы на канонический источник
+// в photon-core/protobuf (photon.proto, enum Action). Явный int(...)
+// нужен, потому что photonpb.Action — отдельный тип (int32), а не
+// голый int: handler'ы этого репозитория сравнивают action int, и
+// без конверсии switch на разнотипных константах не скомпилируется.
+//
+// Раньше это были package-level const с теми же значениями,
+// объявленными здесь напрямую — то, от чего явно предостерегает
+// ARCHITECTURE.md, раздел 7.6 (Photon Protocol — общий контракт,
+// не деталь Bridge): Core и Bridge — равноправные потребители одного
+// протокола, ни один не должен объявлять его самостоятельно.
 const (
 	// ── PostResource (100-199) ────────────────────────────────────────────────
-	ActionCreatePost        = 100
-	ActionGetFeed           = 101
-	ActionDeletePost        = 102
-	ActionUpdatePost        = 103
-	ActionGetThread         = 104
-	ActionReplyToPost       = 105
-	ActionPinPost           = 106
-	ActionUnpinPost         = 107
-	ActionGetPinnedPosts    = 108
-	ActionSearchPosts       = 109
-	ActionAddReaction       = 110
-	ActionRemoveReaction    = 111
-	ActionGetReactions      = 112
-	ActionToggleLike        = 113
-	ActionGetPostSocialInfo = 114
+	ActionCreatePost        = int(photonpb.Action_ACTION_CREATE_POST)
+	ActionGetFeed           = int(photonpb.Action_ACTION_GET_FEED)
+	ActionDeletePost        = int(photonpb.Action_ACTION_DELETE_POST)
+	ActionUpdatePost        = int(photonpb.Action_ACTION_UPDATE_POST)
+	ActionGetThread         = int(photonpb.Action_ACTION_GET_THREAD)
+	ActionReplyToPost       = int(photonpb.Action_ACTION_REPLY_TO_POST)
+	ActionPinPost           = int(photonpb.Action_ACTION_PIN_POST)
+	ActionUnpinPost         = int(photonpb.Action_ACTION_UNPIN_POST)
+	ActionGetPinnedPosts    = int(photonpb.Action_ACTION_GET_PINNED_POSTS)
+	ActionSearchPosts       = int(photonpb.Action_ACTION_SEARCH_POSTS)
+	ActionAddReaction       = int(photonpb.Action_ACTION_ADD_REACTION)
+	ActionRemoveReaction    = int(photonpb.Action_ACTION_REMOVE_REACTION)
+	ActionGetReactions      = int(photonpb.Action_ACTION_GET_REACTIONS)
+	ActionToggleLike        = int(photonpb.Action_ACTION_TOGGLE_LIKE)
+	ActionGetPostSocialInfo = int(photonpb.Action_ACTION_GET_POST_SOCIAL_INFO)
 
 	// ── UserResource (200-299) ────────────────────────────────────────────────
-	ActionGetMe          = 200
-	ActionGetUser        = 201
-	ActionGetUsers       = 202
-	ActionGetUserStatus  = 203
-	ActionGetUserProfile = 204
-	ActionSearchUsers    = 205
-	ActionGetUsersByIds  = 206
-	ActionPatchMe        = 207
-	ActionSetStatus      = 208
-	ActionUploadAvatar   = 209
-	ActionGetUserAvatar  = 210
+	ActionGetMe          = int(photonpb.Action_ACTION_GET_ME)
+	ActionGetUser        = int(photonpb.Action_ACTION_GET_USER)
+	ActionGetUsers       = int(photonpb.Action_ACTION_GET_USERS)
+	ActionGetUserStatus  = int(photonpb.Action_ACTION_GET_USER_STATUS)
+	ActionGetUserProfile = int(photonpb.Action_ACTION_GET_USER_PROFILE)
+	ActionSearchUsers    = int(photonpb.Action_ACTION_SEARCH_USERS)
+	ActionGetUsersByIds  = int(photonpb.Action_ACTION_GET_USERS_BY_IDS)
+	ActionPatchMe        = int(photonpb.Action_ACTION_PATCH_ME)
+	ActionSetStatus      = int(photonpb.Action_ACTION_SET_STATUS)
+	ActionUploadAvatar   = int(photonpb.Action_ACTION_UPLOAD_AVATAR)
+	ActionGetUserAvatar  = int(photonpb.Action_ACTION_GET_USER_AVATAR)
 
 	// ── ChannelResource (300-399) ─────────────────────────────────────────────
-	ActionListChannels             = 300
-	ActionGetChannelMembers        = 301
-	ActionGetMyChannels            = 302
-	ActionGetChannel               = 303
-	ActionGetChannelByName         = 304
-	ActionCreateChannel            = 305
-	ActionCreateDirectChannel      = 306
-	ActionGetDirectChannels        = 307
-	ActionGetOrCreateDirectChannel = 308
-	ActionAddMember                = 309
-	ActionRemoveMember             = 310
-	ActionUpdateChannel            = 311
-	ActionGetUnreadForChannel      = 312
-	ActionMarkAsRead               = 313
-	ActionGetChannelMember         = 314
+	ActionListChannels             = int(photonpb.Action_ACTION_LIST_CHANNELS)
+	ActionGetChannelMembers        = int(photonpb.Action_ACTION_GET_CHANNEL_MEMBERS)
+	ActionGetMyChannels            = int(photonpb.Action_ACTION_GET_MY_CHANNELS)
+	ActionGetChannel               = int(photonpb.Action_ACTION_GET_CHANNEL)
+	ActionGetChannelByName         = int(photonpb.Action_ACTION_GET_CHANNEL_BY_NAME)
+	ActionCreateChannel            = int(photonpb.Action_ACTION_CREATE_CHANNEL)
+	ActionCreateDirectChannel      = int(photonpb.Action_ACTION_CREATE_DIRECT_CHANNEL)
+	ActionGetDirectChannels        = int(photonpb.Action_ACTION_GET_DIRECT_CHANNELS)
+	ActionGetOrCreateDirectChannel = int(photonpb.Action_ACTION_GET_OR_CREATE_DIRECT_CHANNEL)
+	ActionAddMember                = int(photonpb.Action_ACTION_ADD_MEMBER)
+	ActionRemoveMember             = int(photonpb.Action_ACTION_REMOVE_MEMBER)
+	ActionUpdateChannel            = int(photonpb.Action_ACTION_UPDATE_CHANNEL)
+	ActionGetUnreadForChannel      = int(photonpb.Action_ACTION_GET_UNREAD_FOR_CHANNEL)
+	ActionMarkAsRead               = int(photonpb.Action_ACTION_MARK_AS_READ)
+	ActionGetChannelMember         = int(photonpb.Action_ACTION_GET_CHANNEL_MEMBER)
 
 	// ── EngramResource (400-499) ──────────────────────────────────────────────
-	ActionEngramStore      = 400
-	ActionEngramQuery      = 401
-	ActionEngramDelete     = 402
-	ActionEngramList       = 403
-	ActionEngramBatchStore = 404
-	ActionEngramBatchQuery = 405
+	ActionEngramStore      = int(photonpb.Action_ACTION_ENGRAM_STORE)
+	ActionEngramQuery      = int(photonpb.Action_ACTION_ENGRAM_QUERY)
+	ActionEngramDelete     = int(photonpb.Action_ACTION_ENGRAM_DELETE)
+	ActionEngramList       = int(photonpb.Action_ACTION_ENGRAM_LIST)
+	ActionEngramBatchStore = int(photonpb.Action_ACTION_ENGRAM_BATCH_STORE)
+	ActionEngramBatchQuery = int(photonpb.Action_ACTION_ENGRAM_BATCH_QUERY)
 
 	// ── FileResource (500-599) ────────────────────────────────────────────────
-	ActionUploadFile   = 500
-	ActionDownloadFile = 501
-	ActionGetFileInfo  = 502
-	ActionGetThumbnail = 503
-	ActionGetPreview   = 504
-	ActionGetImageURL  = 505
+	ActionUploadFile   = int(photonpb.Action_ACTION_UPLOAD_FILE)
+	ActionDownloadFile = int(photonpb.Action_ACTION_DOWNLOAD_FILE)
+	ActionGetFileInfo  = int(photonpb.Action_ACTION_GET_FILE_INFO)
+	ActionGetThumbnail = int(photonpb.Action_ACTION_GET_THUMBNAIL)
+	ActionGetPreview   = int(photonpb.Action_ACTION_GET_PREVIEW)
+	ActionGetImageURL  = int(photonpb.Action_ACTION_GET_IMAGE_URL)
 
 	// ── WallResource (600-699) ────────────────────────────────────────────────
-	ActionGetOrCreateWall = 600
-	ActionGetWallPosts    = 601
-	ActionPublishWallPost = 602
+	ActionGetOrCreateWall = int(photonpb.Action_ACTION_GET_OR_CREATE_WALL)
+	ActionGetWallPosts    = int(photonpb.Action_ACTION_GET_WALL_POSTS)
+	ActionPublishWallPost = int(photonpb.Action_ACTION_PUBLISH_WALL_POST)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

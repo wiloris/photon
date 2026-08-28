@@ -1,4 +1,4 @@
-module github.com/mattermost/mattermost-plugin-starter-template
+module github.com/wiloris/photon-quic-bridge
 
 go 1.24.6
 
@@ -64,3 +64,19 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// ADR-025: канонический источник Photon-протокола — photon-core/protobuf.
+// Опубликованной версии photon-core нет, поэтому require указывает на
+// несуществующий v0.0.0, а resolve делает replace ниже.
+require github.com/wiloris/photon-core v0.0.0
+
+// ВНИМАНИЕ: путь относительный. Bridge собирается ТОЛЬКО когда photon и
+// photon-quic-bridge лежат соседями в одном каталоге:
+//
+//     <корень>/photon/photon-core/
+//     <корень>/photon-quic-bridge/
+//
+// При отдельном клоне одного этого репозитория сборка упадёт на резолве
+// photon-core. Альтернативы нет, пока photon-core не опубликован; когда
+// появится тег — replace убирается, require получает настоящую версию.
+replace github.com/wiloris/photon-core => ../photon/photon-core
