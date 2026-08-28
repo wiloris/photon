@@ -72,7 +72,7 @@ func (p *Plugin) OnActivate() error {
 	p.API.LogInfo("[Photon] Initialising QUIC bridge")
 
 	cfg := p.API.GetConfig()
-	tlsCfg, err := getTLSConfig(cfg)
+	tlsCfg, err := getTLSConfig(p, cfg)
 	if err != nil {
 		// Не фатально: логируем и работаем без QUIC.
 		p.API.LogError("[Photon] Failed to build TLS config — QUIC bridge disabled",

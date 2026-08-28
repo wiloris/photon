@@ -30,6 +30,9 @@ type certCache struct {
 	certFile string
 	keyFile  string
 	loadedAt time.Time
+	// plugin нужен только для логирования неудачных обновлений: молча
+	// отдавать старый сертификат — способ не заметить отказ до рестарта.
+	plugin *Plugin
 }
 
 func (c *certCache) get() (*tls.Certificate, error) {
@@ -52,7 +55,24 @@ func (c *certCache) get() (*tls.Certificate, error) {
 	cert, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
 	if err != nil {
 		if c.cert != nil {
-			// Не удалось перечитать — используем старый.
+			// Не удалось перечитать — продолжаем на старом сертификате.
+			// Это ОТЛОЖЕННЫЙ ОТКАЗ, а не восстановление: Caddy продлевает
+			// сертификат каждые ~60 дней и перезаписывает файлы с правами
+			// 0600, после чего процесс плагина их не прочитает. Снаружи
+			// всё работает — до первого рестарта, когда старого
+			// сертификата в памяти уже не будет, getTLSConfig вернёт
+			// ошибку и QUIC не поднимется. Без этой записи в логе
+			// промежуток между причиной и симптомом — недели.
+			if c.plugin != nil {
+				c.plugin.API.LogError(
+					"[Photon] Cert refresh FAILED — still serving the cached certificate; "+
+						"QUIC will not start after the next restart until this is fixed",
+					"cert", c.certFile,
+					"key", c.keyFile,
+					"loaded_at", c.loadedAt.Format(time.RFC3339),
+					"error", err.Error(),
+				)
+			}
 			return c.cert, nil
 		}
 		return nil, fmt.Errorf("loading cert %s: %w", c.certFile, err)
@@ -64,17 +84,20 @@ func (c *certCache) get() (*tls.Certificate, error) {
 
 // ── getTLSConfig ──────────────────────────────────────────────────────────────
 
-func getTLSConfig(cfg *model.Config) (*tls.Config, error) {
-	certFile, keyFile, err := findCert(cfg)
+func getTLSConfig(p *Plugin, cfg *model.Config) (*tls.Config, error) {
+	certFile, keyFile, cert, err := findCert(p, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	cache := &certCache{certFile: certFile, keyFile: keyFile}
-
-	// Проверяем что сертификат читается при старте.
-	if _, err := cache.get(); err != nil {
-		return nil, err
+	// Сертификат уже загружен findCert — повторно с диска не читаем,
+	// кэш стартует прогретым.
+	cache := &certCache{
+		certFile: certFile,
+		keyFile:  keyFile,
+		cert:     cert,
+		loadedAt: time.Now(),
+		plugin:   p,
 	}
 
 	return &tls.Config{
@@ -88,33 +111,113 @@ func getTLSConfig(cfg *model.Config) (*tls.Config, error) {
 	}, nil
 }
 
-// findCert ищет сертификат: Caddy → Mattermost config.
-func findCert(cfg *model.Config) (certFile, keyFile string, err error) {
-	// 1. Caddy: пробуем домен из SiteURL.
-	if domain := extractDomain(cfg); domain != "" {
-		cf := fmt.Sprintf("%s/%s/%s.crt", caddyCertDir, domain, domain)
-		kf := fmt.Sprintf("%s/%s/%s.key", caddyCertDir, domain, domain)
-		if fileExists(cf) && fileExists(kf) {
-			return cf, kf, nil
+// certCandidate — один вариант расположения сертификата.
+// source — человекочитаемая метка для лога: без неё «permission denied»
+// не отличить от «домен из SiteURL не совпал с каталогом Caddy».
+type certCandidate struct {
+	source   string
+	certFile string
+	keyFile  string
+}
+
+// certCandidates возвращает кандидатов в порядке приоритета:
+// Caddy по домену из SiteURL → любой домен в каталоге Caddy → Mattermost config.
+func certCandidates(cfg *model.Config) []certCandidate {
+	var out []certCandidate
+	seen := map[string]bool{} // пара .crt+.key уже в списке
+
+	add := func(c certCandidate) {
+		key := c.certFile + "\x00" + c.keyFile
+		if seen[key] {
+			return
 		}
+		seen[key] = true
+		out = append(out, c)
 	}
 
-	// 2. Caddy: ищем любой домен в директории.
-	if cf, kf, ok := scanCaddyDir(); ok {
-		return cf, kf, nil
+	// 1. Caddy: домен из SiteURL.
+	if domain := extractDomain(cfg); domain != "" {
+		add(certCandidate{
+			source:   "caddy/SiteURL domain " + domain,
+			certFile: fmt.Sprintf("%s/%s/%s.crt", caddyCertDir, domain, domain),
+			keyFile:  fmt.Sprintf("%s/%s/%s.key", caddyCertDir, domain, domain),
+		})
+	}
+
+	// 2. Caddy: все домены в каталоге. Перечисляются все, а не первый
+	//    попавшийся: если у одного домена права не те, следующий должен
+	//    получить свой шанс.
+	entries, err := os.ReadDir(caddyCertDir)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			domain := e.Name()
+			add(certCandidate{
+				source:   "caddy/dir scan " + domain,
+				certFile: fmt.Sprintf("%s/%s/%s.crt", caddyCertDir, domain, domain),
+				keyFile:  fmt.Sprintf("%s/%s/%s.key", caddyCertDir, domain, domain),
+			})
+		}
 	}
 
 	// 3. Mattermost ServiceSettings.
 	if cfg.ServiceSettings.TLSCertFile != nil && cfg.ServiceSettings.TLSKeyFile != nil {
-		cf := *cfg.ServiceSettings.TLSCertFile
-		kf := *cfg.ServiceSettings.TLSKeyFile
-		if cf != "" && kf != "" && fileExists(cf) && fileExists(kf) {
-			return cf, kf, nil
+		cf, kf := *cfg.ServiceSettings.TLSCertFile, *cfg.ServiceSettings.TLSKeyFile
+		if cf != "" && kf != "" {
+			add(certCandidate{
+				source:   "mattermost ServiceSettings",
+				certFile: cf,
+				keyFile:  kf,
+			})
 		}
 	}
 
-	return "", "", fmt.Errorf(
-		"TLS cert not found in Caddy dir (%s) or Mattermost config", caddyCertDir,
+	return out
+}
+
+// findCert перебирает кандидатов и возвращает первого, который РЕАЛЬНО
+// загружается.
+//
+// Раньше здесь проверялось os.Stat (существование файла), и порядок из трёх
+// вариантов был фикцией: после выдачи процессу Mattermost прав на обход
+// каталогов Caddy stat проходит всегда, первый кандидат выигрывает всегда, а
+// нечитаемый или битый файл давал отказ вместо отката на следующий вариант.
+// tls.LoadX509KeyPair проверяет разом существование, права, разбор PEM и
+// совпадение пары .crt/.key — последнее до этого не проверялось нигде вплоть
+// до подъёма листенера.
+func findCert(p *Plugin, cfg *model.Config) (certFile, keyFile string, cert *tls.Certificate, err error) {
+	candidates := certCandidates(cfg)
+	if len(candidates) == 0 {
+		return "", "", nil, fmt.Errorf(
+			"no TLS cert candidates: Caddy dir (%s) unreadable or empty, "+
+				"SiteURL gives no domain, ServiceSettings.TLSCertFile empty", caddyCertDir,
+		)
+	}
+
+	for _, c := range candidates {
+		pair, loadErr := tls.LoadX509KeyPair(c.certFile, c.keyFile)
+		if loadErr != nil {
+			// Отбраковка обязана быть видимой. Молчаливое падение на
+			// следующий вариант и было тем, что скрывало проблему прав:
+			// оба пути через Caddy проваливались беззвучно, оставался
+			// третий, а при пустом TLSCertFile — ни одного.
+			p.API.LogWarn("[Photon] Cert candidate rejected",
+				"source", c.source,
+				"cert", c.certFile,
+				"key", c.keyFile,
+				"error", loadErr.Error())
+			continue
+		}
+		p.API.LogInfo("[Photon] Cert selected",
+			"source", c.source, "cert", c.certFile, "key", c.keyFile)
+		return c.certFile, c.keyFile, &pair, nil
+	}
+
+	return "", "", nil, fmt.Errorf(
+		"none of %d TLS cert candidates could be loaded (see [Photon] Cert candidate rejected "+
+			"in the log for the reason on each); Caddy dir: %s", len(candidates), caddyCertDir,
 	)
 }
 
@@ -328,4 +431,4 @@ func (ql *QuicListener) handleStream(stream *quic.Stream, userID string, remoteA
 }
 
 func writeResponse(w io.Writer, resp Response) { _ = json.NewEncoder(w).Encode(resp) }
-func writeError(w io.Writer, msg string)        { writeResponse(w, Response{OK: false, Error: msg}) }
+func writeError(w io.Writer, msg string)       { writeResponse(w, Response{OK: false, Error: msg}) }
