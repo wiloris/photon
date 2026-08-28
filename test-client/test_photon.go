@@ -26,6 +26,11 @@ var (
 		"Session ID Mattermost (обязателен). На проводе поле называется "+
 			"session_token — имя историческое, значение это Session.Id, а не "+
 			"токен из логина")
+	only = flag.String("only", "all",
+		"что прогонять: all — весь набор (48 action-вызовов, затем подписка); "+
+			"subscribe — только приём push по uni-стриму, без единого action")
+	wait = flag.Duration("wait", 60*time.Second,
+		"сколько ждать push в режиме -only subscribe")
 	insecure = flag.Bool("insecure", false,
 		"не проверять сертификат сервера. Только для самоподписанных "+
 			"сертификатов в тестовой среде: с -insecure клиент не заметит ни "+
@@ -139,6 +144,41 @@ func result(label string, resp Response) {
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
+// subscribeOnly проверяет только приём push по uni-стриму — режим, который
+// не воспроизводится ничем в тестах Phase 12.5: net.Pipe однонаправленных
+// стримов не имеет вообще, поэтому здесь сосредоточено всё неизвестное.
+// Action-вызовов не делает намеренно: провоцировать событие должен человек,
+// отправив сообщение в Mattermost руками. Иначе отказ приёма push смешался бы
+// с отказом отправки action.
+func subscribeOnly(ctx context.Context) {
+	fmt.Println("\n── Subscribe only — приём push ──────────────────")
+
+	conn := handshake(ctx, "subscribe")
+	defer conn.CloseWithError(0, "sub done")
+	fmt.Println("  📡 Subscribe-соединение установлено (handshake прошёл)")
+	fmt.Printf("  ⏳ Ждём push до %s. ОТПРАВЬТЕ СЕЙЧАС ЛЮБОЕ СООБЩЕНИЕ в Mattermost.\n", *wait)
+
+	pushCtx, cancel := context.WithTimeout(ctx, *wait)
+	defer cancel()
+
+	stream, err := conn.AcceptUniStream(pushCtx)
+	if err != nil {
+		fmt.Printf("  ❌ push не получен: %v\n", err)
+		fmt.Println("     Handshake при этом прошёл — значит проблема в отправке события,")
+		fmt.Println("     а не в авторизации: смотреть hooks.go и PushRegistry на сервере.")
+		os.Exit(1)
+	}
+	defer stream.CancelRead(0)
+
+	var ev map[string]interface{}
+	if err := json.NewDecoder(stream).Decode(&ev); err != nil {
+		fmt.Printf("  ❌ uni-стрим принят, но разбор события не удался: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  ✅ push получен: event=%v user_id=%v\n", ev["event"], ev["user_id"])
+	fmt.Printf("     полное событие: %v\n", ev)
+}
+
 func main() {
 	log.SetFlags(log.Ltime)
 	flag.Parse()
@@ -151,6 +191,16 @@ func main() {
 		log.Print("ВНИМАНИЕ: -insecure, сертификат сервера не проверяется")
 	}
 	ctx := context.Background()
+
+	switch *only {
+	case "all":
+	case "subscribe":
+		subscribeOnly(ctx)
+		return
+	default:
+		fmt.Fprintf(os.Stderr, "-only: ожидается all или subscribe, получено %q\n", *only)
+		os.Exit(2)
+	}
 
 	fmt.Println("\n╔════════════════════════════════════════════╗")
 	fmt.Println("║     PHOTON QUIC — FULL TEST SUITE          ║")
