@@ -300,6 +300,17 @@ func (ql *QuicListener) Serve() {
 
 	ln, err := quic.ListenAddr(quicBindAddr, ql.tlsCfg, &quic.Config{
 		EnableDatagrams: false,
+		// KeepAlivePeriod — не настройка производительности, а недостающая
+		// часть механизма подписки. Без неё subscribe-соединение умирает
+		// через 30 с простоя (DefaultIdleTimeout quic-go, измерено на живом
+		// сервере), а нормальное состояние подписки — именно тишина: канал
+		// без сообщений полминуты это обычное дело. Сервер снимает клиента
+		// с регистрации по watchClose() и пишет Client unsubscribed, но
+		// подписчик о своей смерти не узнаёт, пока не спросит.
+		//
+		// 15 с — половина idle-timeout: пакет успевает дойти и при потере
+		// одного keep-alive, второй приходит до истечения окна.
+		KeepAlivePeriod: 15 * time.Second,
 	})
 	if err != nil {
 		ql.plugin.API.LogError("[Photon] Failed to bind QUIC",
