@@ -13,6 +13,16 @@ import (
 	"github.com/wiloris/photon-plugin-runtime/permissions"
 )
 
+// Тестовые Handler'ы в этом файле НАМЕРЕННО не реализуют каталог операций
+// (storage.*, identity.*, crypto.*). Их задача — проверять ПРОТОКОЛ:
+// корреляцию, авторизацию, дедлайны, отмену, поведение при обрыве. Подстановка
+// настоящего исполнителя затащила бы ports.Storage в эти тесты, то есть
+// заставила бы тест протокола зависеть от хранилища.
+//
+// Настоящий исполнитель — Core Operations Handler, Phase 13,
+// спецификация docs/core-operations.md. Тесты самих операций живут там же, а
+// не здесь.
+
 // Тесты идут через НАСТОЯЩИЙ стек:
 //
 //	decode -> protocol validation -> caller identity -> Authorizer -> handler
