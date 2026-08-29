@@ -993,3 +993,129 @@ func TestConnectFailurePropagates(t *testing.T) {
 		t.Errorf("state = %v, want failed", s.State())
 	}
 }
+
+// ── T-18: обрыв соединения отличим от «ещё не подключались» ─────────────────
+//
+// Прецедент не гипотетический: прогон против живого Bridge показал, что
+// subscribe-соединение умирает через 30 с простоя (idle-timeout QUIC), сервер
+// снимает клиента с регистрации, а подписчик об этом не узнаёт — у ждущего
+// события нет следующей операции, на ошибке которой обрыв обнаружился бы.
+
+func TestT18_AcceptPushReportsConnectionLost(t *testing.T) {
+	s, conn := newReadySession(t, okHandshake(map[string]interface{}{"ok": true}), ModeSubscribe)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := s.AcceptPush(context.Background())
+		errCh <- err
+	}()
+
+	// Даём AcceptPush заблокироваться, затем рвём связь.
+	time.Sleep(20 * time.Millisecond)
+	conn.breakConnection(io.ErrUnexpectedEOF)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrConnectionLost) {
+			t.Fatalf("AcceptPush после обрыва = %v, want ErrConnectionLost", err)
+		}
+		// Исходная причина обязана сохраниться: без неё диагностика сводится
+		// к «связь потеряна», без указания чем именно.
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("исходная причина потеряна: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("AcceptPush не разблокировался при обрыве — ровно тот случай, " +
+			"ради которого заведён сигнал: подписчик висит, считая себя подписанным")
+	}
+
+	if got := s.State(); got != StateFailed {
+		t.Errorf("состояние после обрыва = %s, want failed", got)
+	}
+}
+
+func TestT18_SubsequentCallsSayLostNotNotReady(t *testing.T) {
+	s, conn := newReadySession(t, okHandshake(map[string]interface{}{"ok": true}), ModeSubscribe)
+	conn.breakConnection(io.ErrUnexpectedEOF)
+
+	if _, err := s.AcceptPush(context.Background()); !errors.Is(err, ErrConnectionLost) {
+		t.Fatalf("первый AcceptPush = %v, want ErrConnectionLost", err)
+	}
+
+	// Ключевое различие: «связь была и оборвалась» — не то же, что «ещё не
+	// подключались». Это разные решения у вызывающего.
+	_, err := s.AcceptPush(context.Background())
+	if !errors.Is(err, ErrConnectionLost) {
+		t.Errorf("повторный AcceptPush = %v, want ErrConnectionLost", err)
+	}
+	if errors.Is(err, ErrNotReady) {
+		t.Error("обрыв не должен маскироваться под ErrNotReady")
+	}
+
+	_, err = s.Do(context.Background(), int32(photonpb.Action_ACTION_GET_ME), nil)
+	if !errors.Is(err, ErrConnectionLost) {
+		t.Errorf("Do после обрыва = %v, want ErrConnectionLost", err)
+	}
+}
+
+func TestT18_DoReportsConnectionLost(t *testing.T) {
+	s, conn := newReadySession(t, okHandshake(map[string]interface{}{"ok": true}), ModeAction)
+	conn.breakConnection(io.ErrUnexpectedEOF)
+
+	_, err := s.Do(context.Background(), int32(photonpb.Action_ACTION_GET_ME), nil)
+	if !errors.Is(err, ErrConnectionLost) {
+		t.Fatalf("Do после обрыва = %v, want ErrConnectionLost", err)
+	}
+	if got := s.State(); got != StateFailed {
+		t.Errorf("состояние = %s, want failed", got)
+	}
+}
+
+// Отмена ctx вызывающим — не обрыв. Если бы её классифицировали как обрыв,
+// сессия ломалась бы от собственного таймаута вызывающего.
+func TestT18_ContextCancelIsNotConnectionLost(t *testing.T) {
+	s, _ := newReadySession(t, okHandshake(map[string]interface{}{"ok": true}), ModeSubscribe)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := s.AcceptPush(ctx)
+	if errors.Is(err, ErrConnectionLost) {
+		t.Fatalf("отмена ctx классифицирована как обрыв: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("AcceptPush по отмене = %v, want DeadlineExceeded", err)
+	}
+	if got := s.State(); got != StateReady {
+		t.Errorf("отмена ctx изменила состояние на %s — сессия должна остаться ready", got)
+	}
+}
+
+// Неудачный Connect и обрыв дают одно состояние Failed, но разные ошибки:
+// иначе различие, ради которого всё это заведено, терялось бы на первом же
+// повторном вызове.
+func TestT18_FailedConnectIsNotConnectionLost(t *testing.T) {
+	tr := &fakeTransport{connectErr: io.ErrClosedPipe}
+	s, err := New(Config{
+		Transport: tr, Endpoint: "fake://bridge", SessionToken: "tok", Mode: ModeAction,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.Connect(context.Background()); err == nil {
+		t.Fatal("Connect должен был провалиться")
+	}
+	if got := s.State(); got != StateFailed {
+		t.Fatalf("состояние = %s, want failed", got)
+	}
+
+	_, err = s.Do(context.Background(), int32(photonpb.Action_ACTION_GET_ME), nil)
+	if errors.Is(err, ErrConnectionLost) {
+		t.Error("неудачный Connect не должен выглядеть как обрыв связи")
+	}
+	if !errors.Is(err, ErrNotReady) {
+		t.Errorf("Do после неудачного Connect = %v, want ErrNotReady", err)
+	}
+}

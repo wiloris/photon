@@ -70,6 +70,10 @@ type Session struct {
 	// завершения Connect. Прецедент прямой — вечное зависание host.Stop на
 	// неотвечающем плагине (Phase 9), найденное не ревью, а тестом отказа.
 	closeCh chan struct{}
+
+	// lost различает две причины StateFailed: неудачный Connect и обрыв уже
+	// установленной связи. Снаружи это ErrNotReady против ErrConnectionLost.
+	lost bool
 }
 
 // New создаёт сессию. Сети не касается — соединение устанавливает Connect.
@@ -164,8 +168,25 @@ func (s *Session) Connect(ctx context.Context) error {
 	}
 	s.conn = conn
 	s.state = StateReady
+	s.lost = false
 	s.mu.Unlock()
 	return nil
+}
+
+// markLost переводит Ready-сессию в Failed и классифицирует причину как обрыв.
+// Возвращает ошибку, для которой errors.Is(err, ErrConnectionLost) истинно, с
+// сохранённой исходной причиной.
+//
+// Состояние меняется только из Ready: обрыв, обнаруженный после Close, не
+// должен воскрешать сессию в Failed (bridge-session.md §6, п. 4).
+func (s *Session) markLost(err error) error {
+	s.mu.Lock()
+	if s.state == StateReady {
+		s.state = StateFailed
+		s.lost = true
+	}
+	s.mu.Unlock()
+	return fmt.Errorf("%w: %w", ErrConnectionLost, err)
 }
 
 // failConnect переводит сессию в Failed, не затирая уже наступивший Closed.
@@ -252,6 +273,13 @@ func (s *Session) Do(ctx context.Context, action int32, payload []byte) (Respons
 		s.mu.Unlock()
 		return Response{}, ErrSessionClosed
 	case StateReady:
+	case StateFailed:
+		lost := s.lost
+		s.mu.Unlock()
+		if lost {
+			return Response{}, ErrConnectionLost
+		}
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, StateFailed)
 	default:
 		st := s.state
 		s.mu.Unlock()
@@ -262,7 +290,11 @@ func (s *Session) Do(ctx context.Context, action int32, payload []byte) (Respons
 
 	stream, err := conn.OpenStream(ctx)
 	if err != nil {
-		return Response{}, fmt.Errorf("session: open action stream: %w", err)
+		// Отмена вызывающим обрывом не считается: состояние не меняется.
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
+		return Response{}, s.markLost(fmt.Errorf("session: open action stream: %w", err))
 	}
 
 	type result struct {
@@ -317,6 +349,13 @@ func (s *Session) AcceptPush(ctx context.Context) (Push, error) {
 		s.mu.Unlock()
 		return Push{}, ErrSessionClosed
 	case StateReady:
+	case StateFailed:
+		lost := s.lost
+		s.mu.Unlock()
+		if lost {
+			return Push{}, ErrConnectionLost
+		}
+		return Push{}, fmt.Errorf("%w (state=%s)", ErrNotReady, StateFailed)
 	default:
 		st := s.state
 		s.mu.Unlock()
@@ -332,7 +371,13 @@ func (s *Session) AcceptPush(ctx context.Context) (Push, error) {
 
 	stream, err := conn.AcceptUniStream(ctx)
 	if err != nil {
-		return Push{}, fmt.Errorf("session: accept push stream: %w", err)
+		// Отмена вызывающим обрывом не считается.
+		if ctx.Err() != nil {
+			return Push{}, ctx.Err()
+		}
+		// Здесь сигнал критичнее всего: у ждущего события нет следующей
+		// операции, на ошибке которой обрыв обнаружился бы.
+		return Push{}, s.markLost(fmt.Errorf("session: accept push stream: %w", err))
 	}
 	return s.codec.ReadPush(stream)
 }

@@ -72,15 +72,33 @@ type fakeConn struct {
 	mu        sync.Mutex
 	idx       int
 	openErr   error
+	acceptErr error
+	broken    chan struct{}
 	closed    bool
 	toClose   []io.Closer
 	openCalls int
 }
 
+// breakConnection воспроизводит обрыв уже установленного соединения: и
+// OpenStream, и AcceptUniStream начинают отказывать, как при idle-timeout
+// QUIC. Без этого обрыв нечем было воспроизвести — fakeConn умел только
+// «не подключиться», а не «связь была и пропала».
+func (c *fakeConn) breakConnection(err error) {
+	c.mu.Lock()
+	c.openErr = err
+	c.acceptErr = err
+	if c.broken != nil {
+		close(c.broken)
+		c.broken = nil
+	}
+	c.mu.Unlock()
+}
+
 var _ ports.Connection = (*fakeConn)(nil)
 
 func newFakeConn(t *testing.T, h streamHandler) *fakeConn {
-	c := &fakeConn{t: t, handler: h, pushes: make(chan []byte, 8)}
+	c := &fakeConn{t: t, handler: h, pushes: make(chan []byte, 8),
+		broken: make(chan struct{})}
 	t.Cleanup(func() {
 		c.mu.Lock()
 		for _, cl := range c.toClose {
@@ -124,7 +142,21 @@ func (c *fakeConn) OpenUniStream(ctx context.Context) (ports.SendStream, error) 
 }
 
 func (c *fakeConn) AcceptUniStream(ctx context.Context) (ports.RecvStream, error) {
+	c.mu.Lock()
+	if c.acceptErr != nil {
+		err := c.acceptErr
+		c.mu.Unlock()
+		return nil, err
+	}
+	broken := c.broken
+	c.mu.Unlock()
+
 	select {
+	case <-broken:
+		c.mu.Lock()
+		err := c.acceptErr
+		c.mu.Unlock()
+		return nil, err
 	case p := <-c.pushes:
 		cli, srv := net.Pipe()
 		c.mu.Lock()
