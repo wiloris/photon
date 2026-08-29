@@ -90,7 +90,7 @@ func setupSession(t *testing.T, granted []string, handler ipc.Handler) (sdk.Plug
 // echoHandler возвращает то, что просят, для операций каталога.
 func echoHandler(t *testing.T) ipc.Handler {
 	t.Helper()
-	return ipc.HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	return ipc.HandlerFunc(func(ctx context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 		switch op {
 		case "storage.get":
 			return json.Marshal(map[string]any{"value": []byte("stored-value")})
@@ -277,7 +277,7 @@ func TestE2E_RevokeTakesEffectWithoutReconnect(t *testing.T) {
 
 func TestE2E_UnknownOperationIsRejected(t *testing.T) {
 	// Runtime не знает операции -> ошибка, а не молчаливый успех.
-	h := ipc.HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	h := ipc.HandlerFunc(func(ctx context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 		return nil, errors.New("unknown operation: " + op)
 	})
 	p, _ := setupSession(t, []string{"storage.read"}, h)
@@ -374,7 +374,7 @@ func TestE2E_CallAfterSessionClosed(t *testing.T) {
 func TestE2E_ContextCancellationStopsCall(t *testing.T) {
 	// Handler висит; отмена контекста должна вернуть управление
 	// плагину, а не ждать дедлайна runtime.
-	h := ipc.HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	h := ipc.HandlerFunc(func(ctx context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})

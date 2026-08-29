@@ -120,7 +120,7 @@ func hostFactory(sp host.Spawner) HostFactory {
 			Caller:      ports.PublicKey("sv-key"),
 			Policy:      policy,
 			Authorizer:  auth,
-			Handler: ipc.HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+			Handler: ipc.HandlerFunc(func(ctx context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 				return []byte("ok"), nil
 			}),
 			Spawner: sp,

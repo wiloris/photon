@@ -103,7 +103,7 @@ func (c *logCapture) all() []string {
 // namespace-escape, which needs real per-caller prefixing (see
 // sharedNamespaceStore below).
 func simpleHandler(capture *logCapture) ipc.Handler {
-	return ipc.HandlerFunc(func(_ context.Context, op string, payload []byte) ([]byte, error) {
+	return ipc.HandlerFunc(func(_ context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 		switch op {
 		case "log.write":
 			return capture.capture(payload)
@@ -217,8 +217,14 @@ type sharedNamespaceStore struct {
 	data map[string][]byte
 }
 
-func (s *sharedNamespaceStore) handler(callerPluginID string, capture *logCapture) ipc.Handler {
-	return ipc.HandlerFunc(func(_ context.Context, op string, payload []byte) ([]byte, error) {
+// handler намеренно НЕ захватывает plugin_id замыканием: идентичность
+// приходит параметром из конфигурации сессии (ADR-036). Раньше она
+// передавалась при конструировании, и тест доказывал изоляцию лишь при
+// условии, что handler создан правильно; теперь она приходит оттуда же,
+// откуда её получит настоящий исполнитель Phase 13.
+func (s *sharedNamespaceStore) handler(capture *logCapture) ipc.Handler {
+	return ipc.HandlerFunc(func(_ context.Context, caller ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
+		callerPluginID := caller.PluginID
 		switch op {
 		case "log.write":
 			return capture.capture(payload)
@@ -294,7 +300,7 @@ func TestPermission_NamespaceEscapeIsolated(t *testing.T) {
 		Caller:      ports.PublicKey("permission-victim-caller"),
 		Policy:      victimPolicy,
 		Authorizer:  victimAuth,
-		Handler:     store.handler(victimID, victimCapture),
+		Handler:     store.handler(victimCapture),
 	})
 
 	// context.Background(): see startPermissionHost for why a
@@ -331,7 +337,7 @@ func TestPermission_NamespaceEscapeIsolated(t *testing.T) {
 		Caller:      ports.PublicKey("permission-attacker-caller"),
 		Policy:      attackerPolicy,
 		Authorizer:  attackerAuth,
-		Handler:     store.handler(attackerID, attackerCapture),
+		Handler:     store.handler(attackerCapture),
 	})
 
 	if err := attackerHost.Start(context.Background()); err != nil {

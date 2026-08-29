@@ -137,7 +137,7 @@ func newHost(t *testing.T, sp Spawner, granted []string) (*Host, *permissions.Po
 		Caller:      ports.PublicKey("caller-key"),
 		Policy:      policy,
 		Authorizer:  auth,
-		Handler: ipc.HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+		Handler: ipc.HandlerFunc(func(ctx context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 			return []byte("ok:" + op), nil
 		}),
 		Spawner: sp,
@@ -585,7 +585,7 @@ func TestE2E_FullPipelineAllowAndForbid(t *testing.T) {
 		Caller:      ports.PublicKey("e2e-key"),
 		Policy:      policy,
 		Authorizer:  auth,
-		Handler: ipc.HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+		Handler: ipc.HandlerFunc(func(ctx context.Context, _ ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
 			return []byte("done"), nil
 		}),
 		Spawner: sp,

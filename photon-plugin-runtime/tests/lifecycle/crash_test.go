@@ -54,7 +54,7 @@ func runCrashOnce(t *testing.T, mode string) host.ExitStatus {
 		Caller:      ports.PublicKey("crash-test-caller"),
 		Policy:      policy,
 		Authorizer:  auth,
-		Handler: ipc.HandlerFunc(func(_ context.Context, op string, _ []byte) ([]byte, error) {
+		Handler: ipc.HandlerFunc(func(_ context.Context, _ ipc.CallerInfo, op string, _ []byte) ([]byte, error) {
 			if op == "storage.get" {
 				return json.Marshal(map[string]any{"value": []byte("x")})
 			}
@@ -177,7 +177,7 @@ func crashSupervisorFactory(t *testing.T, entrypoint, dir string) supervisor.Hos
 			Caller:      ports.PublicKey("crash-supervisor-caller"),
 			Policy:      policy,
 			Authorizer:  auth,
-			Handler: ipc.HandlerFunc(func(_ context.Context, op string, _ []byte) ([]byte, error) {
+			Handler: ipc.HandlerFunc(func(_ context.Context, _ ipc.CallerInfo, op string, _ []byte) ([]byte, error) {
 				if op == "storage.get" {
 					return json.Marshal(map[string]any{"value": []byte("x")})
 				}

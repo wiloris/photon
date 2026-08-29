@@ -20,7 +20,7 @@
 0. `CURRENT_TASK.md` — над чем идёт работа прямо сейчас. Читать первым.
 1. `ROADMAP.md` — 25 фаз со статусами. Источник истины о том, что сделано.
 2. `ARCHITECTURE.md` — как всё устроено вместе.
-3. `DECISIONS.md` — **35 ADR**. Не перечитывать целиком: смотреть те, что
+3. `DECISIONS.md` — **36 ADR**. Не перечитывать целиком: смотреть те, что
    упомянуты в коде и спецификациях.
 4. `REPOSITORY.md` — структура репозиториев.
 5. `IMPLEMENTATION_LOG.md` в каждом реализованном пакете — почему решения приняты
@@ -99,7 +99,7 @@
 
 Итого (тем же методом, посчитано отдельно на каждый модуль): `photon-core`
 **199** (было 165; +34 — `services/session`, Phase 12.5),
-`photon-plugin-runtime` **203** (из них 11 — E2E `tests/integration`
+`photon-plugin-runtime` **205** (из них 11 — E2E `tests/integration`
 против настоящего runtime, и 26 — Phase 11, настоящие процессы через
 `tests/lifecycle`; обе группы входят в те же 203, не считаются дважды),
 `photon-plugin-sdk` **4** (`TestADR031_NoForbiddenImports`,

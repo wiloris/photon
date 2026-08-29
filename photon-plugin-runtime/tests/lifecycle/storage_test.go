@@ -52,8 +52,14 @@ func (s *sharedStorageStore) fullKey(callerPluginID, namespace, key string) stri
 	return "plugin." + callerPluginID + "." + namespace + "|" + key
 }
 
-func (s *sharedStorageStore) handler(callerPluginID string, capture *logCapture) ipc.Handler {
-	return ipc.HandlerFunc(func(_ context.Context, op string, payload []byte) ([]byte, error) {
+// handler намеренно НЕ захватывает plugin_id замыканием: идентичность
+// приходит параметром из конфигурации сессии (ADR-036). Раньше она
+// передавалась при конструировании, и тест доказывал изоляцию лишь при
+// условии, что handler создан правильно; теперь она приходит оттуда же,
+// откуда её получит настоящий исполнитель Phase 13.
+func (s *sharedStorageStore) handler(capture *logCapture) ipc.Handler {
+	return ipc.HandlerFunc(func(_ context.Context, caller ipc.CallerInfo, op string, payload []byte) ([]byte, error) {
+		callerPluginID := caller.PluginID
 		switch op {
 		case "log.write":
 			return capture.capture(payload)
@@ -145,7 +151,7 @@ func runStorageMode(t *testing.T, store *sharedStorageStore, pluginID, mode, val
 		Caller:      ports.PublicKey("storage-test-caller-" + pluginID + "-" + mode),
 		Policy:      policy,
 		Authorizer:  auth,
-		Handler:     store.handler(pluginID, capture),
+		Handler:     store.handler(capture),
 	})
 
 	// context.Background(), not a function-local WithTimeout: Start's

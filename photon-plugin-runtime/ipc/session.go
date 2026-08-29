@@ -64,19 +64,47 @@ var (
 	ErrClosedDuringHandshake = errors.New("ipc: session closed during handshake")
 )
 
+// CallerInfo — идентичность вызывающего плагина (ADR-036).
+//
+// Заполняется сессией из своей конфигурации, установленной Runtime при
+// запуске процесса, и НИКОГДА из содержимого запроса. Плагин в определении
+// своего субъекта не участвует и подделать его не может (docs/ipc.md р. 2);
+// проверяется TestSecurityE2E_HandlerCallerComesFromConfigNotRequest.
+//
+// Структурой, а не двумя аргументами: оба поля обязаны выдаваться вместе.
+// PluginID — ключ namespace-изоляции и домена вывода ключей, PublicKey —
+// субъект авторизации, тот же, что уходит в Authorizer. Разойдутся они —
+// разойдутся и две изоляции: плагин получит права одного и данные другого.
+//
+// Структурой, а не строкой, ещё и затем, чтобы добавление trust level или
+// версии протокола не ломало сигнатуру Handle во второй раз.
+type CallerInfo struct {
+	// PluginID — из манифеста, сверен с HELLO_ACK при handshake.
+	PluginID string
+
+	// PublicKey — субъект авторизации, установлен Runtime при запуске.
+	PublicKey ports.PublicKey
+}
+
 // Handler исполняет разрешённую операцию.
 //
 // Вызывается ТОЛЬКО после успешной авторизации: сессия не передаёт
 // сюда запрос, не прошедший Authorizer.
+//
+// caller передаётся параметром, а не захватывается при конструировании
+// (ADR-036): без идентичности в сигнатуре namespace-изоляция и вывод ключа
+// для crypto.* нереализуемы, а захват замыканием превратил бы изоляцию в
+// соглашение о конструировании — handler, случайно переиспользованный для
+// двух плагинов, молча подставил бы чужой namespace.
 type Handler interface {
-	Handle(ctx context.Context, op string, payload []byte) ([]byte, error)
+	Handle(ctx context.Context, caller CallerInfo, op string, payload []byte) ([]byte, error)
 }
 
 // HandlerFunc — адаптер функции к Handler.
-type HandlerFunc func(ctx context.Context, op string, payload []byte) ([]byte, error)
+type HandlerFunc func(ctx context.Context, caller CallerInfo, op string, payload []byte) ([]byte, error)
 
-func (f HandlerFunc) Handle(ctx context.Context, op string, payload []byte) ([]byte, error) {
-	return f(ctx, op, payload)
+func (f HandlerFunc) Handle(ctx context.Context, caller CallerInfo, op string, payload []byte) ([]byte, error) {
+	return f(ctx, caller, op, payload)
 }
 
 // Config — параметры сессии.
@@ -369,7 +397,14 @@ func (s *Session) handleRequest(ctx context.Context, m *Message) {
 // требующих прав. Отдельный метод, чтобы оба пути шли через один код
 // и не разошлись в обработке ошибок.
 func (s *Session) executeAndRespond(ctx context.Context, m *Message) {
-	payload, err := s.cfg.Handler.Handle(ctx, m.Op, m.Payload)
+	// Идентичность — из конфигурации сессии, не из сообщения (ADR-036).
+	// m.HelloPluginID сюда не попадает намеренно: единственное поле, куда
+	// плагин мог бы вписать чужой id, не участвует в её формировании.
+	caller := CallerInfo{
+		PluginID:  s.cfg.ExpectedPluginID,
+		PublicKey: s.cfg.Caller,
+	}
+	payload, err := s.cfg.Handler.Handle(ctx, caller, m.Op, m.Payload)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			s.respondError(m.RequestID, ErrCancelled, "cancelled")

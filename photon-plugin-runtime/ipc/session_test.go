@@ -41,7 +41,7 @@ func setup(t *testing.T, pluginID string, caller string, granted []string, handl
 	runtimeSide, pluginSide := net.Pipe()
 
 	if handler == nil {
-		handler = HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+		handler = HandlerFunc(func(ctx context.Context, _ CallerInfo, op string, payload []byte) ([]byte, error) {
 			return []byte("ok:" + op), nil
 		})
 	}
@@ -311,7 +311,7 @@ func TestSecurityE2E_UnknownCallerIsUnauthorizedNotForbidden(t *testing.T) {
 		ExpectedPluginID: "com.engram.ghost",
 		ProtocolVersion:  1,
 		Authorizer:       auth,
-		Handler:          HandlerFunc(func(context.Context, string, []byte) ([]byte, error) { return nil, nil }),
+		Handler:          HandlerFunc(func(context.Context, CallerInfo, string, []byte) ([]byte, error) { return nil, nil }),
 		RequestTimeout:   2 * time.Second,
 		HandshakeTimeout: 2 * time.Second,
 	})
@@ -354,12 +354,90 @@ func TestSecurityE2E_PluginIDInRequestIsIgnoredNotTrusted(t *testing.T) {
 	}
 }
 
+// TestSecurityE2E_HandlerCallerComesFromConfigNotRequest — аналог
+// TestSecurityE2E_PluginIDInRequestIsIgnoredNotTrusted, но на уровне Handler
+// (ADR-036).
+//
+// Тот проверяет, что подмена идентичности не проходит через АВТОРИЗАЦИЮ.
+// Этот — что она не доходит и до ИСПОЛНИТЕЛЯ: раз namespace-изоляция и вывод
+// ключа для crypto.* строятся на caller.PluginID, подмена там означала бы
+// доступ к чужим данным даже при корректно выданных правах.
+func TestSecurityE2E_HandlerCallerComesFromConfigNotRequest(t *testing.T) {
+	type seen struct {
+		pluginID string
+		key      ports.PublicKey
+	}
+	got := make(chan seen, 1)
+
+	h := HandlerFunc(func(_ context.Context, caller CallerInfo, _ string, _ []byte) ([]byte, error) {
+		got <- seen{pluginID: caller.PluginID, key: caller.PublicKey}
+		return nil, nil
+	})
+
+	p, s, _ := setup(t, "com.engram.a", "key-a", []string{"storage.read"}, h)
+	runSession(t, s)
+	p.completeHandshake(t, "com.engram.a", 1, nil)
+
+	// Плагин A шлёт разрешённую ему операцию, но помечает запрос как от B —
+	// HelloPluginID единственное поле, куда это можно вписать.
+	Encode(p.conn, &Message{
+		Type:          MsgRequest,
+		RequestID:     1,
+		Op:            "storage.get",
+		HelloPluginID: "com.engram.b",
+	})
+
+	select {
+	case s := <-got:
+		if s.pluginID != "com.engram.a" {
+			t.Fatalf("Handler получил plugin_id из запроса: got %q, want com.engram.a — "+
+				"namespace-изоляция и вывод ключа строятся на этом поле", s.pluginID)
+		}
+		if string(s.key) != "key-a" {
+			t.Errorf("Handler получил чужой публичный ключ: got %q, want key-a", s.key)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Handler не был вызван")
+	}
+}
+
+// Пустой CallerInfo до Handler дойти не может: сессия заполняет его из
+// конфигурации, а конфигурацию проверяет Validate. Тест держит это свойство
+// на месте — исполнитель Phase 13 будет полагаться на непустой PluginID при
+// построении namespace, и молча пустой префикс означал бы общее пространство
+// для всех плагинов.
+func TestSecurityE2E_HandlerCallerIsNeverEmpty(t *testing.T) {
+	got := make(chan CallerInfo, 1)
+	h := HandlerFunc(func(_ context.Context, caller CallerInfo, _ string, _ []byte) ([]byte, error) {
+		got <- caller
+		return nil, nil
+	})
+
+	p, s, _ := setup(t, "com.engram.a", "key-a", []string{"storage.read"}, h)
+	runSession(t, s)
+	p.completeHandshake(t, "com.engram.a", 1, nil)
+
+	Encode(p.conn, &Message{Type: MsgRequest, RequestID: 1, Op: "storage.get"})
+
+	select {
+	case c := <-got:
+		if c.PluginID == "" {
+			t.Error("CallerInfo.PluginID пуст — namespace выродится в общий для всех")
+		}
+		if len(c.PublicKey) == 0 {
+			t.Error("CallerInfo.PublicKey пуст — субъект авторизации потерян")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Handler не был вызван")
+	}
+}
+
 // ── Дедлайны и отмена ───────────────────────────────────────────────
 
 func TestDeadline_RuntimeDeadlineCannotBeExtendedByPlugin(t *testing.T) {
 	// Дедлайн назначает Runtime; плагин не может его отменить или
 	// продлить, даже если операция висит.
-	slow := HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	slow := HandlerFunc(func(ctx context.Context, _ CallerInfo, op string, payload []byte) ([]byte, error) {
 		<-ctx.Done() // висим до отмены
 		return nil, ctx.Err()
 	})
@@ -403,7 +481,7 @@ func TestDeadline_RuntimeDeadlineCannotBeExtendedByPlugin(t *testing.T) {
 
 func TestCancel_StopsInFlightRequest(t *testing.T) {
 	started := make(chan struct{})
-	slow := HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	slow := HandlerFunc(func(ctx context.Context, _ CallerInfo, op string, payload []byte) ([]byte, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -449,7 +527,7 @@ func TestCancel_UnknownRequestIDIsNotAnError(t *testing.T) {
 func TestDuplicateRequestIDRejected(t *testing.T) {
 	blocked := make(chan struct{})
 	release := make(chan struct{})
-	h := HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	h := HandlerFunc(func(ctx context.Context, _ CallerInfo, op string, payload []byte) ([]byte, error) {
 		select {
 		case blocked <- struct{}{}:
 		default:
@@ -514,7 +592,7 @@ func TestEvents_QueueDoesNotGrowUnbounded(t *testing.T) {
 		ExpectedPluginID: "com.engram.silent",
 		ProtocolVersion:  1,
 		Authorizer:       auth,
-		Handler:          HandlerFunc(func(context.Context, string, []byte) ([]byte, error) { return nil, nil }),
+		Handler:          HandlerFunc(func(context.Context, CallerInfo, string, []byte) ([]byte, error) { return nil, nil }),
 		EventQueueSize:   4,
 		HandshakeTimeout: 2 * time.Second,
 	})
@@ -537,7 +615,7 @@ func TestEvents_QueueDoesNotGrowUnbounded(t *testing.T) {
 
 func TestClose_CancelsInFlightRequests(t *testing.T) {
 	cancelled := make(chan struct{})
-	h := HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	h := HandlerFunc(func(ctx context.Context, _ CallerInfo, op string, payload []byte) ([]byte, error) {
 		<-ctx.Done()
 		close(cancelled)
 		return nil, ctx.Err()
@@ -586,7 +664,7 @@ func TestClose_Idempotent(t *testing.T) {
 // ── Конкурентность ──────────────────────────────────────────────────
 
 func TestConcurrentRequests(t *testing.T) {
-	h := HandlerFunc(func(ctx context.Context, op string, payload []byte) ([]byte, error) {
+	h := HandlerFunc(func(ctx context.Context, _ CallerInfo, op string, payload []byte) ([]byte, error) {
 		return []byte("ok"), nil
 	})
 	p, s, _ := setup(t, "com.engram.ssh", "key-ssh", []string{"storage.read"}, h)

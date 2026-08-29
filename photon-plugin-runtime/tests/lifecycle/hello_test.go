@@ -82,7 +82,7 @@ func runHelloOnce(t *testing.T, caller string) host.ExitStatus {
 		Caller:      ports.PublicKey(caller),
 		Policy:      policy,
 		Authorizer:  auth,
-		Handler: ipc.HandlerFunc(func(_ context.Context, op string, _ []byte) ([]byte, error) {
+		Handler: ipc.HandlerFunc(func(_ context.Context, _ ipc.CallerInfo, op string, _ []byte) ([]byte, error) {
 			switch op {
 			case "storage.get":
 				return json.Marshal(map[string]any{"value": []byte(wantValue)})
