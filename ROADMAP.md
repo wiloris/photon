@@ -558,7 +558,7 @@ payload'а, Dispatcher не знает, JSON на проводе или protobuf
 
 ---
 
-### Phase 13 — Dispatcher 🔲
+### Phase 13 — Слой исполнения: Action Routing + Core Operations Handler 🔲
 
 **Идёт после Phase 12.5** (Bridge Session, заведена выше) — без слоя сессии
 Dispatcher не к чему подключить. Phase 12 отложена (DEFERRED) —
@@ -580,10 +580,43 @@ Dispatcher не к чему подключить. Phase 12 отложена (DEF
   заменяя существующий тест, а дополняя его — см. `IMPLEMENTATION_LOG.md`,
   «Phase 11: `storage`».
 
-- [ ] Разбор action code
-- [ ] Маршрутизация в Dispatcher
-- [ ] Handler-цепочка
-- [ ] Формирование Response
+**Спецификация написана до кода:** `photon-core/docs/execution-layer.md`.
+
+**Это две разные вещи под одним названием, и разбор это подтвердил.**
+Прежняя формулировка выше говорила о трёх местах, закрываемых одним
+Dispatcher'ом. Проверка по коду показала, что мест **четыре**, и закрываются
+они двумя компонентами, идущими навстречу друг другу:
+
+- **A — Action Routing** (`photon-core/services/dispatcher`): action-код
+  100–602 → `services/session.Do` → ответ. **Исходящий** прокси к Bridge;
+- **B — Core Operations Handler** (`photon-plugin-runtime`): реализация
+  `ipc.Handler` поверх `ports.Storage`/`Identity`/`Crypto`. **Входящий**
+  брокер, дающий песочнице доступ к локальным портам.
+
+Слить их нельзя: `ipc.Handler` — интерфейс runtime, и реализация его в Core
+означала бы импорт runtime ядром — прямое нарушение ADR-030. Название
+«Dispatcher» на обе части не годится — у B маршрутизации нет вовсе.
+
+**Четвёртое место, не названное прежде:** инстанс не держит сессию.
+`core struct` (`photon-bindings/c/photon.go:77-83`) — `mu`, `lastError`,
+`callback`, `userData`, `destroyed`, и ничего больше. Phase 12.5 построила
+`services/session`, но в C ABI её никто не создаёт. Это общее предусловие
+обеих частей, поэтому фаза одна, а не две.
+
+Противоречия с замороженным ABI нет, хотя выглядит иначе: `Photon_Connect` не
+существует, `Photon_Create` «сети не касается», `Do` не подключается неявно
+(`bridge-session.md` §6 п.5). Ключ в том, что `session.New` тоже сети не
+касается — значит `Photon_Create` может **создать** сессию, не подключая её, а
+подключается часть A явно, слоем выше. Правки ABI и нового ADR не требуется.
+
+Порядок: предусловие → B (проще, не требует сети, закрывает 🟡 Phase 11) → A.
+
+- [ ] §0 — `Photon_Create` строит `Transport` + `Session`, `Photon_Destroy` их закрывает
+- [ ] B — `ipc.Handler` поверх портов, namespace `plugin.<id>.*` на стороне runtime
+- [ ] B — перепрогон storage-теста Phase 11 против `adapters/bbolt` (дополняя, не заменяя)
+- [ ] A — разбор action-кода, вывод `resource`, ленивое подключение
+- [ ] A — `Photon_SendAction` вместо заглушки
+- [ ] Прогон A через `tests/livecheck -mode action` против живого Bridge
 
 ---
 

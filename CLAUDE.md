@@ -29,6 +29,8 @@
 Спецификации (написаны **до** соответствующего кода):
 - `photon-core/adapters/tcp/WIRE_FORMAT.md`
 - `photon-core/docs/bridge-session.md` — Phase 12.5, спецификация слоя сессии
+- `photon-core/docs/execution-layer.md` — Phase 13, спецификация слоя исполнения
+  (Action Routing + Core Operations Handler)
 - `photon-core/docs/plugin-threat-model.md`, `plugin-lifecycle.md`,
   `plugin-manifest.md`, `plugin-ipc.md`
 - `photon-plugin-runtime/docs/` — те же документы плюс `sandbox.md`,
