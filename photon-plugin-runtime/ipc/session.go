@@ -64,6 +64,30 @@ var (
 	ErrClosedDuringHandshake = errors.New("ipc: session closed during handshake")
 )
 
+// OpError — ошибка операции с явно названным кодом протокола.
+//
+// Handler возвращает её, когда исход отличается от «внутренний сбой»:
+// ключа нет (NOT_FOUND), аргумент негоден (INVALID_REQUEST), операция
+// неизвестна (UNSUPPORTED). Без неё всё сводилось бы к INTERNAL_ERROR, и
+// плагин не мог бы отличить свою ошибку от чужой поломки.
+//
+// Msg уходит плагину как есть, поэтому обязан быть пригоден для
+// недоверенной стороны: без путей файлов, имён namespace и прочих деталей
+// реализации. Подробности пишутся в лог runtime, а не сюда
+// (docs/core-operations.md §9).
+type OpError struct {
+	Code ErrorCode
+	Msg  string
+}
+
+func (e *OpError) Error() string { return string(e.Code) + ": " + e.Msg }
+
+// NewOpError — конструктор, чтобы вызывающий не собирал структуру руками
+// и не забыл код.
+func NewOpError(code ErrorCode, msg string) *OpError {
+	return &OpError{Code: code, Msg: msg}
+}
+
 // CallerInfo — идентичность вызывающего плагина (ADR-036).
 //
 // Заполняется сессией из своей конфигурации, установленной Runtime при
@@ -415,6 +439,18 @@ func (s *Session) executeAndRespond(ctx context.Context, m *Message) {
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.respondError(m.RequestID, ErrDeadlineExceeded, "deadline exceeded")
+			return
+		}
+		// Handler может назвать код протокола явно — иначе отличить
+		// «ключа нет» от «сломалось ядро» было бы нечем, и всё
+		// сводилось бы к INTERNAL_ERROR (docs/core-operations.md §9).
+		//
+		// Текст берётся из OpError, а НЕ из err.Error(): сообщения
+		// адаптеров содержат пути файлов и детали хранилища, а ответ
+		// уходит недоверенной стороне.
+		var opErr *OpError
+		if errors.As(err, &opErr) {
+			s.respondError(m.RequestID, opErr.Code, opErr.Msg)
 			return
 		}
 		s.respondError(m.RequestID, ErrInternal, err.Error())
