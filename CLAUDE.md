@@ -29,7 +29,7 @@
 Спецификации (написаны **до** соответствующего кода):
 - `photon-core/adapters/tcp/WIRE_FORMAT.md`
 - `photon-core/docs/bridge-session.md` — Phase 12.5, спецификация слоя сессии
-- `photon-plugin-runtime/docs/core-operations-handler.md` — Phase 13,
+- `photon-plugin-runtime/docs/core-operations.md` — Phase 13,
   спецификация исполнителя операций поверх портов
 - `photon-core/docs/plugin-threat-model.md`, `plugin-lifecycle.md`,
   `plugin-manifest.md`, `plugin-ipc.md`
@@ -474,7 +474,7 @@ Phase 13 и 13.5 после неё разблокируют четыре сущ�
 исполняется тестовыми handler'ами, а не ядром; оговорка 🟡 у «восстановления
 после сбоя» в Phase 11. **Сети и сессии не требует**, ни от чего не зависит —
 поэтому идёт первой. Спецификация:
-`photon-plugin-runtime/docs/core-operations-handler.md`.
+`photon-plugin-runtime/docs/core-operations.md`.
 
 **Phase 13.5 — Action Routing** (`photon-core/services/dispatcher`).
 Маршрутизация C ABI → `session.Do`. Закрывает третье место:

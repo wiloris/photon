@@ -6,7 +6,7 @@
 ## Сейчас
 
 **Phase 13 — Core Operations Handler: спецификация написана, кода нет.**
-`photon-plugin-runtime/docs/core-operations-handler.md`, ждёт просмотра.
+`photon-plugin-runtime/docs/core-operations.md`, ждёт просмотра.
 
 Фазы разделены: **13 — Core Operations Handler** (runtime, поверх портов, ни от
 чего не зависит) и **13.5 — Action Routing** (Core, C ABI → `session.Do`,

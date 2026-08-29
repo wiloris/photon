@@ -1,4 +1,4 @@
-# Core Operations Handler — спецификация (Phase 13)
+# Core Operations — спецификация (Phase 13)
 
 Исполнитель операций каталога поверх портов ядра. Написана **до** кода, как
 `sdk-boundary.md` перед SDK и `sandbox.md` перед sandbox.

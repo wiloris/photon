@@ -581,7 +581,7 @@ Dispatcher не к чему подключить. Phase 12 отложена (DEF
   «Phase 11: `storage`».
 
 **Спецификация написана до кода:**
-`photon-plugin-runtime/docs/core-operations-handler.md`.
+`photon-plugin-runtime/docs/core-operations.md`.
 
 **Исполнитель операций каталога поверх портов ядра.** Реализация `ipc.Handler`
 над `ports.Storage`/`ports.Identity`/`ports.Crypto`. Сейчас единственная

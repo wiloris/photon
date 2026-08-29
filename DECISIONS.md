@@ -1544,7 +1544,7 @@ Authorize(ctx context.Context, caller PublicKey, permission Permission) (bool, e
   `TestSecurityE2E_PluginIDInRequestIsIgnoredNotTrusted`, но на уровне
   `Handler`: тот проверяет, что подмена не проходит через авторизацию, новый —
   что она не проходит и до исполнителя.
-- См. `photon-plugin-runtime/docs/core-operations-handler.md` §3,
+- См. `photon-plugin-runtime/docs/core-operations.md` §3,
   `ipc/session.go`, ADR-032, ADR-021.
 
 ---
@@ -1737,7 +1737,7 @@ challenge когда-нибудь появится структура из не�
   записано и здесь, и в спецификации, и должно попасть в `sdk-boundary.md`.
 - Минус: тесты `services/account`, подписывающие сырой challenge, ломаются.
   См. выше — это признак того, что правка применилась.
-- См. `photon-plugin-runtime/docs/core-operations-handler.md` §7,
+- См. `photon-plugin-runtime/docs/core-operations.md` §7,
   `photon-core/services/account/service.go`, `docs/sdk-boundary.md` §3,
   ADR-021, ADR-020, ADR-036.
 
