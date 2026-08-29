@@ -45,12 +45,14 @@ import (
 )
 
 var (
-	addr      = flag.String("addr", "vpn.wiloris.ru:4443", "адрес Bridge")
-	sessionID = flag.String("session", "", "Session ID Mattermost (обязателен)")
-	mode      = flag.String("mode", "subscribe", "subscribe | action | lost")
-	keepalive = flag.Duration("keepalive", 0, "KeepAlivePeriod клиента; 0 — как в проде")
-	wait      = flag.Duration("wait", 90*time.Second, "окно ожидания push")
-	insecure  = flag.Bool("insecure", false, "не проверять сертификат сервера")
+	addr       = flag.String("addr", "vpn.wiloris.ru:4443", "адрес Bridge")
+	sessionID  = flag.String("session", "", "Session ID Mattermost (обязателен)")
+	mode       = flag.String("mode", "subscribe", "subscribe | action | lost")
+	keepalive  = flag.Duration("keepalive", 0, "KeepAlivePeriod клиента; 0 — как в проде")
+	wait       = flag.Duration("wait", 90*time.Second, "окно ожидания push")
+	lostWindow = flag.Duration("lost-window", 150*time.Second,
+		"сколько молчать в -mode lost. Должно заметно превышать idle-timeout (30 с)")
+	insecure = flag.Bool("insecure", false, "не проверять сертификат сервера")
 )
 
 func main() {
@@ -159,11 +161,13 @@ func runLost(tr *quicadapter.Transport) {
 	s := newSession(tr, session.ModeSubscribe)
 	defer s.Close()
 
-	fmt.Println("  ⏳ Молчим. Ожидается обрыв ~30 с, если сервер тоже не шлёт keep-alive.")
-	fmt.Println("     НЕ отправляйте сообщений — push отменил бы проверку.")
+	fmt.Printf("  ⏳ Молчим %s. НЕ отправляйте сообщений — push отменил бы проверку.\n", *lostWindow)
+	fmt.Println("     Обрыв ~30 с ожидается, ТОЛЬКО если сервер не шлёт keep-alive.")
+	fmt.Println("     С KeepAlivePeriod на сервере обрыва быть не должно — это и есть")
+	fmt.Println("     обратная проверка keep-alive.")
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), *lostWindow)
 	defer cancel()
 
 	_, err := s.AcceptPush(ctx)
@@ -179,8 +183,19 @@ func runLost(tr *quicadapter.Transport) {
 		_, err2 := s.Do(context.Background(), int32(photonpb.Action_ACTION_GET_ME), nil)
 		fmt.Printf("     повторный вызов: %v (lost=%v, notReady=%v)\n", err2,
 			errors.Is(err2, session.ErrConnectionLost), errors.Is(err2, session.ErrNotReady))
+	case errors.Is(err, context.DeadlineExceeded):
+		// Окно истекло, обрыва не было. Для этого режима это НЕ отказ:
+		// именно так выглядит работающий keep-alive на сервере.
+		fmt.Printf("  ✅ обрыва не было за %s — соединение пережило простой\n",
+			elapsed.Round(time.Second))
+		fmt.Printf("     state=%s (ожидалось ready)\n", s.State())
+		if s.State() != session.StateReady {
+			fmt.Println("     ⚠️  но состояние не ready — разобраться")
+			os.Exit(1)
+		}
+
 	default:
-		fmt.Printf("  ❌ через %s пришла НЕ ErrConnectionLost: %v (state=%s)\n",
+		fmt.Printf("  ❌ через %s пришла НЕ ErrConnectionLost и не таймаут окна: %v (state=%s)\n",
 			elapsed.Round(time.Second), err, s.State())
 		os.Exit(1)
 	}
