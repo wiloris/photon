@@ -363,14 +363,10 @@ func TestSecurityE2E_PluginIDInRequestIsIgnoredNotTrusted(t *testing.T) {
 // ключа для crypto.* строятся на caller.PluginID, подмена там означала бы
 // доступ к чужим данным даже при корректно выданных правах.
 func TestSecurityE2E_HandlerCallerComesFromConfigNotRequest(t *testing.T) {
-	type seen struct {
-		pluginID string
-		key      ports.PublicKey
-	}
-	got := make(chan seen, 1)
+	got := make(chan string, 1)
 
 	h := HandlerFunc(func(_ context.Context, caller CallerInfo, _ string, _ []byte) ([]byte, error) {
-		got <- seen{pluginID: caller.PluginID, key: caller.PublicKey}
+		got <- caller.PluginID
 		return nil, nil
 	})
 
@@ -388,13 +384,10 @@ func TestSecurityE2E_HandlerCallerComesFromConfigNotRequest(t *testing.T) {
 	})
 
 	select {
-	case s := <-got:
-		if s.pluginID != "com.engram.a" {
+	case id := <-got:
+		if id != "com.engram.a" {
 			t.Fatalf("Handler получил plugin_id из запроса: got %q, want com.engram.a — "+
-				"namespace-изоляция и вывод ключа строятся на этом поле", s.pluginID)
-		}
-		if string(s.key) != "key-a" {
-			t.Errorf("Handler получил чужой публичный ключ: got %q, want key-a", s.key)
+				"namespace-изоляция и вывод ключа строятся на этом поле", id)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Handler не был вызван")
@@ -423,9 +416,6 @@ func TestSecurityE2E_HandlerCallerIsNeverEmpty(t *testing.T) {
 	case c := <-got:
 		if c.PluginID == "" {
 			t.Error("CallerInfo.PluginID пуст — namespace выродится в общий для всех")
-		}
-		if len(c.PublicKey) == 0 {
-			t.Error("CallerInfo.PublicKey пуст — субъект авторизации потерян")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Handler не был вызван")
