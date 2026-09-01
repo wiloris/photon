@@ -17,12 +17,11 @@ package main
 import "C"
 
 import (
-	"encoding/json"
 	"runtime/cgo"
 	"sync"
 	"unsafe"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
+	"github.com/wiloris/photon-core/services/dispatcher"
 )
 
 // main требуется для -buildmode=c-shared, тело не используется.
@@ -80,11 +79,28 @@ type core struct {
 	callback  C.PhotonEventCallback
 	userData  unsafe.Pointer
 	destroyed bool
+
+	// disp — маршрутизатор действий этого инстанса (Phase 13.5). Своё поле
+	// на каждый хендл, не пакетная переменная: адресат — это сам
+	// PhotonHandle, и два Photon_Create с разным config_json обязаны дать два
+	// независимых адресата (action-routing.md §8).
+	//
+	// nil означает «инстанс уничтожается»: Photon_Destroy забирает
+	// диспетчер под мьютексом и закрывает его уже снаружи.
+	disp *dispatcher.Dispatcher
 }
 
 func (c *core) setError(msg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Вызов в полёте может дойти сюда уже после Photon_Destroy: тот
+	// освободил lastError и больше сюда не вернётся, поэтому новая строка
+	// осталась бы висеть навсегда. Не «защитное программирование» — прямое
+	// следствие того, что с Phase 13.5 SendAction живёт на сети дольше, чем
+	// длится вызов Destroy из другого потока.
+	if c.destroyed {
+		return
+	}
 	if c.lastError != nil {
 		C.free(unsafe.Pointer(c.lastError))
 	}
@@ -148,12 +164,23 @@ func Photon_Create(configJSON *C.char, handle **C.PhotonHandle) C.PhotonResult {
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
 
-	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(C.GoString(configJSON)), &parsed); err != nil {
+	// Схема config_json — доменное знание, поэтому разбор живёт в Core, а не
+	// здесь: иначе он был бы переписан заново в каждом биндинге (JNI,
+	// Desktop, будущие Rust/Swift). См. action-routing.md §4.1.
+	cfg, err := dispatcher.ParseConfig([]byte(C.GoString(configJSON)))
+	if err != nil {
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
 
-	*handle = (*C.PhotonHandle)(newOpaqueHandle(&core{}))
+	// Сети не касается: dispatcher.New строит объекты, подключение
+	// происходит по требованию при первом SendAction (D-1). Обещание
+	// заголовка «ни одного сетевого пакета до возврата» держится здесь.
+	disp, err := dispatcher.New(cfg)
+	if err != nil {
+		return C.PHOTON_ERR_INVALID_ARGUMENT
+	}
+
+	*handle = (*C.PhotonHandle)(newOpaqueHandle(&core{disp: disp}))
 	return C.PHOTON_OK
 }
 
@@ -183,18 +210,33 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 		return
 	}
 	c.destroyed = true
+	disp := c.disp
+	c.disp = nil
 	if c.lastError != nil {
 		C.free(unsafe.Pointer(c.lastError))
 		c.lastError = nil
 	}
 	c.mu.Unlock()
 
-	// Гарантия callback lifetime (photon_core.h, Photon_Destroy): после
-	// возврата из этой функции callback не будет вызван снова. Сегодня
-	// это тривиально — фоновых горутин, вызывающих callback, ещё не
-	// существует (Dispatcher/Transport — Phase 6/13, не реализованы).
-	// Когда они появятся, здесь обязано появиться реальное ожидание их
-	// завершения (WaitGroup) — эта строка фиксирует место.
+	// Настоящее ожидание, а не пометка «здесь однажды появится WaitGroup»:
+	// с Phase 13.5 существует фоновая работа, переживающая возврат из
+	// вызова, — SendAction, висящий на сети, и идущее подключение.
+	//
+	// dispatcher.Close сначала ОТМЕНЯЕТ их и только потом ждёт. Ожидание без
+	// отмены висело бы до call_timeout — ровно то зависание, которое Phase 9
+	// нашла тестом отказа на host.Stop с неотвечающим плагином.
+	//
+	// Закрывается вне c.mu: Close ждёт возврата вызовов, а те могут
+	// обратиться к setError и взяли бы тот же мьютекс.
+	//
+	// После возврата отсюда ни один вызов больше не пользуется этим core —
+	// это и есть предусловие гарантии lifetime из photon_core.h. Колбэк
+	// сегодня не вызывает никто (эмиттера событий нет — push за рамками
+	// фазы), но механизм ожидания уже здесь, и эмиттеру останется встать в
+	// ту же очередь.
+	if disp != nil {
+		disp.Close()
+	}
 
 	releaseOpaqueHandle(unsafe.Pointer(handle), h, true)
 }
@@ -235,13 +277,6 @@ func Photon_SendAction(handle *C.PhotonHandle, actionCode C.int32_t, payloadJSON
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
 
-	// action_code валидируется против канонического источника —
-	// photon-core/protobuf (ADR-025), не против локальной копии списка.
-	if _, known := photonpb.Action_name[int32(actionCode)]; !known || actionCode == 0 {
-		c.setError("unknown action_code")
-		return C.PHOTON_ERR_INVALID_ACTION
-	}
-
 	if payloadJSON == nil {
 		c.setError("payload_json is required")
 		return C.PHOTON_ERR_INVALID_ARGUMENT
@@ -249,15 +284,73 @@ func Photon_SendAction(handle *C.PhotonHandle, actionCode C.int32_t, payloadJSON
 	// payload_json — собственность вызывающего до и после вызова
 	// (photon_core.h); GoString копирует байты в Go-память здесь,
 	// указатель дальше не хранится.
-	_ = C.GoString(payloadJSON)
+	payload := []byte(C.GoString(payloadJSON))
 
-	// Dispatcher (Phase 13) не реализован — нет service-уровня, который
-	// мог бы выполнить это действие. Честный "не реализовано", а не
-	// притворная успешность.
-	c.setError("action not yet implemented: dispatcher (Phase 13) does not exist")
-	if responseOut != nil {
-		*responseOut = nil
+	c.mu.Lock()
+	disp := c.disp
+	c.mu.Unlock()
+	if disp == nil {
+		// Гонка с Photon_Destroy: хендл ещё не освобождён, но инстанс уже
+		// уходит. Повторять вызов не на чем — это не «нет связи».
+		c.setError("instance is being destroyed")
+		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
+
+	// Валидности action_code здесь НЕТ намеренно. Она уехала в Core вместе с
+	// импортом photonpb: bindings отвечает за гигиену ABI (хендл, nil,
+	// владение памятью), а знание о том, какие action-коды существуют, —
+	// доменное (action-routing.md §5.1). Свойство «неизвестный код
+	// отвергается без обращения к сети» при этом сохранено: диспетчер
+	// проверяет код первым делом, до состояния связи и до её наличия.
+	resp, err := disp.SendAction(int32(actionCode), payload)
+	if err != nil {
+		c.setError(err.Error())
+		return resultFor(dispatcher.Classify(err))
+	}
+
+	// *responseOut устанавливается ТОЛЬКО при PHOTON_OK — прямое требование
+	// photon_core.h. Записать туда NULL на пути ошибки было бы нарушением
+	// того же правила с практическим следствием: если вызывающий держит там
+	// ещё не освобождённый PhotonString от прошлого вызова, он потеряет
+	// указатель и вместе с ним память.
+	if responseOut != nil {
+		*responseOut = newPhotonString(string(resp))
+	}
+	return C.PHOTON_OK
+}
+
+// resultFor переводит класс исхода в код ABI.
+//
+// Таблица «ошибка → класс» живёт в Core (dispatcher.Classify) — там её можно
+// проверить на полноту относительно исходников session/errors.go. Здесь
+// остаётся то, что действительно принадлежит границе: соответствие класса
+// значению enum PhotonResult.
+//
+// Enum не расширяется (D-3): ErrNotReady и ErrConnectionLost сходятся в
+// PHOTON_ERR_NOT_CONNECTED, потому что оба ведут клиента к одному решению —
+// повторить вызов, который и переподключится. Различие между ними
+// сохраняется в тексте Photon_GetLastError, где оно диагностическое, а не
+// управляющее.
+func resultFor(class dispatcher.Class) C.PhotonResult {
+	switch class {
+	case dispatcher.ClassOK:
+		return C.PHOTON_OK
+	case dispatcher.ClassInvalidArgument:
+		return C.PHOTON_ERR_INVALID_ARGUMENT
+	case dispatcher.ClassInvalidAction:
+		return C.PHOTON_ERR_INVALID_ACTION
+	case dispatcher.ClassNotConnected:
+		return C.PHOTON_ERR_NOT_CONNECTED
+	case dispatcher.ClassPermissionDenied:
+		return C.PHOTON_ERR_PERMISSION_DENIED
+	case dispatcher.ClassTimeout:
+		return C.PHOTON_ERR_TIMEOUT
+	case dispatcher.ClassInternal:
+		return C.PHOTON_ERR_INTERNAL
+	}
+	// Недостижимо при исчерпывающем switch выше; молчать нельзя — новый
+	// класс без строки здесь обязан выглядеть как внутренняя ошибка, а не
+	// как успех.
 	return C.PHOTON_ERR_INTERNAL
 }
 

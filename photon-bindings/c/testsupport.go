@@ -6,7 +6,11 @@ package main
 */
 import "C"
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"github.com/wiloris/photon-core/services/dispatcher"
+)
 
 // Файл существует из-за ограничения Go: cgo не поддерживается в
 // _test.go файлах ("use of cgo in test ... not supported"). Поэтому
@@ -47,7 +51,15 @@ var (
 	tsErrInvalidArgument = int(C.PHOTON_ERR_INVALID_ARGUMENT)
 	tsErrInternal        = int(C.PHOTON_ERR_INTERNAL)
 	tsErrInvalidAction   = int(C.PHOTON_ERR_INVALID_ACTION)
+
+	// Появились в Phase 13.5: до неё ни один путь их не возвращал.
+	tsErrNotConnected     = int(C.PHOTON_ERR_NOT_CONNECTED)
+	tsErrPermissionDenied = int(C.PHOTON_ERR_PERMISSION_DENIED)
+	tsErrTimeout          = int(C.PHOTON_ERR_TIMEOUT)
 )
+
+// tsResultFor открывает resultFor тестам, не таща в них типы C.
+func tsResultFor(class dispatcher.Class) int { return int(resultFor(class)) }
 
 // ── Обёртки над экспортируемыми функциями, принимающие/возвращающие
 //    Go-типы вместо C-типов ────────────────────────────────────────────

@@ -38,7 +38,7 @@ fun main(args: Array<String>) {
             check("sendAction(100) throws PhotonException", false, "no exception thrown")
         } catch (e: PhotonException) {
             check("sendAction(100) throws PhotonException",
-                  e.code == PhotonNative.PHOTON_ERR_INTERNAL, "got code=${e.code}")
+                  e.code == PhotonNative.PHOTON_ERR_NOT_CONNECTED, "got code=${e.code}")
             check("PhotonException carries native message",
                   !e.nativeMessage.isNullOrEmpty(), "message=${e.nativeMessage}")
             println("       (message: \"${e.message}\")")
@@ -93,10 +93,10 @@ fun main(args: Array<String>) {
     b.close()
     try {
         a.sendAction(100, "{}")
-        check("closing b does not affect a", false, "no exception (expected INTERNAL)")
+        check("closing b does not affect a", false, "no exception (expected NOT_CONNECTED)")
     } catch (e: PhotonException) {
         check("closing b does not affect a",
-              e.code == PhotonNative.PHOTON_ERR_INTERNAL, "got code=${e.code}")
+              e.code == PhotonNative.PHOTON_ERR_NOT_CONNECTED, "got code=${e.code}")
     }
     a.close()
 

@@ -24,30 +24,39 @@
 //	go run ./tests/livecheck -mode subscribe -session <Session ID>
 //	go run ./tests/livecheck -mode action    -session <Session ID>
 //	go run ./tests/livecheck -mode lost      -session <Session ID>
+//	go run ./tests/livecheck -mode dispatch  -session <Session ID>
+//
+// Режим dispatch добавлен в Phase 13.5 и проверяет ДРУГОЙ слой: не
+// services/session напрямую, а services/dispatcher поверх неё — то есть путь,
+// которым идёт Photon_SendAction. Без него прогон подтверждал бы слой, который
+// и так был проверен в Phase 12.5, а добавленный — нет.
 //
 // Session ID — это Session.Id, а НЕ токен из /users/login: имя поля
 // session_token на проводе историческое (bridge-session.md §2.1).
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	quicadapter "github.com/wiloris/photon-core/adapters/quic"
 	"github.com/wiloris/photon-core/ports"
 	photonpb "github.com/wiloris/photon-core/protobuf"
+	"github.com/wiloris/photon-core/services/dispatcher"
 	"github.com/wiloris/photon-core/services/session"
 )
 
 var (
 	addr       = flag.String("addr", "vpn.wiloris.ru:4443", "адрес Bridge")
 	sessionID  = flag.String("session", "", "Session ID Mattermost (обязателен)")
-	mode       = flag.String("mode", "subscribe", "subscribe | action | lost")
+	mode       = flag.String("mode", "subscribe", "subscribe | action | lost | dispatch")
 	keepalive  = flag.Duration("keepalive", 0, "KeepAlivePeriod клиента; 0 — как в проде")
 	wait       = flag.Duration("wait", 90*time.Second, "окно ожидания push")
 	lostWindow = flag.Duration("lost-window", 150*time.Second,
@@ -79,8 +88,10 @@ func main() {
 		runAction(tr)
 	case "lost":
 		runLost(tr)
+	case "dispatch":
+		runDispatch(tr)
 	default:
-		fmt.Fprintf(os.Stderr, "-mode: subscribe | action | lost, получено %q\n", *mode)
+		fmt.Fprintf(os.Stderr, "-mode: subscribe | action | lost | dispatch, получено %q\n", *mode)
 		os.Exit(2)
 	}
 }
@@ -151,6 +162,75 @@ func runAction(tr *quicadapter.Transport) {
 		}
 		fmt.Printf("  ✅ %s (%d): ok, data (%d байт): %s\n",
 			a.name, a.code, len(resp.Data), truncate(string(resp.Data), 300))
+	}
+}
+
+// runDispatch гоняет services/dispatcher — слой, который добавляет Phase 13.5.
+//
+// Проверяет ровно то, чего фиктивный транспорт показать не может: что
+// подключение по требованию и синглфлайт работают на настоящей сети, и что
+// конверт ответа доходит до границы ABI в том виде, в каком его получит
+// клиент.
+func runDispatch(tr *quicadapter.Transport) {
+	fmt.Println("\n── services/dispatcher: action через диспетчер ──")
+
+	d, err := dispatcher.New(dispatcher.Config{
+		Endpoint:     ports.Endpoint(*addr),
+		SessionToken: *sessionID,
+		Transport:    tr,
+	})
+	if err != nil {
+		fatal("dispatcher.New", err)
+	}
+	defer d.Close()
+
+	// Неизвестный код обязан отвергаться БЕЗ сети — на живом сервере это
+	// видно по тому, что ответ приходит мгновенно и соединение не
+	// устанавливается.
+	if _, err := d.SendAction(424242, []byte(`{}`)); err != nil {
+		fmt.Printf("  ✅ неизвестный код отвергнут без сети: %v (класс %s)\n",
+			err, dispatcher.Classify(err))
+	} else {
+		fmt.Println("  ❌ неизвестный код принят")
+		os.Exit(1)
+	}
+
+	// Параллельные вызовы на свежем диспетчере: подключение обязано
+	// состояться один раз. На живой сети это единственный способ увидеть
+	// синглфлайт в настоящих таймингах.
+	var wg sync.WaitGroup
+	results := make([]string, 4)
+	start := time.Now()
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp, err := d.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`))
+			if err != nil {
+				results[i] = fmt.Sprintf("❌ %v (класс %s)", err, dispatcher.Classify(err))
+				return
+			}
+			results[i] = "✅ " + truncate(string(resp), 200)
+		}(i)
+	}
+	wg.Wait()
+	fmt.Printf("  4 параллельных getMe за %s:\n", time.Since(start).Round(time.Millisecond))
+	for i, r := range results {
+		fmt.Printf("     [%d] %s\n", i, r)
+	}
+
+	// Отрицательный ответ сервера: обязан прийти конвертом с ok:false, а не
+	// ошибкой вызова (ADR-038).
+	resp, err := d.SendAction(int32(photonpb.Action_ACTION_GET_MY_CHANNELS), []byte(`{}`))
+	switch {
+	case err != nil:
+		fmt.Printf("  ⚠️  getMyChannels вернул ошибку вызова: %v (класс %s)\n",
+			err, dispatcher.Classify(err))
+	case bytes.Contains(resp, []byte(`"ok":false`)):
+		fmt.Printf("  ✅ отказ сервера пришёл КОНВЕРТОМ, а не кодом: %s\n",
+			truncate(string(resp), 300))
+	default:
+		fmt.Printf("  ✅ getMyChannels: %s\n", truncate(string(resp), 300))
 	}
 }
 

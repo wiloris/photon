@@ -128,11 +128,16 @@ public class PhotonJniTest {
               PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_INVALID_ACTION,
               "got rc=" + PhotonNative.lastSendActionResult());
 
-        // Известный код (100 = ACTION_CREATE_POST), но Dispatcher (Phase 13)
-        // не реализован -> PHOTON_ERR_INTERNAL, НЕ INVALID_ACTION
+        // Известный код (100 = ACTION_CREATE_POST) на инстансе, созданном из
+        // "{}", то есть без секции bridge: адресата нет ->
+        // PHOTON_ERR_NOT_CONNECTED, НЕ INVALID_ACTION.
+        //
+        // До Phase 13.5 здесь стояла PHOTON_ERR_INTERNAL — честная заглушка
+        // "dispatcher не существует". Смена кода — смена контракта, а не
+        // регресс (photon-core/docs/action-routing.md §10).
         PhotonNative.sendAction(h, 100, "{}");
-        check("sendAction(known code 100): INTERNAL, not INVALID_ACTION",
-              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_INTERNAL,
+        check("sendAction(known code 100): NOT_CONNECTED, not INVALID_ACTION",
+              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_NOT_CONNECTED,
               "got rc=" + PhotonNative.lastSendActionResult());
 
         // Все известные коды не должны отвергаться как INVALID_ACTION
@@ -205,14 +210,17 @@ public class PhotonJniTest {
 
         PhotonNative.destroy(h2);
 
-        // h1 и h3 должны остаться валидными после уничтожения h2
+        // h1 и h3 должны остаться валидными после уничтожения h2.
+        // NOT_CONNECTED, а не INVALID_ARGUMENT: хендл жив, у инстанса просто
+        // нет адресата (создан из "{}"). Именно эта разница и показывает, что
+        // сосед не пострадал (action-routing.md §8).
         PhotonNative.sendAction(h1, 100, "{}");
         check("destroying h2 does not invalidate h1",
-              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_INTERNAL,
+              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_NOT_CONNECTED,
               "got rc=" + PhotonNative.lastSendActionResult());
         PhotonNative.sendAction(h3, 100, "{}");
         check("destroying h2 does not invalidate h3",
-              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_INTERNAL,
+              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_NOT_CONNECTED,
               "got rc=" + PhotonNative.lastSendActionResult());
 
         PhotonNative.destroy(h1);

@@ -1,8 +1,14 @@
 package main
 
 import (
+	"fmt"
+	"net"
+	"strings"
 	"testing"
+	"time"
 	"unsafe"
+
+	"github.com/wiloris/photon-core/services/dispatcher"
 )
 
 // Тесты не используют cgo напрямую (Go не поддерживает cgo в _test.go
@@ -175,13 +181,100 @@ func TestSendAction_ZeroActionCodeIsInvalid(t *testing.T) {
 	}
 }
 
-func TestSendAction_KnownActionCode_NotYetImplemented(t *testing.T) {
-	// 100 = ACTION_CREATE_POST — валидный код, но Dispatcher (Phase 13)
-	// не реализован => честная PHOTON_ERR_INTERNAL, не INVALID_ACTION.
+func TestSendAction_KnownActionCodeWithoutBridge(t *testing.T) {
+	// 100 = ACTION_CREATE_POST — валидный код. Инстанс создан из `{}`, то
+	// есть без секции bridge: адресата нет, и это законное состояние
+	// (action-routing.md §4.2), а не ошибка аргументов.
+	//
+	// До Phase 13.5 здесь стояла PHOTON_ERR_INTERNAL — честная заглушка
+	// «dispatcher не существует». Смена кода — смена контракта, а не
+	// регресс: исполнитель появился.
 	h := mustCreate(t, `{}`)
 	rc, _ := tsSendAction(h, 100, cstr(t, `{}`), true)
-	if rc != tsErrInternal {
-		t.Fatalf("rc = %d, want PHOTON_ERR_INTERNAL (known action, not implemented)", rc)
+	if rc != tsErrNotConnected {
+		t.Fatalf("rc = %d, want PHOTON_ERR_NOT_CONNECTED (known action, no bridge configured)", rc)
+	}
+	msg := tsGetLastError(h)
+	if msg == nil || !strings.Contains(tsGoString(msg), "endpoint") {
+		t.Fatalf("GetLastError = %q — причина должна называть отсутствующий endpoint", tsGoString(msg))
+	}
+}
+
+// Свойство, которое нельзя потерять при переезде валидации в Core: код
+// проверяется РАНЬШЕ связи и её наличия. Проверяется здесь, на границе ABI,
+// потому что именно здесь оно видно клиенту.
+func TestSendAction_UnknownActionBeatsMissingBridge(t *testing.T) {
+	h := mustCreate(t, `{}`)
+	rc, _ := tsSendAction(h, 424242, cstr(t, `{}`), true)
+	if rc != tsErrInvalidAction {
+		t.Fatalf("rc = %d, want PHOTON_ERR_INVALID_ACTION, а не отказ по отсутствию адресата", rc)
+	}
+}
+
+// Соответствие класса исхода коду ABI. Таблица «ошибка → класс» проверяется
+// на полноту в Core (TestT8_ClassifyCoversEverySentinel); здесь — что каждый
+// класс отображён в свой код, и что ни один не уехал в INTERNAL молча.
+func TestResultForCoversEveryClass(t *testing.T) {
+	cases := []struct {
+		class dispatcher.Class
+		want  int
+		name  string
+	}{
+		{dispatcher.ClassOK, tsOK, "ok"},
+		{dispatcher.ClassInvalidArgument, tsErrInvalidArgument, "invalid_argument"},
+		{dispatcher.ClassInvalidAction, tsErrInvalidAction, "invalid_action"},
+		{dispatcher.ClassNotConnected, tsErrNotConnected, "not_connected"},
+		{dispatcher.ClassPermissionDenied, tsErrPermissionDenied, "permission_denied"},
+		{dispatcher.ClassTimeout, tsErrTimeout, "timeout"},
+		{dispatcher.ClassInternal, tsErrInternal, "internal"},
+	}
+	for _, tc := range cases {
+		if got := tsResultFor(tc.class); got != tc.want {
+			t.Errorf("resultFor(%s) = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// T-10 на границе ABI: Photon_Destroy над вызовом, висящим на сети.
+//
+// Чёрная дыра на loopback: тест сам открывает UDP-сокет и не отвечает на нём
+// ничего. Именно ОТКРЫТЫЙ сокет, а не свободный порт — на закрытый ядро
+// пришлёт ICMP port unreachable, вызов упадёт быстро, и тест перестанет
+// проверять то, ради чего написан.
+func TestDestroy_CancelsInflightSendAction(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("blackhole: %v", err)
+	}
+	defer pc.Close()
+
+	cfg := fmt.Sprintf(`{"bridge":{"endpoint":%q,"session_token":"t",
+		"connect_timeout_ms":600000,"call_timeout_ms":600000}}`, pc.LocalAddr().String())
+	h := mustCreate(t, cfg)
+
+	callDone := make(chan int, 1)
+	go func() {
+		rc, _ := tsSendAction(h, 100, cstr(t, `{}`), true)
+		callDone <- rc
+	}()
+	time.Sleep(300 * time.Millisecond) // дать вызову уйти в подключение
+
+	destroyed := make(chan struct{})
+	go func() { tsDestroy(h); close(destroyed) }()
+
+	select {
+	case <-destroyed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Photon_Destroy не вернулся — ожидание без отмены")
+	}
+
+	select {
+	case rc := <-callDone:
+		if rc == tsOK {
+			t.Fatal("висящий вызов вернул PHOTON_OK после Destroy")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("вызов не разблокировался после Destroy")
 	}
 }
 
@@ -231,8 +324,8 @@ func TestSendAction_NilResponseOutIsAllowed(t *testing.T) {
 	// вместо response_out не должна падать.
 	h := mustCreate(t, `{}`)
 	rc, _ := tsSendAction(h, 100, cstr(t, `{}`), false)
-	if rc != tsErrInternal {
-		t.Fatalf("rc = %d, want PHOTON_ERR_INTERNAL", rc)
+	if rc != tsErrNotConnected {
+		t.Fatalf("rc = %d, want PHOTON_ERR_NOT_CONNECTED", rc)
 	}
 }
 

@@ -27,6 +27,7 @@
 go run ./tests/livecheck -mode subscribe -session <Session ID>   # приём push
 go run ./tests/livecheck -mode action    -session <Session ID>   # getMe, getMyChannels
 go run ./tests/livecheck -mode lost      -session <Session ID>   # обрыв по idle-timeout
+go run ./tests/livecheck -mode dispatch  -session <Session ID>   # через services/dispatcher
 ```
 
 `-session` — **Session ID** (`Session.Id`), а не токен из `/users/login`. Имя
@@ -43,6 +44,12 @@ go run ./tests/livecheck -mode lost      -session <Session ID>   # обрыв п
 | `subscribe` | `AcceptPush`, разбор `Push`, значение `UserID` | да — отправить сообщение в Mattermost |
 | `action` | `Do`, положительный и отрицательный ответ | нет, обе операции читающие |
 | `lost` | `ErrConnectionLost`, состояние, повторный вызов | нет — но сообщений слать НЕЛЬЗЯ, push отменит проверку |
+| `dispatch` | `services/dispatcher`: подключение по требованию, синглфлайт на настоящих таймингах, конверт ответа, отказ сервера как `ok:false` | нет, обе операции читающие |
+
+`dispatch` появился в Phase 13.5 и проверяет **другой слой**, а не тот же
+другим способом: `action` гоняет `services/session` напрямую, `dispatch` — путь
+`Photon_SendAction` целиком, кроме самой границы C. Прогон через собранную
+`.so` остаётся непроверенным (`docs/action-routing.md` §12 п. 2).
 
 `lost` рассчитан на **штатный** idle-timeout: клиент keep-alive не шлёт, и если
 сервер тоже не шлёт, обрыв приходит на 30-й секунде.
