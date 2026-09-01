@@ -20,7 +20,7 @@
 0. `CURRENT_TASK.md` — над чем идёт работа прямо сейчас. Читать первым.
 1. `ROADMAP.md` — 25 фаз со статусами. Источник истины о том, что сделано.
 2. `ARCHITECTURE.md` — как всё устроено вместе.
-3. `DECISIONS.md` — **37 ADR**. Не перечитывать целиком: смотреть те, что
+3. `DECISIONS.md` — **38 ADR**. Не перечитывать целиком: смотреть те, что
    упомянуты в коде и спецификациях.
 4. `REPOSITORY.md` — структура репозиториев.
 5. `IMPLEMENTATION_LOG.md` в каждом реализованном пакете — почему решения приняты
@@ -31,6 +31,8 @@
 - `photon-core/docs/bridge-session.md` — Phase 12.5, спецификация слоя сессии
 - `photon-plugin-runtime/docs/core-operations.md` — Phase 13,
   спецификация исполнителя операций поверх портов
+- `photon-core/docs/action-routing.md` — Phase 13.5, спецификация
+  маршрутизации `Photon_SendAction` → сессия (ADR-038)
 - `photon-core/docs/plugin-threat-model.md`, `plugin-lifecycle.md`,
   `plugin-manifest.md`, `plugin-ipc.md`
 - `photon-plugin-runtime/docs/` — те же документы плюс `sandbox.md`,
