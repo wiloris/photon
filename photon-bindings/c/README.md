@@ -19,29 +19,55 @@
 ## Сборка
 
 ```sh
-go build -buildmode=c-shared -o photon_core.so .
+go build -buildmode=c-shared -o build/photon_core.so .
 ```
+
+**Собирать только в отдельный каталог.** `-buildmode=c-shared` генерирует
+заголовок рядом с выходным файлом и по его имени, поэтому команда
+`go build -buildmode=c-shared -o photon_core.so .` **молча затирает
+`photon_core.h`** — замороженный публичный контракт ABI (ADR-008) — сгенерённым
+cgo заголовком. Сборка при этом завершается успешно, и потеря обнаруживается
+только по `git diff`, а при невнимательном коммите не обнаруживается вовсе.
+
+Так здесь и было записано до Phase 13.5: команда из этого README уничтожала
+заголовок при первом же выполнении.
 
 ## Тесты
 
 ```sh
-go test .          # 32 теста контракта
+go test .          # 35 тестов контракта
 go test -race .    # race detector
 
 # leak-check (после сборки .so)
-gcc -o leakcheck_handles leakcheck_handles.c -L. -l:photon_core.so -Wl,-rpath,. && ./leakcheck_handles
-gcc -o leakcheck_strings leakcheck_strings.c -L. -l:photon_core.so -Wl,-rpath,. && ./leakcheck_strings
+gcc -o build/leakcheck_handles leakcheck_handles.c -Lbuild -l:photon_core.so -Wl,-rpath,'$ORIGIN' && ./build/leakcheck_handles
+gcc -o build/leakcheck_strings leakcheck_strings.c -Lbuild -l:photon_core.so -Wl,-rpath,'$ORIGIN' && ./build/leakcheck_strings
 ```
+
+`//go:build ignore` в начале обоих `leakcheck_*.c` — не украшение: без него cgo
+подхватывает их как часть пакета, и `go test` падает на «повторном определении
+`main`». Именно из-за этого тесты пакета раньше не запускались из репозитория.
 
 ## Результаты проверки (Go 1.22.2, linux/amd64)
 
 - `go build -buildmode=c-shared` — OK, 12 символов `Photon_*` экспортированы
-- `go test .` — **32/32 PASS**
+- `go test .` — **35/35 PASS** (было 32; +3 в Phase 13.5)
 - `go test -race .` — PASS
 - `go vet` — чисто (0 предупреждений)
 - `gofmt -l` — чисто
-- Leak-check handles: рост RSS выравнивается (1036 → 4 → 8 → −384 КБ за интервал) — арены Go-рантайма, не утечка
-- Leak-check strings: 64 КБ на 500k перезаписей `lastError` — фактически ноль
+- Leak-check handles: рост RSS выравнивается (164 → 240 → 24 → −160 КБ за интервал) — арены Go-рантайма, не утечка
+- Leak-check strings: 212 КБ суммарно за 400k перезаписей `lastError`, интервалы без тренда (224 → 52 → −8 → −56 КБ)
+
+Оба leak-check'а проверены **мутацией**, а не только зелёным прогоном: с
+убранным `C.free` в `setError` вердикт строк становится `LEAKS` — 4,8 МБ на
+каждые 100k итераций, 19 280 КБ суммарно против порога 1024. Разница с чистой
+сборкой (212 КБ, интервалы колеблются вокруг нуля) — два порядка, так что
+критерий отличает утечку от шума с большим запасом.
+
+Критерий строк переписан на интервальный в ходе этой проверки: прежний мерил
+одно окно и после Phase 13.5 начал выдавать `LEAKS` при полном отсутствии
+утечки — путь ошибки стал аллоцировать на стороне Go, и куча выходит на
+устойчивый уровень не мгновенно. Измерено на 2 млн итераций: весь рост — в
+первых 100k, дальше RSS колеблется в коридоре 14 872–15 528 КБ без тренда.
 
 ## Найденный и исправленный баг
 

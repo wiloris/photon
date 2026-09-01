@@ -11,6 +11,12 @@
 /photon-bindings/c/leakcheck_handles
 /photon-bindings/c/leakcheck_strings
 
+# Каталог сборки bindings. Собирать .so ТОЛЬКО сюда: -buildmode=c-shared
+# кладёт рядом с выходным файлом сгенерённый заголовок, названный по нему, и
+# сборка в корень пакета молча затирает photon_core.h — замороженный контракт
+# ABI (ADR-008). См. photon-bindings/c/README.md.
+/photon-bindings/c/build/
+
 # go.sum is intentionally NOT ignored — it is checked in and reviewed like any
 # other dependency-integrity file (see CLAUDE.md, "Замечания по окружению").
 
