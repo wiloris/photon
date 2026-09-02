@@ -46,30 +46,69 @@ U Photon_StringData
 
 ## Сборка
 
+Все шаги — от корня репозитория, каждый в своей подоболочке: `cd` внутри
+`(...)` не переживает скобку, поэтому шаги независимы и порядок `cd` не
+накапливается.
+
 ```sh
-# 1. Собрать C ABI библиотеку
-cd photon-bindings/c
-go build -buildmode=c-shared -o libphoton_core.so .
+# 1. Собрать C ABI библиотеку — ТОЛЬКО в build/
+(cd photon-bindings/c && go build -buildmode=c-shared -o build/libphoton_core.so .)
 
 # 2. Сгенерировать JNI-заголовок
-cd photon-bindings/android/java
-javac -h ../jni -d /tmp/out dev/photon/core/PhotonNative.java
+(cd photon-bindings/android/java && javac -h ../jni -d /tmp/out dev/photon/core/PhotonNative.java)
 
 # 3. Собрать JNI-мост
-cd ../jni
-JAVA_INC=$JAVA_HOME/include
-gcc -shared -fPIC -I"$JAVA_INC" -I"$JAVA_INC/linux" -I. \
-    -o libphoton_jni.so photon_jni.c \
-    -L../../c -l:libphoton_core.so -Wl,-rpath,../../c -Wall -Wextra
+#    -I../../c обязателен: photon_jni.c включает "photon_core.h" — ЗАМОРОЖЕННЫЙ
+#    контракт, а он лежит только там. Библиотека берётся из build/, заголовок —
+#    из исходников; это разные каталоги, и путать их нельзя
+(cd photon-bindings/android/jni && JAVA_INC=$JAVA_HOME/include && \
+ gcc -shared -fPIC -I"$JAVA_INC" -I"$JAVA_INC/linux" -I. -I../../c \
+     -o /tmp/libphoton_jni.so photon_jni.c \
+     -L../../c/build -l:libphoton_core.so \
+     -Wl,-rpath,"$PWD/../../c/build" -Wall -Wextra)
 
 # 4. Тесты
-javac -d /tmp/jnitest ../java/PhotonJniTest.java ../java/dev/photon/core/PhotonNative.java
-java -cp /tmp/jnitest PhotonJniTest ./libphoton_jni.so
+javac -d /tmp/jnitest photon-bindings/android/java/PhotonJniTest.java \
+                      photon-bindings/android/java/dev/photon/core/PhotonNative.java
+java -cp /tmp/jnitest PhotonJniTest /tmp/libphoton_jni.so
 
-kotlinc ../kotlin/Photon.kt ../kotlin/PhotonKotlinTest.kt \
-        ../java/dev/photon/core/PhotonNative.java -include-runtime -d /tmp/kt.jar
-java -cp /tmp/kt.jar:/tmp/jnitest PhotonKotlinTestKt ./libphoton_jni.so
+kotlinc photon-bindings/android/kotlin/Photon.kt \
+        photon-bindings/android/kotlin/PhotonKotlinTest.kt \
+        photon-bindings/android/java/dev/photon/core/PhotonNative.java \
+        -include-runtime -d /tmp/kt.jar
+java -cp /tmp/kt.jar:/tmp/jnitest PhotonKotlinTestKt /tmp/libphoton_jni.so
 ```
+
+**Почему шаг 1 собирает в `build/`, а не рядом с исходниками.**
+`-buildmode=c-shared` всегда генерирует C-заголовок рядом с выходным файлом и
+называет его по имени `-o`. Прежняя редакция (`-o libphoton_core.so` прямо в
+`photon-bindings/c`) роняла `libphoton_core.h` в каталог с исходниками — рядом
+с `photon_core.h`, замороженным контрактом ABI. Перепутать два заголовка,
+отличающихся префиксом `lib`, легко, а сгенерённый ещё и не отслеживается
+`.gitignore` (там только `*.so`), то есть попадает в `git status` как новый
+файл. Соседний README (`photon-bindings/c/README.md`) описывает более острый
+случай той же механики: сборка с `-o photon_core.so` затирает сам
+`photon_core.h`.
+
+**Артефакты сборки — вне репозитория** (`/tmp`, `build/`): JNI-мост и тестовые
+классы к исходникам не относятся и в дереве им делать нечего.
+
+**Шаг 3 в прежней редакции не мог собраться вообще.** Флаги были
+`-I"$JAVA_INC" -I"$JAVA_INC/linux" -I.`, то есть каталог с `photon_core.h`
+(`photon-bindings/c`) в списке отсутствовал, а `photon_jni.c` включает этот
+заголовок строкой `#include "photon_core.h"`. Проверено прямо, без JDK:
+пробный файл с той же строкой включения не компилируется под `-I.` и
+компилируется под `-I../../c`. Отказ громкий (`fatal error: photon_core.h: No
+such file or directory`), но команда в README была нерабочей — и раздел «Что
+проверено» ниже утверждает обратное.
+
+> **Не проверено.** Команды выше исправлены по разбору и по проверке
+> разрешения включений, но целиком не выполнены: в текущей среде нет ни JDK,
+> ни `kotlinc` (`javac`, `java`, `kotlinc` отсутствуют). Выполнены и проверены
+> только шаг 1 (сборка `.so` и генерация заголовка по имени `-o`) и
+> разрешение `#include "photon_core.h"` из шага 3. Таблица «Что проверено»
+> ниже относится к прогону на машине, где JDK был, — и, как показывает
+> предыдущий абзац, командам из этого файла она не соответствует.
 
 ## ✅ Что проверено (реально выполнено)
 
@@ -78,7 +117,7 @@ java -cp /tmp/kt.jar:/tmp/jnitest PhotonKotlinTestKt ./libphoton_jni.so
 | Компиляция JNI против настоящего `jni.h` (JDK 21) | ✅ `gcc -Wall -Wextra`, чисто |
 | Линковка против реальной `libphoton_core.so` | ✅ `ldd` подтверждает зависимость |
 | Соответствие JNI-сигнатур | ✅ Заголовок сгенерирован `javac -h`, не написан вручную |
-| Compile-time соответствие кодов `PhotonResult` Java↔C | ✅ 10 static assert'ов в `photon_jni.c` |
+| Compile-time соответствие кодов `PhotonResult` Java↔C | ✅ **11** static assert'ов в `photon_jni.c` (в таблице было 10 — пересчитано) |
 | Граница ABI не нарушена | ✅ `nm -D`: 0 обращений к Go-символам |
 | **Java E2E на JVM** | ✅ **32/32 PASS** |
 | **Kotlin E2E на JVM** | ✅ **14/14 PASS** |
