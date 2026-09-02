@@ -21,7 +21,7 @@
 //
 // Запуск:
 //
-//	go run ./tests/livecheck -mode subscribe -session <Session ID>
+//	go run ./tests/livecheck -mode subscribe -session <Session ID> [-trigger]
 //	go run ./tests/livecheck -mode action    -session <Session ID>
 //	go run ./tests/livecheck -mode lost      -session <Session ID>
 //	go run ./tests/livecheck -mode dispatch  -session <Session ID>
@@ -62,6 +62,8 @@ var (
 	lostWindow = flag.Duration("lost-window", 150*time.Second,
 		"сколько молчать в -mode lost. Должно заметно превышать idle-timeout (30 с)")
 	insecure = flag.Bool("insecure", false, "не проверять сертификат сервера")
+	trigger  = flag.Bool("trigger", false,
+		"в -mode subscribe: породить push самому (сообщение в самопереписке, затем удалить)")
 )
 
 func main() {
@@ -94,6 +96,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "-mode: subscribe | action | lost | dispatch, получено %q\n", *mode)
 		os.Exit(2)
 	}
+
+	if failures > 0 {
+		fmt.Printf("\n  ИТОГ: нарушенных ожиданий — %d\n", failures)
+		os.Exit(1)
+	}
 }
 
 func newSession(tr *quicadapter.Transport, m session.Mode) *session.Session {
@@ -118,7 +125,14 @@ func runSubscribe(tr *quicadapter.Transport) {
 	s := newSession(tr, session.ModeSubscribe)
 	defer s.Close()
 
-	fmt.Printf("  ⏳ Ждём push до %s. ОТПРАВЬТЕ СООБЩЕНИЕ в Mattermost.\n", *wait)
+	var postID string
+	if *trigger {
+		fmt.Println("  ⏳ Порождаем push сами (-trigger).")
+		postID = triggerPush(tr)
+		defer cleanupPost(tr, postID)
+	} else {
+		fmt.Printf("  ⏳ Ждём push до %s. ОТПРАВЬТЕ СООБЩЕНИЕ в Mattermost.\n", *wait)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), *wait)
 	defer cancel()
 
@@ -168,70 +182,153 @@ func runAction(tr *quicadapter.Transport) {
 // runDispatch гоняет services/dispatcher — слой, который добавляет Phase 13.5.
 //
 // Проверяет ровно то, чего фиктивный транспорт показать не может: что
-// подключение по требованию и синглфлайт работают на настоящей сети, и что
+// подключение по требованию и синглфлайт работают на настоящей сети, что
 // конверт ответа доходит до границы ABI в том виде, в каком его получит
-// клиент.
+// клиент, и что оборванное соединение даёт класс not_connected, а следующий
+// вызов переподключается (D-3).
+//
+// Транспорт обёрнут счётчиком (counting.go): утверждения «сети не было» и
+// «второе соединение не открывалось» иначе недоказуемы — быстрый ответ
+// доказательством не является.
 func runDispatch(tr *quicadapter.Transport) {
 	fmt.Println("\n── services/dispatcher: action через диспетчер ──")
 
+	ct := newCountingTransport(tr)
 	d, err := dispatcher.New(dispatcher.Config{
 		Endpoint:     ports.Endpoint(*addr),
 		SessionToken: *sessionID,
-		Transport:    tr,
+		Transport:    ct,
 	})
 	if err != nil {
 		fatal("dispatcher.New", err)
 	}
 	defer d.Close()
 
-	// Неизвестный код обязан отвергаться БЕЗ сети — на живом сервере это
-	// видно по тому, что ответ приходит мгновенно и соединение не
-	// устанавливается.
-	if _, err := d.SendAction(424242, []byte(`{}`)); err != nil {
-		fmt.Printf("  ✅ неизвестный код отвергнут без сети: %v (класс %s)\n",
-			err, dispatcher.Classify(err))
+	// ── 1. Конструктор не касается сети ─────────────────────────────
+	requireDials(ct, 0, "dispatcher.New не подключается")
+
+	// ── 2. Неизвестный код отвергается БЕЗ сети ─────────────────────
+	// На живом сервере это видно не по скорости ответа, а по тому, что
+	// счётчик подключений остался нулевым.
+	if _, err := d.SendAction(424242, []byte(`{}`)); err == nil {
+		bad("неизвестный код принят")
+	} else if c := dispatcher.Classify(err); c != dispatcher.ClassInvalidAction {
+		bad("неизвестный код: класс %s, ожидался invalid_action (%v)", c, err)
 	} else {
-		fmt.Println("  ❌ неизвестный код принят")
-		os.Exit(1)
+		ok("неизвестный код отвергнут: %v (класс %s)", err, c)
 	}
+	requireDials(ct, 0, "отказ по коду прошёл без сети")
 
-	// Параллельные вызовы на свежем диспетчере: подключение обязано
-	// состояться один раз. На живой сети это единственный способ увидеть
-	// синглфлайт в настоящих таймингах.
-	var wg sync.WaitGroup
-	results := make([]string, 4)
+	// ── 3. Ленивое подключение и переиспользование соединения ───────
 	start := time.Now()
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			resp, err := d.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`))
-			if err != nil {
-				results[i] = fmt.Sprintf("❌ %v (класс %s)", err, dispatcher.Classify(err))
-				return
-			}
-			results[i] = "✅ " + truncate(string(resp), 200)
-		}(i)
+	first, err := d.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`))
+	firstTook := time.Since(start)
+	if err != nil {
+		bad("первый getMe: %v (класс %s)", err, dispatcher.Classify(err))
+		return
 	}
-	wg.Wait()
-	fmt.Printf("  4 параллельных getMe за %s:\n", time.Since(start).Round(time.Millisecond))
-	for i, r := range results {
-		fmt.Printf("     [%d] %s\n", i, r)
+	ok("первый getMe за %s: %s", firstTook.Round(time.Millisecond), truncate(string(first), 160))
+	requireDials(ct, 1, "первый SendAction подключился сам")
+
+	start = time.Now()
+	second, err := d.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`))
+	secondTook := time.Since(start)
+	if err != nil {
+		bad("второй getMe: %v (класс %s)", err, dispatcher.Classify(err))
+		return
+	}
+	ok("второй getMe за %s (первый — %s)", secondTook.Round(time.Millisecond), firstTook.Round(time.Millisecond))
+	requireDials(ct, 1, "второй SendAction переиспользовал соединение")
+	if !bytes.Equal(first, second) {
+		fmt.Println("     ⚠️  ответы различаются — это нормально, если сервер обновил update_at")
 	}
 
-	// Отрицательный ответ сервера: обязан прийти конвертом с ok:false, а не
-	// ошибкой вызова (ADR-038).
+	// ── 4. Отказ сервера приходит КОНВЕРТОМ, а не ошибкой вызова ────
+	// getMyChannels без team_id — настоящий отказ настоящего Bridge, а не
+	// подстроенный: ADR-038 требует err == nil и ok:false внутри.
 	resp, err := d.SendAction(int32(photonpb.Action_ACTION_GET_MY_CHANNELS), []byte(`{}`))
 	switch {
 	case err != nil:
-		fmt.Printf("  ⚠️  getMyChannels вернул ошибку вызова: %v (класс %s)\n",
+		bad("getMyChannels вернул ошибку вызова вместо конверта: %v (класс %s)",
 			err, dispatcher.Classify(err))
 	case bytes.Contains(resp, []byte(`"ok":false`)):
-		fmt.Printf("  ✅ отказ сервера пришёл КОНВЕРТОМ, а не кодом: %s\n",
-			truncate(string(resp), 300))
+		ok("отказ сервера пришёл конвертом при err == nil: %s", truncate(string(resp), 200))
 	default:
-		fmt.Printf("  ✅ getMyChannels: %s\n", truncate(string(resp), 300))
+		ok("getMyChannels выполнен: %s", truncate(string(resp), 200))
+		fmt.Println("     ⚠️  ok:true — проверка «ok:false конвертом» не состоялась")
 	}
+
+	// ── 5. Обрыв → not_connected ────────────────────────────────────
+	// Живое QUIC-соединение закрывается снизу, из-под сессии. Это не
+	// подмена объекта: соединение то самое, по которому только что шли
+	// вызовы. Штатный idle-timeout для этого не годится — на сервере
+	// стоит KeepAlivePeriod, и простой соединение не рвёт (-mode lost).
+	conn := ct.lastConn()
+	if conn == nil {
+		bad("транспорт не отдал соединение — обрыв проверить нечем")
+		return
+	}
+	conn.Close()
+	if _, err := d.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`)); err == nil {
+		bad("вызов по оборванному соединению вернул успех")
+	} else if c := dispatcher.Classify(err); c != dispatcher.ClassNotConnected {
+		bad("обрыв дал класс %s, ожидался not_connected: %v", c, err)
+	} else {
+		ok("обрыв дал класс not_connected: %v", err)
+		fmt.Printf("     errors.Is(ErrConnectionLost) = %v\n", errors.Is(err, session.ErrConnectionLost))
+	}
+
+	// ── 6. Следующий вызов переподключается (D-3) ───────────────────
+	if _, err := d.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`)); err != nil {
+		bad("вызов после обрыва не переподключился: %v (класс %s)", err, dispatcher.Classify(err))
+	} else {
+		ok("следующий вызов переподключился и выполнился")
+	}
+	requireDials(ct, 2, "переподключение открыло ровно одно новое соединение")
+
+	// ── 7. Синглфлайт на СВЕЖЕМ диспетчере ──────────────────────────
+	// Проверяется не числом соединений (session.Connect защищает себя сам),
+	// а тем, что ни один из параллельных вызовов не получил
+	// ErrConnectInProgress и все они выполнились.
+	ct2 := newCountingTransport(tr)
+	d2, err := dispatcher.New(dispatcher.Config{
+		Endpoint:     ports.Endpoint(*addr),
+		SessionToken: *sessionID,
+		Transport:    ct2,
+	})
+	if err != nil {
+		fatal("dispatcher.New (второй)", err)
+	}
+	defer d2.Close()
+
+	const parallel = 4
+	var wg sync.WaitGroup
+	errs := make([]error, parallel)
+	start = time.Now()
+	for i := 0; i < parallel; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = d2.SendAction(int32(photonpb.Action_ACTION_GET_ME), []byte(`{}`))
+		}(i)
+	}
+	wg.Wait()
+	took := time.Since(start)
+
+	badCalls := 0
+	for i, e := range errs {
+		if e == nil {
+			continue
+		}
+		badCalls++
+		bad("[%d] %v (класс %s, ErrConnectInProgress=%v)", i, e, dispatcher.Classify(e),
+			errors.Is(e, session.ErrConnectInProgress))
+	}
+	if badCalls == 0 {
+		ok("%d параллельных getMe на свежем диспетчере выполнились за %s, ни одного ErrConnectInProgress",
+			parallel, took.Round(time.Millisecond))
+	}
+	requireDials(ct2, 1, "параллельные вызовы открыли одно соединение")
 }
 
 // runLost проверяет ErrConnectionLost на НАСТОЯЩЕМ idle-timeout, а не на
@@ -278,6 +375,30 @@ func runLost(tr *quicadapter.Transport) {
 		fmt.Printf("  ❌ через %s пришла НЕ ErrConnectionLost и не таймаут окна: %v (state=%s)\n",
 			elapsed.Round(time.Second), err, s.State())
 		os.Exit(1)
+	}
+}
+
+// ── Учёт исходов ────────────────────────────────────────────────────
+//
+// Прогон обязан быть проверкой, а не распечаткой: любое нарушенное ожидание
+// повышает счётчик и даёт ненулевой код возврата. Печать «❌» без выхода с
+// ошибкой — тот же дефект, что зелёный тест, проходящий всегда.
+var failures int
+
+func ok(format string, a ...any) { fmt.Printf("  ✅ "+format+"\n", a...) }
+
+func bad(format string, a ...any) {
+	failures++
+	fmt.Printf("  ❌ "+format+"\n", a...)
+}
+
+// requireDials — утверждение о ЧИСЛЕ установленных соединений. Единственный
+// способ доказать, что сети не было (см. counting.go).
+func requireDials(ct *countingTransport, want int, what string) {
+	if got := ct.dialCount(); got == want {
+		ok("%s (подключений: %d)", what, got)
+	} else {
+		bad("%s: подключений %d, ожидалось %d", what, got, want)
 	}
 }
 

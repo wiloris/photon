@@ -11,10 +11,11 @@
 | `photon.go` | Реализация всех 12 экспортируемых функций |
 | `internal_cgo_types.h` | Непубличный. Объявления для cgo без `const` — см. комментарий в файле |
 | `testsupport.go` | Go-обёртки над C-типами (Go не поддерживает cgo в `_test.go`) |
-| `photon_test.go` | 32 теста контракта: lifecycle, ownership, action-коды, ABI version |
+| `photon_test.go` | 35 тестов контракта: lifecycle, ownership, action-коды, ABI version |
 | `leakcheck_handles.c` | Leak-check: 400k циклов create/destroy, различает арены Go от утечки |
 | `leakcheck_strings.c` | Leak-check: 550k перезаписей `lastError` |
-| `go.mod.example` | Пример go.mod (пути `replace` — из среды разработки, заменить на свои) |
+| `livecheck_bridge.c` | **Ручной** сквозной прогон через `.so` против живого Bridge — см. ниже |
+| `go.mod` | `replace` на `../../photon-core`, путь относительный. Закоммичен: тесты идут из репозитория |
 
 ## Сборка
 
@@ -22,8 +23,10 @@
 go build -buildmode=c-shared -o build/photon_core.so .
 ```
 
-**Собирать только в отдельный каталог.** `-buildmode=c-shared` генерирует
-заголовок рядом с выходным файлом и по его имени, поэтому команда
+**Собирать только в отдельный каталог.** `-buildmode=c-shared` всегда
+генерирует C-заголовок рядом с выходным файлом и **называет его по имени
+`-o`**: `-o photon_core.so` даёт `photon_core.h`, `-o build/photon_core.so` —
+`build/photon_core.h`. Отключить генерацию нечем. Поэтому команда
 `go build -buildmode=c-shared -o photon_core.so .` **молча затирает
 `photon_core.h`** — замороженный публичный контракт ABI (ADR-008) — сгенерённым
 cgo заголовком. Сборка при этом завершается успешно, и потеря обнаруживается
@@ -43,9 +46,34 @@ gcc -o build/leakcheck_handles leakcheck_handles.c -Lbuild -l:photon_core.so -Wl
 gcc -o build/leakcheck_strings leakcheck_strings.c -Lbuild -l:photon_core.so -Wl,-rpath,'$ORIGIN' && ./build/leakcheck_strings
 ```
 
-`//go:build ignore` в начале обоих `leakcheck_*.c` — не украшение: без него cgo
-подхватывает их как часть пакета, и `go test` падает на «повторном определении
-`main`». Именно из-за этого тесты пакета раньше не запускались из репозитория.
+`//go:build ignore` в начале `leakcheck_*.c` и `livecheck_bridge.c` — не
+украшение: без него cgo подхватывает их как часть пакета, и `go test` падает на
+«повторном определении `main`». Именно из-за этого тесты пакета раньше не
+запускались из репозитория.
+
+## Сквозной прогон против живого Bridge
+
+**Не автотест** — требует развёрнутого `photon-quic-bridge` и действующего
+Session ID, поэтому запускается руками и в `go test` не участвует.
+
+```sh
+go build -buildmode=c-shared -o build/photon_core.so .
+gcc -o build/livecheck_bridge livecheck_bridge.c -Lbuild -l:photon_core.so -Wl,-rpath,'$ORIGIN'
+./build/livecheck_bridge <host:port> <Session ID>
+```
+
+Зачем отдельно от `photon-core/tests/livecheck`: тот прогон — Go, вызывающий
+Go, границу C он не пересекает. Здесь проверяется то, что получит настоящий
+клиент: код возврата `PhotonResult` и строка `response_json` из `.so`.
+
+Проверяется: `Photon_Create` без обращения к сети; `getMe` → `PHOTON_OK` +
+`ok:true`; **отказ живого Bridge → `PHOTON_OK` + `ok:false` в конверте**
+(ADR-038 — главное свойство фазы); неизвестный код → `PHOTON_ERR_INVALID_ACTION`
+с нетронутым `response_out`; инстанс без секции `bridge` →
+`PHOTON_ERR_NOT_CONNECTED`. Любое нарушенное ожидание даёт выход с кодом 1.
+
+`Session ID` — это `Session.Id`, а не токен из `/users/login`: имя поля
+`session_token` на проводе историческое.
 
 ## Результаты проверки (Go 1.22.2, linux/amd64)
 
@@ -56,6 +84,7 @@ gcc -o build/leakcheck_strings leakcheck_strings.c -Lbuild -l:photon_core.so -Wl
 - `gofmt -l` — чисто
 - Leak-check handles: рост RSS выравнивается (164 → 240 → 24 → −160 КБ за интервал) — арены Go-рантайма, не утечка
 - Leak-check strings: 212 КБ суммарно за 400k перезаписей `lastError`, интервалы без тренда (224 → 52 → −8 → −56 КБ)
+- `livecheck_bridge` против живого Bridge (`138.124.91.123.sslip.io:4443`, Mattermost 9.11) — все ожидания выполнены
 
 Оба leak-check'а проверены **мутацией**, а не только зелёным прогоном: с
 убранным `C.free` в `setError` вердикт строк становится `LEAKS` — 4,8 МБ на
