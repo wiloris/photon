@@ -82,6 +82,8 @@ PostgreSQL 18, сертификат Let's Encrypt (`-insecure` не нужен),
    `challenge`, вместе с тестами. Независим от всего остального.
 2. Источник мастер-ключа и `Migrate` — до `cmd/photon-core-server`
    (`core-operations.md` §11).
-3. Phase 14 (Server Bridge) по `ROADMAP.md`. Смежное, накопившееся в Bridge:
-   ветка `adr-025-transfer` (6 коммитов) в `main` не влита.
+3. Phase 14 (Server Bridge) по `ROADMAP.md`. Ветка `adr-025-transfer` в Bridge
+   влита в `main` (fast-forward): развёрнутый плагин собран именно из неё —
+   `KeepAlivePeriod` есть только там, и прогон это подтвердил. В `origin` не
+   отправлено, push за владельцем репозитория.
 4. Буфер push на 64 и молчаливый сброс — после подъёма `rmem_max`.
