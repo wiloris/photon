@@ -5,7 +5,7 @@
 //
 // Что этот пакет делает: устанавливает соединение через ports.Transport,
 // проводит handshake, отправляет action'ы и принимает push-события.
-// Что он НЕ делает: не исполняет action'ы (Dispatcher, Phase 13) и не знает,
+// Что он НЕ делает: не исполняет action'ы (Dispatcher, Phase 13.5) и не знает,
 // что внутри payload'а.
 package session
 
@@ -143,7 +143,7 @@ type Push struct {
 // наружу, и смена формата снова стала бы правкой по всем вызовам — то есть
 // ровно тем, чего ADR-034 п.4 требует избежать.
 //
-// Вызывающий (Dispatcher, Phase 13) не знает и не может узнать, какой формат
+// Вызывающий (Dispatcher, Phase 13.5) не знает и не может узнать, какой формат
 // за интерфейсом.
 type Codec interface {
 	WriteHandshake(w io.Writer, h Handshake) error
