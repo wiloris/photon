@@ -146,11 +146,20 @@ func (h *UserHandler) getUserStatus(userID string, raw json.RawMessage) Response
 	if targetID == "" {
 		targetID = userID
 	}
-	status, appErr := h.plugin.API.GetUserStatus(targetID)
+	// B3: GetUserStatus возвращает ошибку для пользователя без записи статуса —
+	// измерено, действие не работало ни у одного субъекта. Сам Mattermost на
+	// этом месте отдаёт offline, потому что REST ходит через
+	// GetUserStatusesByIds (api4/status.go:35). Берём тот же вызов, а не свою
+	// трактовку ошибки.
+	statuses, appErr := h.plugin.API.GetUserStatusesByIds([]string{targetID})
 	if appErr != nil {
-		h.plugin.API.LogError("[Photon][UserHandler] GetUserStatus API error",
+		h.plugin.API.LogError("[Photon][UserHandler] GetUserStatusesByIds API error",
 			"caller_id", userID, "target_id", targetID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
+	}
+	status := &model.Status{UserId: targetID, Status: model.StatusOffline}
+	if len(statuses) > 0 && statuses[0] != nil {
+		status = statuses[0]
 	}
 	h.plugin.API.LogInfo("[Photon][UserHandler] Status fetched",
 		"caller_id", userID, "target_id", targetID, "status", status.Status)
