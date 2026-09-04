@@ -8,7 +8,12 @@ import (
 // Dispatcher маршрутизирует входящие экшны к соответствующим хендлерам.
 // Структура повторяет иерархию Resource-классов Kotlin SDK.
 type Dispatcher struct {
-	plugin  *Plugin
+	plugin *Plugin
+	// authz — единственная точка принятия решения о доступе (ADR-039 §6).
+	// Стоит здесь, а не в handler'ах и не в QUIC-слое: /api/v1/action
+	// зарегистрирован без middleware и ведёт сюда же, поэтому проверка
+	// внутри handler'ов оставила бы HTTP-вход открытым.
+	authz   *authz
 	post    *PostHandler
 	user    *UserHandler
 	channel *ChannelHandler
@@ -20,6 +25,7 @@ type Dispatcher struct {
 func NewDispatcher(p *Plugin) *Dispatcher {
 	return &Dispatcher{
 		plugin:  p,
+		authz:   newAuthz(p.API),
 		post:    &PostHandler{plugin: p},
 		user:    &UserHandler{plugin: p},
 		channel: &ChannelHandler{plugin: p},
@@ -37,6 +43,26 @@ func (d *Dispatcher) Dispatch(userID string, header HeaderFrame, rawPayload json
 		"action", header.Action,
 	)
 
+	// Три исхода ADR-039 §8. Порядок существенен: неизвестный action обязан
+	// остаться отличим от отказа авторизации, а действие без правила не должно
+	// доходить до handler'а — §7.1, поведение по умолчанию есть отказ.
+	if _, known := rules[header.Action]; !known {
+		d.plugin.API.LogWarn("[Photon] Unknown action code",
+			"user_id", userID,
+			"action", header.Action,
+			"resource", header.Resource,
+		)
+		return Response{OK: false, Error: fmt.Sprintf("unknown action: %d", header.Action)}
+	}
+	if err := d.authz.authorize(userID, header.Action, rawPayload); err != nil {
+		d.plugin.API.LogWarn("[Photon] Authorization denied",
+			"user_id", userID,
+			"action", header.Action,
+			"resource", header.Resource,
+		)
+		return Response{OK: false, Error: errForbidden.Error()}
+	}
+
 	switch {
 	case header.Action >= 100 && header.Action <= 199:
 		return d.post.Handle(userID, header.Action, rawPayload)
@@ -51,11 +77,9 @@ func (d *Dispatcher) Dispatch(userID string, header HeaderFrame, rawPayload json
 	case header.Action >= 600 && header.Action <= 699:
 		return d.wall.Handle(userID, header.Action, rawPayload)
 	default:
-		d.plugin.API.LogWarn("[Photon] Unknown action code",
-			"user_id", userID,
-			"action", header.Action,
-			"resource", header.Resource,
-		)
+		// Недостижимо: код без правила отсеян выше. Оставлено намеренно —
+		// switch по диапазонам и таблица правил могут разойтись только через
+		// ошибку, и молчаливый выход из функции был бы хуже.
 		return Response{OK: false, Error: fmt.Sprintf("unknown action: %d", header.Action)}
 	}
 }
