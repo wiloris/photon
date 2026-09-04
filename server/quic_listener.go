@@ -271,21 +271,27 @@ type QuicListener struct {
 	tlsCfg     *tls.Config
 	dispatcher *Dispatcher
 	registry   *PushRegistry
+	router     *PushRouter
 	listener   *quic.Listener
 	cancel     context.CancelFunc
 }
 
 func NewQuicListener(p *Plugin, tlsCfg *tls.Config, d *Dispatcher) *QuicListener {
+	registry := NewPushRegistry()
 	return &QuicListener{
 		plugin:     p,
 		tlsCfg:     tlsCfg,
 		dispatcher: d,
-		registry:   NewPushRegistry(),
+		registry:   registry,
+		router:     NewPushRouter(p, registry),
 	}
 }
 
+// Push отдаёт событие маршрутизатору, а не реестру: аудиторию определяет
+// ADR-040, и прямая рассылка мимо неё — тот самый обход, который измерил
+// baseline.
 func (ql *QuicListener) Push(event PushEvent) {
-	ql.registry.Broadcast(event)
+	ql.router.Route(event)
 }
 
 func (ql *QuicListener) Serve() {

@@ -13,6 +13,12 @@ type PushEvent struct {
 	Event  string          `json:"event"`
 	UserID string          `json:"user_id,omitempty"`
 	Data   json.RawMessage `json:"data"`
+
+	// ChannelID — канал, к которому относится событие. Служебное поле
+	// маршрутизации: аудитория считается по нему (ADR-040), а на провод оно
+	// не идёт — форма push для варианта A не меняется. Заполняется хуком, а
+	// не разбором Data: §3 ADR-040 требует явного поля.
+	ChannelID string `json:"-"`
 }
 
 // PushClient — один подписанный клиент в subscribe-режиме.
@@ -119,26 +125,45 @@ func (r *PushRegistry) unregister(userID string, target *PushClient) {
 	}
 }
 
+// subscribers — идентификаторы подписанных пользователей. Нужен PushRouter'у
+// для вычисления аудитории (ADR-040).
+func (r *PushRegistry) subscribers() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.clients))
+	for userID := range r.clients {
+		out = append(out, userID)
+	}
+	return out
+}
+
+// sendTo — доставка одному адресату. Переполненный буфер по-прежнему роняет
+// событие молча (см. bridge-session.md §9 п. 6 — открыто, этой правкой не
+// закрывается).
+func (r *PushRegistry) sendTo(userID string, event PushEvent) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, client := range r.clients[userID] {
+		select {
+		case client.send <- event:
+		default:
+		}
+	}
+}
+
+// Broadcast оставлен только для адресных событий. Ветка «без адресата — всем»
+// удалена: ADR-040 требует fail-closed, а не рассылку неизвестной аудитории.
 func (r *PushRegistry) Broadcast(event PushEvent) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if event.UserID != "" {
-		for _, client := range r.clients[event.UserID] {
-			select {
-			case client.send <- event:
-			default:
-			}
-		}
-		return
+	if event.UserID == "" {
+		return // аудитория неизвестна — не рассылаем (ADR-040)
 	}
-
-	for _, clients := range r.clients {
-		for _, client := range clients {
-			select {
-			case client.send <- event:
-			default:
-			}
+	for _, client := range r.clients[event.UserID] {
+		select {
+		case client.send <- event:
+		default:
 		}
 	}
 }
