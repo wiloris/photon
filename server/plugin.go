@@ -69,7 +69,11 @@ func (p *Plugin) OnActivate() error {
 	p.backgroundJob = job
 
 	// ── Photon QUIC Bridge — запуск ───────────────────────────────────────────
-	p.API.LogInfo("[Photon] Initialising QUIC bridge")
+	// Версия — в первой же строке Photon в логе. После переустановки бандла
+	// иначе нечем отличить работающую сборку от предыдущей: id плагина не
+	// меняется, а System Console показывает версию из манифеста, но не то,
+	// что реально загрузилось в процесс.
+	p.API.LogInfo("[Photon] Initialising QUIC bridge", "version", manifest.Version)
 
 	cfg := p.API.GetConfig()
 	tlsCfg, err := getTLSConfig(p, cfg)
@@ -95,7 +99,7 @@ func (p *Plugin) OnActivate() error {
 	}()
 
 	p.API.LogInfo("[Photon] Plugin activated successfully",
-		"quic_addr", quicBindAddr)
+		"version", manifest.Version, "quic_addr", quicBindAddr)
 	return nil
 }
 
