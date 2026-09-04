@@ -9,11 +9,12 @@ import (
 
 // ChannelHandler зеркалит ChannelResource из Kotlin SDK.
 // Actions: 300=ListChannels, 301=GetChannelMembers, 302=GetMyChannels,
-//          303=GetChannel, 304=GetChannelByName, 305=CreateChannel,
-//          306=CreateDirectChannel, 307=GetDirectChannels,
-//          308=GetOrCreateDirectChannel, 309=AddMember, 310=RemoveMember,
-//          311=UpdateChannel, 312=GetUnreadForChannel, 313=MarkAsRead,
-//          314=GetChannelMember
+//
+//	303=GetChannel, 304=GetChannelByName, 305=CreateChannel,
+//	306=CreateDirectChannel, 307=GetDirectChannels,
+//	308=GetOrCreateDirectChannel, 309=AddMember, 310=RemoveMember,
+//	311=UpdateChannel, 312=GetUnreadForChannel, 313=MarkAsRead,
+//	314=GetChannelMember
 type ChannelHandler struct {
 	plugin *Plugin
 }
@@ -219,6 +220,15 @@ func (h *ChannelHandler) createChannel(userID string, raw json.RawMessage) Respo
 			"user_id", userID, "name", p.Name, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
+	// B1: Plugin API CreateChannel НЕ добавляет создателя в канал — канал
+	// остаётся без единого участника. Обнаружилось на откате мутации baseline'а:
+	// removeMember ответил «вы последний участник» для канала, который создал
+	// другой пользователь. К авторизации отношения не имеет.
+	if _, appErr := h.plugin.API.AddChannelMember(ch.Id, userID); appErr != nil {
+		h.plugin.API.LogWarn("[Photon][ChannelHandler] Failed to add creator to channel",
+			"user_id", userID, "channel_id", ch.Id, "error", appErr.Error())
+	}
+
 	h.plugin.API.LogInfo("[Photon][ChannelHandler] Channel created",
 		"user_id", userID, "channel_id", ch.Id)
 	return Response{OK: true, Data: ch}
