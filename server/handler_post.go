@@ -9,10 +9,11 @@ import (
 
 // PostHandler зеркалит PostResource из Kotlin SDK.
 // Actions: 100=CreatePost, 101=GetFeed, 102=DeletePost, 103=UpdatePost,
-//          104=GetThread, 105=ReplyToPost, 106=PinPost, 107=UnpinPost,
-//          108=GetPinnedPosts, 109=SearchPosts, 110=AddReaction,
-//          111=RemoveReaction, 112=GetReactions, 113=ToggleLike,
-//          114=GetPostSocialInfo
+//
+//	104=GetThread, 105=ReplyToPost, 106=PinPost, 107=UnpinPost,
+//	108=GetPinnedPosts, 109=SearchPosts, 110=AddReaction,
+//	111=RemoveReaction, 112=GetReactions, 113=ToggleLike,
+//	114=GetPostSocialInfo
 type PostHandler struct {
 	plugin *Plugin
 }
@@ -353,13 +354,22 @@ func (h *PostHandler) searchPosts(userID string, raw json.RawMessage) Response {
 	if p.TeamID == "" || p.Query == "" {
 		return Response{OK: false, Error: "team_id and query are required"}
 	}
-	posts, appErr := h.plugin.API.SearchPostsInTeam(p.TeamID, []*model.SearchParams{
-		{Terms: p.Query, IsHashtag: false, OrTerms: p.IsOrSearch},
+	// Scope layer, ADR-039 §12: вариант вызова С ПОЛЬЗОВАТЕЛЕМ. Прежний
+	// SearchPostsInTeam ищет по всей команде без скоупа — измерено, что он
+	// возвращал обычному пользователю посты из чужой личной переписки и с
+	// чужой стены. Правило доступа к самому действию этого не чинит.
+	results, appErr := h.plugin.API.SearchPostsInTeamForUser(p.TeamID, userID, model.SearchParameter{
+		Terms:      &p.Query,
+		IsOrSearch: &p.IsOrSearch,
 	})
 	if appErr != nil {
 		h.plugin.API.LogError("[Photon][PostHandler] SearchPostsInTeam API error",
 			"user_id", userID, "query", p.Query, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
+	}
+	posts := []*model.Post{}
+	if results != nil && results.PostList != nil {
+		posts = results.PostList.ToSlice()
 	}
 	h.plugin.API.LogInfo("[Photon][PostHandler] Posts searched",
 		"user_id", userID, "query", p.Query, "results", len(posts))

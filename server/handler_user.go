@@ -95,15 +95,39 @@ func (h *UserHandler) getUsers(userID string, raw json.RawMessage) Response {
 	if p.PerPage <= 0 {
 		p.PerPage = 50
 	}
-	users, appErr := h.plugin.API.GetUsers(&model.UserGetOptions{
-		Page:    p.Page,
-		PerPage: p.PerPage,
-	})
+	// Scope layer, ADR-039 §12: каталог сужен командами субъекта. Прежний
+	// GetUsers без ограничений отдавал обычному пользователю весь инстанс —
+	// измерено, вместе с адресами почты и ролями.
+	visible, appErr := h.plugin.visibleUserIDs(userID)
 	if appErr != nil {
-		h.plugin.API.LogError("[Photon][UserHandler] GetUsers API error",
+		h.plugin.API.LogError("[Photon][UserHandler] scope error (getUsers)",
 			"caller_id", userID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
+	all := make([]*model.User, 0, len(visible))
+	teams, appErr := h.plugin.API.GetTeamsForUser(userID)
+	if appErr != nil {
+		return Response{OK: false, Error: appErr.Error()}
+	}
+	seen := map[string]struct{}{}
+	for _, t := range teams {
+		for page := 0; page < maxScopePages; page++ {
+			batch, appErr := h.plugin.API.GetUsersInTeam(t.Id, page, scopePageSize)
+			if appErr != nil {
+				return Response{OK: false, Error: appErr.Error()}
+			}
+			for _, u := range batch {
+				if _, dup := seen[u.Id]; !dup {
+					seen[u.Id] = struct{}{}
+					all = append(all, u)
+				}
+			}
+			if len(batch) < scopePageSize {
+				break
+			}
+		}
+	}
+	users, _ := paginate(all, p.Page, p.PerPage)
 	users = h.plugin.sanitizeUsers(users, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Users listed",
 		"caller_id", userID, "count", len(users))
@@ -181,7 +205,16 @@ func (h *UserHandler) searchUsers(userID string, raw json.RawMessage) Response {
 			"caller_id", userID, "term", p.Term, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	users = h.plugin.sanitizeUsers(users, userID)
+	// Scope layer, ADR-039 §12: результат сужается командами субъекта.
+	// SearchUsers без TeamId ищет по инстансу, а поле in_team приходит от
+	// клиента и обязательным быть не может.
+	visible, appErr := h.plugin.visibleUserIDs(userID)
+	if appErr != nil {
+		h.plugin.API.LogError("[Photon][UserHandler] scope error (searchUsers)",
+			"caller_id", userID, "error", appErr.Error())
+		return Response{OK: false, Error: appErr.Error()}
+	}
+	users = h.plugin.sanitizeUsers(filterVisible(users, visible), userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Users searched",
 		"caller_id", userID, "term", p.Term, "results", len(users))
 	return Response{OK: true, Data: users}
@@ -202,8 +235,19 @@ func (h *UserHandler) getUsersByIds(userID string, raw json.RawMessage) Response
 	if len(p.UserIDs) == 0 {
 		return Response{OK: false, Error: "user_ids is required"}
 	}
+	// Scope layer, ADR-039 §12: идентификаторы вне скоупа субъекта даже не
+	// запрашиваются — иначе перебор id даёт каталог в обход сужения.
+	visible, appErr := h.plugin.visibleUserIDs(userID)
+	if appErr != nil {
+		h.plugin.API.LogError("[Photon][UserHandler] scope error (getUsersByIds)",
+			"caller_id", userID, "error", appErr.Error())
+		return Response{OK: false, Error: appErr.Error()}
+	}
 	users := make([]*model.User, 0, len(p.UserIDs))
 	for _, uid := range p.UserIDs {
+		if _, ok := visible[uid]; !ok {
+			continue // вне скоупа — молча, без сигнала о существовании
+		}
 		u, appErr := h.plugin.API.GetUser(uid)
 		if appErr != nil {
 			h.plugin.API.LogWarn("[Photon][UserHandler] GetUser error (getUsersByIds)",
