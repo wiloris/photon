@@ -74,10 +74,15 @@ func (p *Plugin) OnActivate() error {
 	cfg := p.API.GetConfig()
 	tlsCfg, err := getTLSConfig(p, cfg)
 	if err != nil {
-		// Не фатально: логируем и работаем без QUIC.
-		p.API.LogError("[Photon] Failed to build TLS config — QUIC bridge disabled",
+		// F7: раньше здесь возвращался nil — плагин считался активированным,
+		// System Console показывал его включённым, а quicListener оставался
+		// nil. Первое же сообщение любого пользователя роняло процесс плагина
+		// на разыменовании в хуках. Симптом («падает при отправке сообщений»)
+		// отстоит от причины («не нашёлся сертификат») настолько, что искать
+		// будут не там. Отказ активации виден сразу и в нужном месте.
+		p.API.LogError("[Photon] Failed to build TLS config — activation aborted",
 			"error", err.Error())
-		return nil
+		return errors.Wrap(err, "photon: failed to build TLS config")
 	}
 
 	dispatcher := NewDispatcher(p)

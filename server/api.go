@@ -64,6 +64,14 @@ func (p *Plugin) HandleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F7: тот же nil, что и в хуках — HTTP-вход разыменовывал listener без
+	// проверки (api.go:67 в прежней редакции).
+	if p.quicListener == nil || p.quicListener.dispatcher == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(Response{OK: false, Error: "photon bridge is not active"})
+		return
+	}
+
 	resp := p.quicListener.dispatcher.Dispatch(session.UserId, envelope.Header, envelope.Payload)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
