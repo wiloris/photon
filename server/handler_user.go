@@ -9,8 +9,9 @@ import (
 
 // UserHandler зеркалит UserResource из Kotlin SDK.
 // Actions: 200=GetMe, 201=GetUser, 202=GetUsers, 203=GetUserStatus,
-//          204=GetUserProfile, 205=SearchUsers, 206=GetUsersByIds,
-//          207=PatchMe, 208=SetStatus, 209=UploadAvatar, 210=GetUserAvatar
+//
+//	204=GetUserProfile, 205=SearchUsers, 206=GetUsersByIds,
+//	207=PatchMe, 208=SetStatus, 209=UploadAvatar, 210=GetUserAvatar
 type UserHandler struct {
 	plugin *Plugin
 }
@@ -52,9 +53,7 @@ func (h *UserHandler) getMe(userID string, _ json.RawMessage) Response {
 			"user_id", userID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	user.Password = ""
-	user.AuthData = nil
-	user.MfaSecret = ""
+	user = h.plugin.sanitizeUser(user, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] getMe fetched", "user_id", userID)
 	return Response{OK: true, Data: user}
 }
@@ -76,9 +75,7 @@ func (h *UserHandler) getUser(userID string, raw json.RawMessage) Response {
 			"caller_id", userID, "target_id", p.UserID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	user.Password = ""
-	user.AuthData = nil
-	user.MfaSecret = ""
+	user = h.plugin.sanitizeUser(user, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] User fetched",
 		"caller_id", userID, "target_id", p.UserID)
 	return Response{OK: true, Data: user}
@@ -107,11 +104,7 @@ func (h *UserHandler) getUsers(userID string, raw json.RawMessage) Response {
 			"caller_id", userID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	for _, u := range users {
-		u.Password = ""
-		u.AuthData = nil
-		u.MfaSecret = ""
-	}
+	users = h.plugin.sanitizeUsers(users, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Users listed",
 		"caller_id", userID, "count", len(users))
 	return Response{OK: true, Data: users}
@@ -158,9 +151,7 @@ func (h *UserHandler) getUserProfile(userID string, raw json.RawMessage) Respons
 			"caller_id", userID, "target_id", targetID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	user.Password = ""
-	user.AuthData = nil
-	user.MfaSecret = ""
+	user = h.plugin.sanitizeUser(user, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Profile fetched",
 		"caller_id", userID, "target_id", targetID)
 	return Response{OK: true, Data: user}
@@ -190,11 +181,7 @@ func (h *UserHandler) searchUsers(userID string, raw json.RawMessage) Response {
 			"caller_id", userID, "term", p.Term, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	for _, u := range users {
-		u.Password = ""
-		u.AuthData = nil
-		u.MfaSecret = ""
-	}
+	users = h.plugin.sanitizeUsers(users, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Users searched",
 		"caller_id", userID, "term", p.Term, "results", len(users))
 	return Response{OK: true, Data: users}
@@ -223,11 +210,9 @@ func (h *UserHandler) getUsersByIds(userID string, raw json.RawMessage) Response
 				"caller_id", userID, "target_id", uid, "error", appErr.Error())
 			continue // пропускаем ненайденных, не прерываем батч
 		}
-		u.Password = ""
-		u.AuthData = nil
-		u.MfaSecret = ""
 		users = append(users, u)
 	}
+	users = h.plugin.sanitizeUsers(users, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Users fetched by ids",
 		"caller_id", userID, "requested", len(p.UserIDs), "found", len(users))
 	return Response{OK: true, Data: users}
@@ -281,9 +266,7 @@ func (h *UserHandler) patchMe(userID string, raw json.RawMessage) Response {
 			"user_id", userID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	updated.Password = ""
-	updated.AuthData = nil
-	updated.MfaSecret = ""
+	updated = h.plugin.sanitizeUser(updated, userID)
 	h.plugin.API.LogInfo("[Photon][UserHandler] Profile patched", "user_id", userID)
 	return Response{OK: true, Data: updated}
 }
