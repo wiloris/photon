@@ -11,7 +11,8 @@ import (
 // «Энграмы» — именованные KV-записи для ИИ-интеграции.
 //
 // Actions: 400=EngramStore, 401=EngramQuery, 402=EngramDelete,
-//          403=EngramList, 404=EngramBatchStore, 405=EngramBatchQuery
+//
+//	403=EngramList, 404=EngramBatchStore, 405=EngramBatchQuery
 //
 // Production-защиты:
 //   - MAX_ENGRAM_SIZE:  64 KB на значение
@@ -53,8 +54,8 @@ type EngramEntry struct {
 	Value     json.RawMessage `json:"value"`
 	UserID    string          `json:"user_id"`
 	Version   int64           `json:"version"`
-	CreatedAt int64           `json:"created_at"` // unix ms, не меняется
-	UpdatedAt int64           `json:"updated_at"` // unix ms
+	CreatedAt int64           `json:"created_at"`           // unix ms, не меняется
+	UpdatedAt int64           `json:"updated_at"`           // unix ms
 	ExpiresAt int64           `json:"expires_at,omitempty"` // unix ms, 0 = вечно
 }
 
@@ -267,6 +268,12 @@ func (h *EngramHandler) delete(userID string, raw json.RawMessage) Response {
 
 	kvKey := engramKey(userID, p.Key)
 
+	// B2: отсутствие ключа — не ошибка (иначе ответ становится оракулом
+	// существования), но и не удаление. Прежний ответ утверждал
+	// deleted_key:<ключ> для ключа, которого в namespace вызывающего нет —
+	// измерено на чужом ключе: ответ ok:true, а сам ключ цел.
+	existed := h.loadEntry(kvKey) != nil
+
 	// Write order: KV сначала, индекс потом.
 	if appErr := h.plugin.API.KVDelete(kvKey); appErr != nil {
 		h.plugin.API.LogError("[Photon][EngramHandler] KVDelete error",
@@ -275,9 +282,12 @@ func (h *EngramHandler) delete(userID string, raw json.RawMessage) Response {
 	}
 	h.removeFromIndex(userID, p.Key)
 
-	h.plugin.API.LogInfo("[Photon][EngramHandler] Engram deleted",
-		"user_id", userID, "key", p.Key)
-	return Response{OK: true, Data: map[string]string{"deleted_key": p.Key}}
+	h.plugin.API.LogInfo("[Photon][EngramHandler] Engram delete",
+		"user_id", userID, "key", p.Key, "existed", existed)
+	return Response{OK: true, Data: map[string]interface{}{
+		"key":     p.Key,
+		"deleted": existed,
+	}}
 }
 
 // ── 403: list ─────────────────────────────────────────────────────────────────
