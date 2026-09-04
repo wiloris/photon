@@ -31,3 +31,7 @@ func cfgPrivacy(showEmail, showFullName bool) *model.Config {
 	c.PrivacySettings.ShowFullName = model.NewPointer(showFullName)
 	return c
 }
+
+// plugintestAPI — псевдоним, чтобы тесты не тащили импорт plugintest ради
+// одного типа в сигнатуре helper'а.
+type plugintestAPI = plugintest.API

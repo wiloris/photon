@@ -121,16 +121,15 @@ func (h *PostHandler) deletePost(userID string, raw json.RawMessage) Response {
 	if p.PostID == "" {
 		return Response{OK: false, Error: "post_id is required"}
 	}
-	existing, appErr := h.plugin.API.GetPost(p.PostID)
-	if appErr != nil {
+	// Владельца больше не проверяем здесь: решение принимает ownerSel в
+	// authz.go — селектор между delete_post и delete_others_posts (ADR-039 §3).
+	// Прежняя проверка была второй точкой принятия решения и отказывала
+	// администратору, у которого право на чужие посты есть; измерено на живом
+	// сервере после развёртывания 0.4.0.
+	if _, appErr := h.plugin.API.GetPost(p.PostID); appErr != nil {
 		h.plugin.API.LogError("[Photon][PostHandler] GetPost API error",
 			"user_id", userID, "post_id", p.PostID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
-	}
-	if existing.UserId != userID {
-		h.plugin.API.LogWarn("[Photon][PostHandler] Delete forbidden — not owner",
-			"user_id", userID, "post_id", p.PostID, "owner_id", existing.UserId)
-		return Response{OK: false, Error: "forbidden: not the post owner"}
 	}
 	if appErr := h.plugin.API.DeletePost(p.PostID); appErr != nil {
 		h.plugin.API.LogError("[Photon][PostHandler] DeletePost API error",
@@ -159,11 +158,8 @@ func (h *PostHandler) updatePost(userID string, raw json.RawMessage) Response {
 			"user_id", userID, "post_id", p.PostID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
-	if existing.UserId != userID {
-		h.plugin.API.LogWarn("[Photon][PostHandler] Update forbidden — not owner",
-			"user_id", userID, "post_id", p.PostID, "owner_id", existing.UserId)
-		return Response{OK: false, Error: "forbidden: not the post owner"}
-	}
+	// Владельца не проверяем: ownerSel выбрал edit_post либо edit_others_posts
+	// ещё до входа в handler (ADR-039 §3, §6).
 	existing.Message = p.Message
 	updated, appErr := h.plugin.API.UpdatePost(existing)
 	if appErr != nil {
