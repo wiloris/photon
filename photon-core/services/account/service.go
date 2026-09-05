@@ -221,13 +221,53 @@ func (s *Service) ListDevices(ctx context.Context, photonID PhotonID) ([]Device,
 	return devices, nil
 }
 
+// deviceAuthDomain — доменный литерал аутентификации устройства (ADR-037).
+//
+// Литерал САМ является границей версии схемы: менять правило кодирования —
+// значит менять литерал (`photon-device-auth2:` и подобное). Отдельного поля
+// версии нет намеренно, оно дублировало бы литерал.
+const deviceAuthDomain = "photon-device-auth:"
+
+// deviceAuthInput — то, что на самом деле подписывается при аутентификации
+// устройства (ADR-037):
+//
+//	device_auth_input = "photon-device-auth:" ‖ challenge
+//
+// Без домена подпись, полученная плагином через `identity.sign` (право из
+// каталога SDK), годилась бы как аутентификация устройства — достаточно, чтобы
+// challenge совпал с подписанными данными. Вторая половина решения —
+// `plugin-sign` в photon-plugin-runtime/coreops — уже реализована; домен
+// только с одной стороны дыру не закрывает.
+//
+// Длина перед challenge не нужна ЗДЕСЬ и сейчас: за литералом одно поле
+// переменной длины, последнему полю граница не требуется. Это свойство
+// текущей формы, а не принцип: если в challenge появится структура из
+// нескольких полей, границы придётся кодировать явно — иначе разбор молча
+// станет неоднозначным (ADR-037).
+//
+// Не экспортируется: домен применяется внутри сервиса, вызывающих снаружи
+// нет. Клиент (Phase 16) живёт в другом процессе и реализует формат по
+// спецификации docs/account-device-flow.md, а не импортом Go-функции.
+func deviceAuthInput(challenge []byte) []byte {
+	input := make([]byte, 0, len(deviceAuthDomain)+len(challenge))
+	input = append(input, deviceAuthDomain...)
+	input = append(input, challenge...)
+	return input
+}
+
 // AuthenticateDevice — Transport Authentication (сценарий 2,
 // docs/account-device-flow.md): проверяет, что publicKey
 // зарегистрирован и не отозван, и что signature — корректная подпись
-// challenge этим ключом (см. ADR-021: challenge-response, не
-// сертификаты). Обновляет LastSeen при успехе.
+// ДОМЕННОГО ПРЕДСТАВЛЕНИЯ challenge этим ключом (ADR-037; см. также
+// ADR-021: challenge-response, не сертификаты). Обновляет LastSeen при
+// успехе.
+//
+// Подпись под сырым challenge отвергается. Это ломающее изменение для
+// устройств, зарегистрированных до ADR-037, и миграция не нужна: подписи не
+// хранятся, а клиентов, подписывающих challenge, ещё не существует —
+// обоснование в ADR-037.
 func (s *Service) AuthenticateDevice(ctx context.Context, publicKey ports.PublicKey, challenge, signature []byte) (Device, error) {
-	ok, err := s.identity.Verify(ctx, publicKey, challenge, ports.Signature(signature))
+	ok, err := s.identity.Verify(ctx, publicKey, deviceAuthInput(challenge), ports.Signature(signature))
 	if err != nil {
 		return Device{}, fmt.Errorf("account: verify signature: %w", err)
 	}

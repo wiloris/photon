@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -253,8 +254,11 @@ func TestRevokeDevice_RemovesFromListAndBlocksAuthentication(t *testing.T) {
 	// Согласованность двух namespace (ADR-024): устройство должно
 	// исчезнуть и из обратного индекса, иначе Authenticate прошёл бы,
 	// хотя устройство отозвано.
+	// Подпись ВАЛИДНАЯ (доменная, ADR-037) — иначе Verify отсечёт вызов
+	// раньше обращения к хранилищу, и тест перестанет проверять то, ради
+	// чего написан: согласованность двух namespace, а не подпись.
 	challenge := []byte("challenge")
-	sig, err := identity.Sign(ctx, pair.Private, challenge)
+	sig, err := identity.Sign(ctx, pair.Private, deviceAuthInput(challenge))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -293,7 +297,7 @@ func TestAuthenticateDevice_ValidSignature(t *testing.T) {
 	}
 
 	challenge := []byte("server-issued-challenge")
-	sig, err := identity.Sign(ctx, pair.Private, challenge)
+	sig, err := identity.Sign(ctx, pair.Private, deviceAuthInput(challenge))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -321,8 +325,10 @@ func TestAuthenticateDevice_WrongSignature(t *testing.T) {
 	}
 
 	otherPair, _ := identity.Generate(ctx)
+	// Домен тот же, ключ чужой: тест проверяет владение ключом, а не
+	// доменное разделение (для него — TestAuthenticateDevice_RawChallengeRejected).
 	challenge := []byte("server-issued-challenge")
-	wrongSig, err := identity.Sign(ctx, otherPair.Private, challenge)
+	wrongSig, err := identity.Sign(ctx, otherPair.Private, deviceAuthInput(challenge))
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
@@ -341,8 +347,10 @@ func TestAuthenticateDevice_UnknownPublicKey(t *testing.T) {
 	svc := New(storage, identity, idp)
 
 	pair, _ := identity.Generate(ctx)
+	// Подпись ВАЛИДНАЯ: тест про незарегистрированный ключ, и он обязан
+	// доходить до хранилища, а не отсекаться на проверке подписи.
 	challenge := []byte("challenge")
-	sig, _ := identity.Sign(ctx, pair.Private, challenge)
+	sig, _ := identity.Sign(ctx, pair.Private, deviceAuthInput(challenge))
 
 	_, err := svc.AuthenticateDevice(ctx, pair.Public, challenge, sig)
 	if !errors.Is(err, ErrDeviceNotFound) {
@@ -365,7 +373,7 @@ func TestAuthenticateDevice_UpdatesLastSeen(t *testing.T) {
 	}
 
 	challenge := []byte("challenge")
-	sig, _ := identity.Sign(ctx, pair.Private, challenge)
+	sig, _ := identity.Sign(ctx, pair.Private, deviceAuthInput(challenge))
 
 	authenticated, err := svc.AuthenticateDevice(ctx, pair.Public, challenge, sig)
 	if err != nil {
@@ -431,5 +439,144 @@ func TestListDevices_DoesNotLeakOtherAccountsDevices(t *testing.T) {
 	}
 	if len(devices1) != 1 || string(devices1[0].PublicKey) != string(pair1.Public) {
 		t.Fatalf("ListDevices(acc1) leaked or missing devices: %+v", devices1)
+	}
+}
+
+// --- ADR-037: доменное разделение подписей ---------------------------------
+//
+// Домен `photon-device-auth:` существует не ради формы, а потому что без него
+// подпись, полученная плагином через `identity.sign` (право из каталога SDK),
+// годится как аутентификация устройства: достаточно, чтобы challenge совпал с
+// подписанными данными. Вторая половина решения — `plugin-sign` в
+// `photon-plugin-runtime/coreops` — уже реализована; эти тесты закрывают
+// первую.
+
+// registeredDevice — зарегистрированное устройство и его пара ключей.
+// Вынесено, потому что три теста ниже отличаются только тем, ЧТО подписано.
+func registeredDevice(t *testing.T) (context.Context, *Service, ports.Identity, ports.IdentityPair) {
+	t.Helper()
+	ctx := context.Background()
+	storage := newTestStorage(t)
+	idp := newMockIdentityProvider()
+	identity := newTestIdentity()
+	svc := New(storage, identity, idp)
+
+	acc := loginTestAccount(t, svc, idp)
+
+	pair, err := identity.Generate(ctx)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, err := svc.RegisterDevice(ctx, acc.PhotonID, pair.Public, "device"); err != nil {
+		t.Fatalf("RegisterDevice: %v", err)
+	}
+	return ctx, svc, identity, pair
+}
+
+// Подпись под СЫРЫМ challenge не проходит. Это и есть дыра, которую закрывает
+// ADR-037: до правки AuthenticateDevice принимал любые байты как challenge и
+// любую подпись под ними.
+func TestAuthenticateDevice_RawChallengeRejected(t *testing.T) {
+	ctx, svc, identity, pair := registeredDevice(t)
+
+	challenge := []byte("server-issued-challenge")
+	rawSig, err := identity.Sign(ctx, pair.Private, challenge)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	_, err = svc.AuthenticateDevice(ctx, pair.Public, challenge, rawSig)
+	if !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("подпись под сырым challenge принята — домен не применён; err=%v", err)
+	}
+
+	// Контроль: доменное представление тем же ключом проходит. Без него тест
+	// был бы зелёным и при полностью сломанной проверке подписи.
+	domainSig, err := identity.Sign(ctx, pair.Private, deviceAuthInput(challenge))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if _, err := svc.AuthenticateDevice(ctx, pair.Public, challenge, domainSig); err != nil {
+		t.Fatalf("подпись под доменным представлением отвергнута: %v", err)
+	}
+}
+
+// Подпись, сделанная в домене плагина, не является аутентификацией устройства.
+// Представление строится здесь ВРУЧНУЮ из байт, а не импортом coreops:
+// photon-core не знает о плагинах (ADR-030), и знать не должен — проверяется
+// непересечение входных пространств, а не чужой код.
+func TestAuthenticateDevice_PluginSignatureIsNotDeviceAuth(t *testing.T) {
+	ctx, svc, identity, pair := registeredDevice(t)
+
+	challenge := []byte("server-issued-challenge")
+
+	// "plugin-sign:" ‖ uint32be(len(plugin_id)) ‖ plugin_id ‖ ":" ‖ data,
+	// где data — тот самый challenge (ADR-037, формат домена плагина).
+	pluginID := "com.example.plugin"
+	var pluginInput []byte
+	pluginInput = append(pluginInput, "plugin-sign:"...)
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(pluginID)))
+	pluginInput = append(pluginInput, n[:]...)
+	pluginInput = append(pluginInput, pluginID...)
+	pluginInput = append(pluginInput, ':')
+	pluginInput = append(pluginInput, challenge...)
+
+	pluginSig, err := identity.Sign(ctx, pair.Private, pluginInput)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	_, err = svc.AuthenticateDevice(ctx, pair.Public, challenge, pluginSig)
+	if !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("подпись плагина принята как аутентификация устройства; err=%v", err)
+	}
+}
+
+// Доменный литерал — граница версии схемы (ADR-037), поэтому он должен
+// совпадать точно. Близкие варианты не проходят.
+func TestAuthenticateDevice_DomainPrefixIsExact(t *testing.T) {
+	ctx, svc, identity, pair := registeredDevice(t)
+
+	challenge := []byte("server-issued-challenge")
+	for _, prefix := range []string{
+		"photon-device-auth",  // без двоеточия
+		"photon-device-auth2", // иная версия схемы
+		"device-auth:",        // без вендорной части
+		"Photon-Device-Auth:", // иной регистр
+	} {
+		t.Run(prefix, func(t *testing.T) {
+			input := append([]byte(prefix), challenge...)
+			sig, err := identity.Sign(ctx, pair.Private, input)
+			if err != nil {
+				t.Fatalf("Sign: %v", err)
+			}
+			if _, err := svc.AuthenticateDevice(ctx, pair.Public, challenge, sig); !errors.Is(err, ErrInvalidSignature) {
+				t.Fatalf("принят префикс %q; err=%v", prefix, err)
+			}
+		})
+	}
+}
+
+// Литерал домена закреплён побайтово.
+//
+// Найдено мутацией: подмена литерала на `photon-device-auth2:` не роняла ни
+// одного теста — все они выводили ожидаемое из самой deviceAuthInput и были
+// самосогласованы. Между тем литерал по ADR-037 САМ является границей версии
+// схемы: его смена — смена протокола, и клиент (Phase 16) реализует формат по
+// спецификации, а не по этой функции. Тест, не замечающий переименования,
+// проходил бы всегда.
+func TestDeviceAuthInput_FormatIsPinned(t *testing.T) {
+	got := deviceAuthInput([]byte("challenge"))
+	const want = "photon-device-auth:challenge"
+	if string(got) != want {
+		t.Fatalf("формат домена изменился:\n получено %q\n ожидалось %q\n"+
+			"Смена литерала — смена версии схемы (ADR-037): нужен новый ADR и"+
+			" правка docs/account-device-flow.md, а не правка этого теста.", got, want)
+	}
+
+	// Пустой challenge не превращает вход в пустые байты: домен остаётся.
+	if string(deviceAuthInput(nil)) != "photon-device-auth:" {
+		t.Fatalf("домен теряется на пустом challenge: %q", deviceAuthInput(nil))
 	}
 }
