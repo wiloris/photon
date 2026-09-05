@@ -115,9 +115,9 @@ Compile-time проверка соответствия интерфейсу (п�
 - [x] Регистрация устройства (`RegisterDevice`, привязка нового `PublicKey` к аккаунту)
 - [x] Отзыв устройства (`RevokeDevice` — атомарно из обоих namespace, покрыто тестом на согласованность)
 - [x] Device List API (`ListDevices`, покрыто тестом на отсутствие утечки между аккаунтами)
-- [x] Transport Authentication (`AuthenticateDevice` — challenge-response через `Identity.Verify`, обновление `LastSeen`)
+- [x] Transport Authentication (`AuthenticateDevice` — challenge-response через `Identity.Verify`, обновление `LastSeen`); проверяется подпись под **доменным представлением** `"photon-device-auth:" ‖ challenge`, не под сырым challenge — ADR-037, реализовано отдельной правкой `1c5e679`
 - [ ] Device Management UI (Developer Tools и/или ENGRAM) — **намеренно вне критерия закрытия этой фазы.** Не потому что не нужен, а потому что структурно не может быть построен раньше своего хоста: и Developer Tools (Phase 16), и ENGRAM (Phase 18) сами ещё не существуют. Это не решение "низкий приоритет", а зависимость по порядку фаз — UI появится, когда появится хотя бы один из двух возможных хостов, тогда и будет реализован поверх уже готового и протестированного `services/account` (`ListDevices`/`RevokeDevice` уже дают всё нужное API). Остаётся открытым пунктом в этой фазе как напоминание, не как блокер.
-- [x] Тесты `services/account` — 18 тестов на mock `IdentityProvider` + реальных `adapters/bbolt`/`adapters/ed25519`; `IMPLEMENTATION_LOG.md`: кандидатов на архитектурное обсуждение нет
+- [x] Тесты `services/account` — **21 тест** на mock `IdentityProvider` + реальных `adapters/bbolt`/`adapters/ed25519` (18 исходных плюс 3 на ADR-037: подпись под сырым challenge отвергается, подпись в домене `plugin-sign` не аутентифицирует устройство, доменный литерал закреплён побайтово); `IMPLEMENTATION_LOG.md`: кандидатов на архитектурное обсуждение нет
 - [x] Тесты `adapters/googleoidc` — 13 тестов (валидный токен, обе формы issuer, неверная подпись, просрочен, неверный issuer/audience, отсутствующий subject, некорректный формат, неизвестный kid, alg=none отклонён, отмена контекста, недоступность JWKS не путается с невалидным токеном), compile-time проверка `var _ ports.IdentityProvider = (*Adapter)(nil)`; `IMPLEMENTATION_LOG.md`: кандидатов на архитектурное обсуждение нет
 
 Точка реализации: после стабилизации Identity (Phase 3) и Storage (Phase 2, уже стабилен), до начала плотной работы над Transport/Bridge — модель доверия дешевле зафиксировать сейчас, чем переделывать после того, как Transport/Bindings/мобильные клиенты уже написаны под другое предположение.
@@ -624,7 +624,7 @@ namespace-изоляцию в соглашение о конструирован
 **Правка ломающая, затрагивает ~6 тестовых реализаций.**
 
 - [x] **ADR-036** — `ipc.Handler` получает `CallerInfo` параметром; 8 файлов реализаций обновлено
-- [x] **ADR-037** — доменное разделение подписей с обеих сторон границы
+- [x] **ADR-037** — доменное разделение подписей с обеих сторон границы. В этой фазе реализована половина `plugin-sign` (`coreops`); половина `device-auth` в `services/account` появилась позже, отдельной правкой `1c5e679`, и до неё формулировка «с обеих сторон» опережала код
 - [x] `ipc.OpError` — коды протокола из handler'а, текст не из `err.Error()`
 - [x] Исполнитель `coreops`: `storage.*`, `identity.*`, `crypto.*`, `log.write`
 - [x] Namespace подставляет runtime; **границы полей кодируются явно**, не склейкой
