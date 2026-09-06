@@ -376,7 +376,10 @@ func (ql *QuicListener) handleConnection(conn *quic.Conn) {
 		return
 	}
 
-	session, appErr := ql.plugin.API.GetSession(auth.SessionToken)
+	// F6: та же проверка, что на HTTP-входе. Прежде здесь стоял голый
+	// GetSession, который истечения не проверяет (ADR-039 §11).
+	sessionID := auth.SessionToken
+	userID, appErr := authorizeSession(ql.plugin.API, sessionID)
 	if appErr != nil {
 		ql.plugin.API.LogWarn("[Photon] Auth failed", "remote", remoteAddr)
 		writeError(stream, "unauthorized")
@@ -384,7 +387,6 @@ func (ql *QuicListener) handleConnection(conn *quic.Conn) {
 		conn.CloseWithError(0, "unauthorized")
 		return
 	}
-	userID := session.UserId
 	ql.plugin.API.LogInfo("[Photon] Authenticated", "remote", remoteAddr, "user_id", userID)
 
 	var modeFrame struct {
@@ -400,6 +402,11 @@ func (ql *QuicListener) handleConnection(conn *quic.Conn) {
 		stream.Close()
 		client := ql.registry.Register(userID, conn)
 		ql.plugin.API.LogInfo("[Photon] Client subscribed", "user_id", userID, "remote", remoteAddr)
+		// F6: у подписки нет запросов, на которых можно было бы
+		// перепроверить сессию, поэтому ревалидация идёт по времени. Без неё
+		// отозванная сессия жила бы ровно столько, сколько открыто
+		// соединение, а KeepAlivePeriod делает это окно неограниченным.
+		ql.watchSession(sessionID, conn, client, remoteAddr)
 		<-client.done
 		ql.plugin.API.LogInfo("[Photon] Client unsubscribed", "user_id", userID)
 
@@ -412,12 +419,12 @@ func (ql *QuicListener) handleConnection(conn *quic.Conn) {
 				ql.plugin.API.LogDebug("[Photon] Connection closed", "remote", remoteAddr)
 				return
 			}
-			go ql.handleStream(s, userID, remoteAddr)
+			go ql.handleStream(s, sessionID, remoteAddr)
 		}
 	}
 }
 
-func (ql *QuicListener) handleStream(stream *quic.Stream, userID string, remoteAddr string) {
+func (ql *QuicListener) handleStream(stream *quic.Stream, sessionID string, remoteAddr string) {
 	defer func() {
 		if r := recover(); r != nil {
 			ql.plugin.API.LogError("[Photon] PANIC in handleStream",
@@ -440,6 +447,17 @@ func (ql *QuicListener) handleStream(stream *quic.Stream, userID string, remoteA
 		return
 	}
 
+	// F6: сессия перепроверяется на КАЖДОМ действии — ровно как на HTTP-входе,
+	// где GetSession зовётся на каждый запрос. Прежде userID захватывался один
+	// раз при рукопожатии, и отозванная сессия продолжала работать до закрытия
+	// соединения.
+	userID, appErr := authorizeSession(ql.plugin.API, sessionID)
+	if appErr != nil {
+		ql.plugin.API.LogWarn("[Photon] Session no longer valid", "remote", remoteAddr)
+		writeError(stream, "unauthorized")
+		return
+	}
+
 	ql.plugin.API.LogInfo("[Photon] Action",
 		"user_id", userID, "resource", header.Resource, "action", header.Action)
 
@@ -449,3 +467,34 @@ func (ql *QuicListener) handleStream(stream *quic.Stream, userID string, remoteA
 
 func writeResponse(w io.Writer, resp Response) { _ = json.NewEncoder(w).Encode(resp) }
 func writeError(w io.Writer, msg string)       { writeResponse(w, Response{OK: false, Error: msg}) }
+
+// watchSession периодически перепроверяет сессию подписного соединения и
+// закрывает его, когда сессия перестала быть действительной (F6).
+//
+// Нужна потому, что у подписки нет запросов: на action-соединении сессия
+// перепроверяется на каждом стриме, а здесь перепроверять не на чем. Без этой
+// горутины отозванная или истёкшая сессия продолжала бы получать события
+// столько, сколько живёт соединение, — а KeepAlivePeriod делает этот срок
+// неограниченным.
+//
+// Завершается вместе с клиентом: ждать нечего, если подписка уже закрыта.
+func (ql *QuicListener) watchSession(sessionID string, conn *quic.Conn, client *PushClient, remoteAddr string) {
+	go func() {
+		t := time.NewTicker(sessionRevalidatePeriod)
+		defer t.Stop()
+		for {
+			select {
+			case <-client.done:
+				return
+			case <-t.C:
+				if _, appErr := authorizeSession(ql.plugin.API, sessionID); appErr != nil {
+					ql.plugin.API.LogWarn("[Photon] Subscription session no longer valid, closing",
+						"remote", remoteAddr)
+					client.close()
+					conn.CloseWithError(0, "session no longer valid")
+					return
+				}
+			}
+		}
+	}()
+}

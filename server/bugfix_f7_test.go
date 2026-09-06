@@ -33,6 +33,8 @@ func TestF7_HooksSurviveNilListener(t *testing.T) {
 func TestF7_HTTPEntrySurvivesNilListener(t *testing.T) {
 	api := quietAPI()
 	api.On("GetSession", "sid").Return(&model.Session{Id: "sid", UserId: uB}, nil)
+	// F6 добавил проверку idle-timeout, а она читает конфигурацию.
+	api.On("GetConfig").Return(configWithIdleTimeout(0))
 	p := handlersFor(api)
 	p.router = p.initRouter()
 

@@ -55,6 +55,8 @@ func TestDispatchUnknownActionKeepsItsOwnError(t *testing.T) {
 func TestHTTPEntryIsAuthorized(t *testing.T) {
 	d, api := newDeniedDispatcher(t)
 	api.On("GetSession", "sid-b").Return(&model.Session{Id: "sid-b", UserId: uB}, nil)
+	// F6 добавил проверку жизненного цикла сессии, и она читает конфигурацию.
+	api.On("GetConfig").Return(configWithIdleTimeout(0))
 
 	p := &Plugin{}
 	p.SetAPI(api)

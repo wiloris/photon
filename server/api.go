@@ -57,7 +57,9 @@ func (p *Plugin) HandleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, appErr := p.API.GetSession(envelope.Auth.SessionToken)
+	// F6: единая точка проверки жизненного цикла сессии. Прежде здесь стоял
+	// голый GetSession, который истечения не проверяет (ADR-039 §11).
+	userID, appErr := authorizeSession(p.API, envelope.Auth.SessionToken)
 	if appErr != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(Response{OK: false, Error: "unauthorized"})
@@ -72,6 +74,6 @@ func (p *Plugin) HandleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := p.quicListener.dispatcher.Dispatch(session.UserId, envelope.Header, envelope.Payload)
+	resp := p.quicListener.dispatcher.Dispatch(userID, envelope.Header, envelope.Payload)
 	_ = json.NewEncoder(w).Encode(resp)
 }
