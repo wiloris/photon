@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -75,7 +76,13 @@ func (f *fakeBridge) Connect(ctx context.Context, ep ports.Endpoint) (ports.Conn
 		return nil, err
 	}
 
-	c := &fakeConn{br: f, closeCh: make(chan struct{})}
+	c := &fakeConn{
+		br:        f,
+		closeCh:   make(chan struct{}),
+		push:      make(chan []byte, 16),
+		pushBreak: make(chan struct{}),
+		mode:      make(chan string, 1),
+	}
 	f.mu.Lock()
 	f.conns = append(f.conns, c)
 	f.mu.Unlock()
@@ -122,6 +129,14 @@ type fakeConn struct {
 
 	closeCh chan struct{}
 
+	// push/pushBreak/mode — подписное соединение (Phase 15.5). Прежний фейк
+	// умел только action: handshake отвечал "ready" всегда, а AcceptUniStream
+	// висел до отмены контекста, то есть push было нечем воспроизвести.
+	push      chan []byte
+	pushBreak chan struct{}
+	mode      chan string
+	breakOnce sync.Once
+
 	mu      sync.Mutex
 	idx     int
 	openErr error
@@ -161,11 +176,23 @@ func (c *fakeConn) serve(idx int, srv net.Conn) {
 		if dec.Decode(&auth) != nil || dec.Decode(&mode) != nil {
 			return
 		}
+		// Режим фиксируется на СОЕДИНЕНИЕ (bridge-session.md §2.4), и сервер
+		// обязан подтвердить именно запрошенный: подписчик, получивший
+		// "ready", уходит ждать push туда, где сервер UniStream не откроет.
+		requested, _ := mode["mode"].(string)
+		select {
+		case c.mode <- requested:
+		default:
+		}
+		status := "ready"
+		if requested == "subscribe" {
+			status = "subscribed"
+		}
 		ack := map[string]any{"ok": c.br.handshakeOK}
 		if !c.br.handshakeOK {
 			ack["error"] = c.br.handshakeErr
 		} else {
-			ack["data"] = map[string]any{"status": "ready"}
+			ack["data"] = map[string]any{"status": status}
 		}
 		json.NewEncoder(srv).Encode(ack)
 		return
@@ -190,8 +217,69 @@ func (c *fakeConn) OpenUniStream(ctx context.Context) (ports.SendStream, error) 
 	return nil, io.EOF
 }
 func (c *fakeConn) AcceptUniStream(ctx context.Context) (ports.RecvStream, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
+	select {
+	case b := <-c.push:
+		return recvBytes{bytes.NewReader(b)}, nil
+	case <-c.pushBreak:
+		// Обрыв уже установленного подписного соединения: ошибка приёма, не
+		// отмена контекста. Сессия обязана классифицировать это как
+		// ErrConnectionLost, а не как «вызывающий передумал».
+		return nil, io.ErrUnexpectedEOF
+	case <-c.closeCh:
+		return nil, io.ErrClosedPipe
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// recvBytes — однонаправленный поток поверх готового буфера.
+type recvBytes struct{ r *bytes.Reader }
+
+func (r recvBytes) Read(p []byte) (int, error) { return r.r.Read(p) }
+
+// sendPush кладёт готовый кадр push в очередь соединения.
+func (c *fakeConn) sendPush(t *testing.T, frame string) {
+	t.Helper()
+	select {
+	case c.push <- []byte(frame):
+	case <-time.After(2 * timeUnit):
+		t.Fatal("очередь push фейка переполнена")
+	}
+}
+
+// breakPush рвёт подписное соединение.
+func (c *fakeConn) breakPush() {
+	c.breakOnce.Do(func() { close(c.pushBreak) })
+}
+
+// waitSubscribeConn дожидается соединения, поднятого в режиме subscribe.
+func (f *fakeBridge) waitSubscribeConn(t *testing.T, after int) *fakeConn {
+	t.Helper()
+	deadline := time.Now().Add(10 * timeUnit)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		conns := append([]*fakeConn(nil), f.conns...)
+		f.mu.Unlock()
+		seen := 0
+		for _, c := range conns {
+			select {
+			case m := <-c.mode:
+				c.mode <- m // вернуть, чтобы повторный вызов тоже увидел
+				if m != "subscribe" {
+					continue
+				}
+			default:
+				continue
+			}
+			seen++
+			if seen > after {
+				return c
+			}
+		}
+		time.Sleep(timeUnit / 20)
+	}
+	t.Fatalf("подписное соединение №%d не появилось", after+1)
+	return nil
 }
 func (c *fakeConn) RemoteEndpoint() ports.Endpoint { return "fake://bridge" }
 

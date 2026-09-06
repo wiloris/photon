@@ -2,11 +2,102 @@ package main
 
 /*
 #include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 #include "internal_cgo_types.h"
+
+// ── Тестовые колбэки ─────────────────────────────────────────────────────
+//
+// Настоящие C-функции, а не Go-замыкания: реентерабельность проверяется
+// только так. Колбэк, вызванный из насоса, обязан суметь позвать Photon_*
+// обратно — а это возможно лишь через ту же границу, что у настоящего
+// клиента.
+//
+// Экспортируемые функции объявлены вручную: cgo генерирует _cgo_export.h
+// уже ПОСЛЕ компиляции преамбулы, поэтому включить его здесь нельзя.
+// Сигнатуры обязаны совпадать с photon.go — расхождение поймает компоновщик.
+extern void         Photon_Destroy(PhotonHandle* handle);
+extern const char*  Photon_GetLastError(PhotonHandle* handle);
+extern PhotonResult Photon_SendAction(PhotonHandle* handle, int32_t action_code,
+                                      const char* payload_json, PhotonString** response_out);
+
+// Состояние наблюдения. Одиночное: тесты, использующие колбэки, не
+// параллелятся между собой (t.Parallel не вызывается).
+static int         g_calls;
+static char        g_last[4096];
+static int         g_order[64];
+static int         g_order_n;
+static PhotonHandle* g_handle;
+static int         g_reentrant_rc;
+static int         g_destroy_returned;
+static pthread_t   g_cb_thread;
+static int         g_cb_thread_set;
+
+static void photon_test_reset(void) {
+    g_calls = 0; g_last[0] = 0; g_order_n = 0;
+    g_handle = NULL; g_reentrant_rc = -1; g_destroy_returned = 0;
+    g_cb_thread_set = 0;
+}
+
+static void photon_test_note(const char* json) {
+    g_calls++;
+    if (json) { strncpy(g_last, json, sizeof(g_last) - 1); g_last[sizeof(g_last) - 1] = 0; }
+    if (!g_cb_thread_set) { g_cb_thread = pthread_self(); g_cb_thread_set = 1; }
+}
+
+// Простой наблюдатель: только считает и запоминает.
+static void photon_cb_plain(const char* json, void* ud) {
+    (void)ud;
+    photon_test_note(json);
+}
+
+// Зовёт Photon_SendAction из колбэка — обязан не дедлокнуть.
+static void photon_cb_send_action(const char* json, void* ud) {
+    (void)ud;
+    photon_test_note(json);
+    g_reentrant_rc = (int)Photon_SendAction(g_handle, 201, "{}", NULL);
+}
+
+// Зовёт Photon_GetLastError из колбэка — обязан не дедлокнуть.
+static void photon_cb_last_error(const char* json, void* ud) {
+    (void)ud;
+    photon_test_note(json);
+    (void)Photon_GetLastError(g_handle);
+    g_reentrant_rc = 0;
+}
+
+// Зовёт Photon_Destroy из колбэка — обязан вернуться немедленно, не повесив
+// процесс. Флаг ставится ПОСЛЕ возврата: если бы Destroy ждал, сюда бы не
+// дошли.
+static void photon_cb_destroy(const char* json, void* ud) {
+    (void)ud;
+    photon_test_note(json);
+    Photon_Destroy(g_handle);
+    g_destroy_returned = 1;
+}
+
+// Доступ к наблюдению — только через функции: static-переменные преамбулы из
+// Go не адресуются (каждый файл cgo — своя единица трансляции), а static-
+// функции вызываются штатно.
+static int  photon_test_calls(void)            { return g_calls; }
+static const char* photon_test_last(void)      { return g_last; }
+static int  photon_test_rc(void)               { return g_reentrant_rc; }
+static int  photon_test_destroy_returned(void) { return g_destroy_returned; }
+static void photon_test_set_handle(PhotonHandle* h) { g_handle = h; }
+
+static PhotonEventCallback photon_cb_of(int kind) {
+    switch (kind) {
+        case 1:  return photon_cb_send_action;
+        case 2:  return photon_cb_last_error;
+        case 3:  return photon_cb_destroy;
+        default: return photon_cb_plain;
+    }
+}
 */
 import "C"
 
 import (
+	"runtime/cgo"
 	"unsafe"
 
 	"github.com/wiloris/photon-core/services/dispatcher"
@@ -124,4 +215,43 @@ func tsFreeBytes(p unsafe.Pointer) { Photon_FreeBytes((*C.PhotonBytes)(p)) }
 func tsCoreIsValid(handle unsafe.Pointer) bool {
 	_, ok := coreFromHandle((*C.PhotonHandle)(handle))
 	return ok
+}
+
+// ── Обёртки для тестов доставки событий (Phase 15.5) ─────────────────────
+
+// tsEventReset обнуляет наблюдение и запоминает handle, который тестовые
+// колбэки будут дёргать реентерабельно.
+func tsEventReset(handle unsafe.Pointer) {
+	C.photon_test_reset()
+	C.photon_test_set_handle((*C.PhotonHandle)(handle))
+}
+
+// tsSetEventCallbackKind ставит один из тестовых C-колбэков:
+// 0 — наблюдатель, 1 — зовёт SendAction, 2 — GetLastError, 3 — Destroy.
+func tsSetEventCallbackKind(handle unsafe.Pointer, kind int) {
+	Photon_SetEventCallback((*C.PhotonHandle)(handle), C.photon_cb_of(C.int(kind)), nil)
+}
+
+// tsSetEventCallbackNil снимает адресата, не трогая подписку.
+func tsSetEventCallbackNil(handle unsafe.Pointer) {
+	Photon_SetEventCallback((*C.PhotonHandle)(handle), nil, nil)
+}
+
+func tsEventCalls() int       { return int(C.photon_test_calls()) }
+func tsEventLast() string     { return C.GoString(C.photon_test_last()) }
+func tsReentrantRC() int      { return int(C.photon_test_rc()) }
+func tsDestroyReturned() bool { return C.photon_test_destroy_returned() != 0 }
+
+// tsNewCoreWithFakeDispatcher собирает инстанс поверх подставленного
+// транспорта: настоящей сети в юнит-тестах биндинга нет и быть не должно.
+func tsNewCoreWithFakeDispatcher(cfg dispatcher.Config) (unsafe.Pointer, error) {
+	disp, err := dispatcher.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	c := &core{disp: disp, teardownDone: make(chan struct{})}
+	mem := newOpaqueHandle(c)
+	c.handleMem = mem
+	c.handleRef = cgo.Handle(uintptr(*(*C.uintptr_t)(mem)))
+	return mem, nil
 }

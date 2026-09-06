@@ -12,7 +12,20 @@ package main
 
 /*
 #include <stdlib.h>
+#include <pthread.h>
 #include "internal_cgo_types.h"
+
+// photon_invoke_callback — трамплин: cgo не умеет вызывать C-указатель на
+// функцию напрямую из Go.
+//
+// Вызывается БЕЗ удерживаемых мьютексов Go-стороны: c.mu берут четыре
+// экспортируемые функции (Destroy, SetEventCallback, GetLastError,
+// SendAction) и setError, поэтому вызов колбэка под ним вешал бы клиента на
+// любом реентерабельном обращении к Photon — включая рядовое «получил
+// MESSAGE → отправил действие» (event-delivery.md §10.5).
+static void photon_invoke_callback(PhotonEventCallback cb, const char* json, void* ud) {
+    cb(json, ud);
+}
 */
 import "C"
 
@@ -79,6 +92,36 @@ type core struct {
 	callback  C.PhotonEventCallback
 	userData  unsafe.Pointer
 	destroyed bool
+
+	// ── Доставка событий (Phase 15.5, ADR-045) ───────────────────────────
+	//
+	// inCallback/cbThread — признак того, что прямо сейчас исполняется
+	// колбэк, и OS-поток, на котором это происходит. Нужны ровно для одного:
+	// отличить Photon_Destroy, вызванный ИЗ колбэка, от вызова из чужого
+	// потока. «Горутина == поток» неверно, поэтому сравниваются именно
+	// потоки, а насос привязан к своему через runtime.LockOSThread
+	// (event-delivery.md §10.3).
+	inCallback bool
+	cbThread   C.pthread_t
+
+	// deferred — уничтожение отложено до возврата из колбэка. Ставится
+	// только реентерабельным Destroy.
+	deferred bool
+
+	// teardownDone закрывается ровно однажды — тем, кто фактически выполнил
+	// уничтожение. Конкурентный Destroy из чужого потока ждёт его, иначе
+	// вернул бы управление, пока колбэк ещё исполняется, нарушив гарантию
+	// заголовка для себя (event-delivery.md §10.4).
+	teardownDone chan struct{}
+
+	// handleMem/handleRef сохраняются для отложенного пути: освобождает их
+	// тот же, кто выполняет уничтожение.
+	handleMem unsafe.Pointer
+	handleRef cgo.Handle
+
+	// pendingDisp — диспетчер, снятый с c.disp вызовом Destroy и ещё не
+	// закрытый. При отложенном пути его закрывает насос.
+	pendingDisp *dispatcher.Dispatcher
 
 	// disp — маршрутизатор действий этого инстанса (Phase 13.5). Своё поле
 	// на каждый хендл, не пакетная переменная: адресат — это сам
@@ -180,7 +223,15 @@ func Photon_Create(configJSON *C.char, handle **C.PhotonHandle) C.PhotonResult {
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
 
-	*handle = (*C.PhotonHandle)(newOpaqueHandle(&core{disp: disp}))
+	c := &core{disp: disp, teardownDone: make(chan struct{})}
+	// Инстанс запоминает СВОЙ handle: при отложенном уничтожении (§10.2)
+	// освобождает память не тот, кто вызвал Destroy, а насос, и ему неоткуда
+	// взять указатель иначе.
+	mem := newOpaqueHandle(c)
+	c.handleMem = mem
+	c.handleRef = cgo.Handle(uintptr(*(*C.uintptr_t)(mem)))
+
+	*handle = (*C.PhotonHandle)(mem)
 	return C.PHOTON_OK
 }
 
@@ -205,10 +256,31 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 	}
 
 	c.mu.Lock()
+
+	// Реентерабельность определяется по OS-ПОТОКУ, а не по горутине: «горутина
+	// == поток» неверно. Насос привязан к своему потоку через LockOSThread, а
+	// обратный вызов C → Go идёт на том же потоке, поэтому Destroy, вызванный
+	// из колбэка, видит тот же идентификатор. pthread_t непрозрачен по
+	// стандарту — сравнение только через pthread_equal (event-delivery.md
+	// §10.3).
+	reentrant := c.inCallback && C.pthread_equal(C.pthread_self(), c.cbThread) != 0
+
 	if c.destroyed {
 		c.mu.Unlock()
+		if reentrant {
+			// Поток колбэка не блокируется никогда.
+			return
+		}
+		// Уничтожение уже начал кто-то другой. Вернуться сейчас значило бы
+		// отдать управление, пока колбэк ещё исполняется, нарушив гарантию
+		// заголовка для СЕБЯ, — поэтому ждём его завершения
+		// (event-delivery.md §10.4).
+		<-c.teardownDone
 		return
 	}
+
+	// Право на уничтожение получает тот, кто первым перевёл инстанс в
+	// destroyed. Ровно один раз.
 	c.destroyed = true
 	disp := c.disp
 	c.disp = nil
@@ -216,29 +288,45 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 		C.free(unsafe.Pointer(c.lastError))
 		c.lastError = nil
 	}
+
+	if reentrant {
+		// ЯВНОЕ ИСКЛЮЧЕНИЕ из обычной семантики Destroy (event-delivery.md
+		// §10.2). Замороженное «дождаться завершения уже начатых вызовов
+		// колбэка» в случае САМОВЫЗОВА невыполнимо логически: колбэк не может
+		// завершиться раньше, чем вернётся Destroy, который он сам и вызвал.
+		//
+		// Поэтому здесь НИЧЕГО не ждётся, ничего не закрывается и handle не
+		// освобождается. К моменту возврата колбэк НЕ завершён — он и есть
+		// вызывающий; инстанс НЕ уничтожен; handle ЕЩЁ выделен. Гарантировано
+		// ровно одно: новых вызовов колбэка не будет.
+		c.deferred = true
+		c.pendingDisp = disp
+		c.mu.Unlock()
+		if disp != nil {
+			// Разбудить насос: Close звать нельзя — он ждёт d.inflight, в
+			// котором состоит сам насос, вызвавший этот колбэк.
+			disp.Cancel()
+		}
+		return
+	}
+
+	mem, ref := c.handleMem, c.handleRef
+	c.handleMem = nil
 	c.mu.Unlock()
 
 	// Настоящее ожидание, а не пометка «здесь однажды появится WaitGroup»:
-	// с Phase 13.5 существует фоновая работа, переживающая возврат из
-	// вызова, — SendAction, висящий на сети, и идущее подключение.
+	// фоновая работа переживает возврат из вызова — SendAction на сети, идущее
+	// подключение и, с Phase 15.5, насос событий.
 	//
 	// dispatcher.Close сначала ОТМЕНЯЕТ их и только потом ждёт. Ожидание без
 	// отмены висело бы до call_timeout — ровно то зависание, которое Phase 9
 	// нашла тестом отказа на host.Stop с неотвечающим плагином.
 	//
-	// Закрывается вне c.mu: Close ждёт возврата вызовов, а те могут
-	// обратиться к setError и взяли бы тот же мьютекс.
-	//
-	// После возврата отсюда ни один вызов больше не пользуется этим core —
-	// это и есть предусловие гарантии lifetime из photon_core.h. Колбэк
-	// сегодня не вызывает никто (эмиттера событий нет — push за рамками
-	// фазы), но механизм ожидания уже здесь, и эмиттеру останется встать в
-	// ту же очередь.
-	if disp != nil {
-		disp.Close()
-	}
-
-	releaseOpaqueHandle(unsafe.Pointer(handle), h, true)
+	// Единственный барьер времени жизни колбэка — d.inflight: Wait не
+	// вернётся, пока насос не выполнил Done, а если в этот момент колбэк
+	// исполнялся, Wait дождётся его возврата. Признак destroyed барьером НЕ
+	// является и в этой роли не используется (event-delivery.md §10.1).
+	c.teardown(disp, mem, ref)
 }
 
 // ── Event Callback ──────────────────────────────────────────────────────
@@ -252,7 +340,94 @@ func Photon_SetEventCallback(handle *C.PhotonHandle, callback C.PhotonEventCallb
 	c.mu.Lock()
 	c.callback = callback
 	c.userData = userData
+	disp := c.disp
 	c.mu.Unlock()
+
+	// Подписку запускает ПЕРВЫЙ ненулевой колбэк, и это единственный вызов
+	// ABI, выражающий намерение получать события (event-delivery.md §5.1).
+	// Photon_Create для этого не годится — ему запрещено касаться сети;
+	// первый SendAction тоже: клиент, который только слушает, не подписался
+	// бы никогда.
+	//
+	// Замена колбэка подписку не трогает, NULL лишь отцепляет адресата:
+	// тушить и поднимать подписку по установке и снятию — лишний путь с
+	// состоянием гонки при нулевом выигрыше.
+	//
+	// StartEvents идемпотентен, поэтому проверять «уже запущен» здесь не
+	// нужно; ErrNoEndpoint на инстансе без адресата — законный исход, а не
+	// ошибка вызова.
+	if callback != nil && disp != nil {
+		_ = disp.StartEvents(c.deliver, c.finishDeferredTeardown)
+	}
+}
+
+// deliver — единственная точка вызова пользовательского колбэка.
+//
+// Вызывается насосом СИНХРОННО и последовательно, поэтому порядок событий
+// сохраняется, а колбэки никогда не параллельны (event-delivery.md §9.1).
+//
+// Мьютекс НЕ удерживается во время вызова. Под ним только читается адресат и
+// публикуется поток доставки: c.mu берут Destroy, SetEventCallback,
+// GetLastError и SendAction, и вызов колбэка под ним вешал бы клиента на любом
+// реентерабельном обращении к Photon (§10.5).
+func (c *core) deliver(eventJSON []byte) {
+	c.mu.Lock()
+	if c.destroyed || c.callback == nil {
+		c.mu.Unlock()
+		return
+	}
+	cb, ud := c.callback, c.userData
+	// Поток публикуется ДО вызова: реентерабельный Destroy сравнивает с ним
+	// свой pthread_self. Насос привязан к потоку через LockOSThread, поэтому
+	// значение, взятое здесь, принадлежит потоку, который исполнит колбэк.
+	c.cbThread = C.pthread_self()
+	c.inCallback = true
+	c.mu.Unlock()
+
+	cs := C.CString(string(eventJSON))
+	C.photon_invoke_callback(cb, cs, ud)
+	// event_json невалиден сразу после возврата — прямое требование
+	// photon_core.h; клиент, которому нужны данные, копирует их внутри.
+	C.free(unsafe.Pointer(cs))
+
+	c.mu.Lock()
+	c.inCallback = false
+	c.mu.Unlock()
+
+	// Реентерабельный Destroy уже отменил контекст диспетчера и вернулся
+	// внутрь колбэка. Насос обнаружит отмену на следующем шаге, выйдет и
+	// вызовет finishDeferredTeardown — здесь делать нечего.
+}
+
+// finishDeferredTeardown вызывается насосом ПОСЛЕ его выхода из d.inflight
+// (гарантия порядка — StartEvents). Только здесь безопасно звать Close: он
+// ждёт d.inflight, и до снятия себя с учёта насос ждал бы сам себя
+// (event-delivery.md §10.2).
+func (c *core) finishDeferredTeardown() {
+	c.mu.Lock()
+	if !c.deferred {
+		c.mu.Unlock()
+		return
+	}
+	c.deferred = false
+	disp := c.pendingDisp
+	c.pendingDisp = nil
+	mem, ref := c.handleMem, c.handleRef
+	c.handleMem = nil
+	c.mu.Unlock()
+
+	c.teardown(disp, mem, ref)
+}
+
+// teardown — фактическое уничтожение. Выполняется РОВНО ОДИН РАЗ: право на
+// него получает тот, кто первым перевёл инстанс в destroyed
+// (event-delivery.md §10.4).
+func (c *core) teardown(disp *dispatcher.Dispatcher, mem unsafe.Pointer, ref cgo.Handle) {
+	if disp != nil {
+		disp.Close()
+	}
+	releaseOpaqueHandle(mem, ref, mem != nil)
+	close(c.teardownDone)
 }
 
 // ── Диагностика ─────────────────────────────────────────────────────────
