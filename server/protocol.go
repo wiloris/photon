@@ -151,6 +151,15 @@ type GetFeedPayload struct {
 	ChannelID string `json:"channel_id"`
 	Page      int    `json:"page"`
 	PerPage   int    `json:"per_page"`
+
+	// Phase 12: курсорная пагинация. Форма не заморожена до завершения
+	// первого вертикального среза (ADR-046 §6.1).
+	//
+	// Курсор — id записи, ОТ которой листаем; сама она в выдачу не входит.
+	// before и after взаимно исключающие; оба пустые — самые свежие.
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 type DeletePostPayload struct {

@@ -95,18 +95,42 @@ func (h *PostHandler) getFeed(userID string, raw json.RawMessage) Response {
 	if p.ChannelID == "" {
 		return Response{OK: false, Error: "channel_id is required"}
 	}
-	if p.PerPage <= 0 {
-		p.PerPage = 30
+	// Phase 12: limit — курсорное имя того же предела; per_page оставлен ради
+	// совместимости с уже написанным клиентом и матрицей Phase 14.
+	perPage := p.Limit
+	if perPage <= 0 {
+		perPage = p.PerPage
 	}
-	postList, appErr := h.plugin.API.GetPostsForChannel(p.ChannelID, p.Page, p.PerPage)
+	if perPage <= 0 {
+		perPage = 30
+	}
+
+	// Курсорная выборка. Смещение внутри курсорного окна не используется
+	// (page = 0): курсор и offset одновременно дали бы две несогласованные
+	// системы координат, а вопрос «что такое вторая страница ПОСЛЕ курсора»
+	// не имеет устойчивого ответа при вставке.
+	var (
+		postList *model.PostList
+		appErr   *model.AppError
+	)
+	switch {
+	case p.Before != "" && p.After != "":
+		return Response{OK: false, Error: "before and after are mutually exclusive"}
+	case p.Before != "":
+		postList, appErr = h.plugin.API.GetPostsBefore(p.ChannelID, p.Before, 0, perPage)
+	case p.After != "":
+		postList, appErr = h.plugin.API.GetPostsAfter(p.ChannelID, p.After, 0, perPage)
+	default:
+		postList, appErr = h.plugin.API.GetPostsForChannel(p.ChannelID, p.Page, perPage)
+	}
 	if appErr != nil {
-		h.plugin.API.LogError("[Photon][PostHandler] GetPostsForChannel API error",
+		h.plugin.API.LogError("[Photon][PostHandler] GetPosts API error",
 			"user_id", userID, "channel_id", p.ChannelID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
 	h.plugin.API.LogInfo("[Photon][PostHandler] Feed fetched",
 		"user_id", userID, "channel_id", p.ChannelID,
-		"page", p.Page, "count", len(postList.Posts))
+		"cursor", cursorLabel(p), "count", len(postList.Posts))
 	return Response{OK: true, Data: postList}
 }
 
@@ -540,4 +564,16 @@ func (h *PostHandler) getPostSocialInfo(userID string, raw json.RawMessage) Resp
 		"top_user_ids":    topUserIDs,
 		"total":           len(reactions),
 	}}
+}
+
+// cursorLabel — что именно листали, одной строкой для лога.
+func cursorLabel(p GetFeedPayload) string {
+	switch {
+	case p.Before != "":
+		return "before:" + p.Before
+	case p.After != "":
+		return "after:" + p.After
+	default:
+		return "head"
+	}
 }
