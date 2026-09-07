@@ -62,15 +62,15 @@ func TestCost_PageScanIsConstantRegardlessOfDepth(t *testing.T) {
 		if pages > maxPages {
 			t.Fatalf("более %d страниц на %d записях — курсор не двигается", maxPages, total)
 		}
-		page, err := s.Page(ctx, "ch", curKey, curID, pageSize)
+		pg, err := s.Page(ctx, "ch", curKey, curID, pageSize)
 		if err != nil {
 			t.Fatalf("Page: %v", err)
 		}
-		if len(page) == 0 {
+		if len(pg.Records) == 0 {
 			break
 		}
 		pages++
-		last := page[len(page)-1]
+		last := pg.Records[len(pg.Records)-1]
 		curKey, curID = last.OrderKey, last.ID
 	}
 
@@ -146,14 +146,14 @@ func TestCost_DepthProfile(t *testing.T) {
 		var curKey int64
 		var curID string
 		for i := 0; i < depth; i++ {
-			page, err := probe.Page(ctx, "ch", curKey, curID, pageSize)
+			pg, err := probe.Page(ctx, "ch", curKey, curID, pageSize)
 			if err != nil {
 				t.Fatalf("Page: %v", err)
 			}
-			if len(page) == 0 {
+			if len(pg.Records) == 0 {
 				break
 			}
-			last := page[len(page)-1]
+			last := pg.Records[len(pg.Records)-1]
 			if last.OrderKey == curKey && last.ID == curID {
 				t.Fatalf("страница №%d вернула ту же позицию — курсор не двигается", i+1)
 			}
@@ -190,15 +190,15 @@ func TestCost_FullTraversalIsLinear(t *testing.T) {
 			t.Fatalf("более %d страниц — курсор не двигается", maxPages)
 		}
 		pages++
-		page, err := s.Page(ctx, "ch", curKey, curID, pageSize)
+		pg, err := s.Page(ctx, "ch", curKey, curID, pageSize)
 		if err != nil {
 			t.Fatalf("Page: %v", err)
 		}
-		if len(page) == 0 {
+		if len(pg.Records) == 0 {
 			break
 		}
-		seen += len(page)
-		last := page[len(page)-1]
+		seen += len(pg.Records)
+		last := pg.Records[len(pg.Records)-1]
 		curKey, curID = last.OrderKey, last.ID
 	}
 	if seen != total {
@@ -209,5 +209,140 @@ func TestCost_FullTraversalIsLinear(t *testing.T) {
 		total, snap.Scanned, snap.Yielded, float64(snap.Scanned)/float64(snap.Yielded))
 	if snap.Scanned > total+total/pageSize+1 {
 		t.Fatalf("полный обход просмотрел %d при %d записях — рост не линейный", snap.Scanned, total)
+	}
+}
+
+// ── стоимость догрузки (второй срез Phase 12) ────────────────────────────
+//
+// Локальные числа и только они. Сетевую задержку меряет cmd/feedslice
+// отдельной колонкой: сумма двух величин не значила бы ни одной из них.
+
+// Число сегментов растёт на каждое возвращение без закрытия пропуска — и это
+// главный риск модели. Измеряется, а не предполагается.
+func TestCost_SegmentsGrowPerUnfilledReopen(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+
+	for reopen := 1; reopen <= 20; reopen++ {
+		// каждое возвращение приносит блок, не смыкающийся с предыдущим
+		base := int64(reopen * 1000)
+		if _, err := s.Ingest(ctx, "ch", Block{
+			Records: []Record{
+				rec(fmt.Sprintf("r%02d-b", reopen), base+1),
+				rec(fmt.Sprintf("r%02d-a", reopen), base),
+			},
+			Dir: DirNewest,
+		}); err != nil {
+			t.Fatalf("Ingest: %v", err)
+		}
+	}
+	segs, err := s.Segments(ctx, "ch")
+	if err != nil {
+		t.Fatalf("Segments: %v", err)
+	}
+	t.Logf("20 возвращений без закрытия пропусков → сегментов: %d, пропусков: %d",
+		len(segs), len(segs)-1)
+	if len(segs) != 20 {
+		t.Fatalf("сегментов %d, ожидалось 20 — слияние сработало там, где не должно", len(segs))
+	}
+
+	// Чтение при 20 пропусках: страница обязана остановиться на ПЕРВОМ
+	// разрыве, а не просматривать всю ленту.
+	st := &Stats{}
+	probe := New(s.st, st)
+	pg, err := probe.Page(ctx, "ch", 0, "", 50)
+	if err != nil {
+		t.Fatalf("Page: %v", err)
+	}
+	snap := st.Snapshot()
+	p := snap.PerPage[0]
+	t.Logf("страница при 20 пропусках: просмотрено %d, отдано %d, разрыв=%v",
+		p.Scanned, p.Yielded, pg.GapAfter)
+	if !pg.GapAfter {
+		t.Fatal("разрыв не показан")
+	}
+	// 2 отданных + 1 просмотренная за границей — обход не идёт дальше.
+	if p.Scanned > 3 {
+		t.Fatalf("просмотрено %d при 2 отданных — обход не остановился на границе", p.Scanned)
+	}
+}
+
+// Закрытие пропусков ОБЯЗАНО уменьшать число сегментов до одного: иначе
+// модель копила бы разрывы вечно.
+func TestCost_FillingGapsCollapsesSegments(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	const pageSize = 10
+
+	srv := newFakeServer(200)
+	first := []Record{}
+	for i := 4; i >= 0; i-- {
+		first = append(first, srv.recs[i])
+	}
+	if _, err := s.Ingest(ctx, "ch", Block{Records: first, Dir: DirNewest}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	nb := srv.newest(pageSize)
+	if _, err := s.Ingest(ctx, "ch", Block{Records: nb, Dir: DirNewest, AtEnd: false}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	steps := 0
+	for {
+		anchor, ok, err := s.GapAnchor(ctx, "ch")
+		if err != nil {
+			t.Fatalf("GapAnchor: %v", err)
+		}
+		if !ok {
+			break
+		}
+		steps++
+		if steps > 100 {
+			t.Fatal("цикл не сходится")
+		}
+		block := srv.after(anchor.ID, pageSize)
+		if _, err := s.Ingest(ctx, "ch", Block{
+			Records: block, Anchor: &anchor, Dir: DirAfter, AtEnd: len(block) < pageSize,
+		}); err != nil {
+			t.Fatalf("Ingest: %v", err)
+		}
+	}
+	segs, _ := s.Segments(ctx, "ch")
+	t.Logf("200 записей, пропуск шириной 185, страница %d → закрыт за %d заливок, сегментов: %d",
+		pageSize, steps, len(segs))
+	if len(segs) != 1 {
+		t.Fatalf("после закрытия сегментов %d, ожидался 1", len(segs))
+	}
+	// Заливок ровно столько, сколько страниц в пропуске: ни одна не впустую.
+	if steps > 20 {
+		t.Fatalf("заливок %d при пропуске в 185 записей и странице %d — есть холостые",
+			steps, pageSize)
+	}
+}
+
+// Стоимость Ingest при растущем числе сегментов: список разбирается целиком,
+// значит O(#сегментов). Проверяется, что число сегментов, а не записей.
+func TestCost_IngestScalesWithSegmentsNotRecords(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+
+	// 5000 записей одним непрерывным сегментом
+	var big []Record
+	for i := 0; i < 5000; i++ {
+		big = append(big, rec(fmt.Sprintf("b%04d", i), int64(10_000+i)))
+	}
+	if _, err := s.Ingest(ctx, "ch", Block{Records: big, Dir: DirNewest}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	res, err := s.Ingest(ctx, "ch", Block{
+		Records: []Record{rec("top", 999_999)}, Dir: DirNewest,
+	})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	t.Logf("лента 5000 записей, 2 сегмента: Ingest разобрал список из %d элементов",
+		res.Segments)
+	if res.Segments != 2 {
+		t.Fatalf("сегментов %d, ожидалось 2", res.Segments)
 	}
 }

@@ -41,6 +41,9 @@ var (
 	pages     = flag.Int("pages", 5, "сколько страниц пролистать назад")
 	pageSize  = flag.Int("page-size", 30, "размер страницы")
 	offline   = flag.Bool("offline", false, "только локальное чтение, сети не касаться")
+	catchup   = flag.Bool("catchup", false, "догрузка после offline: самые свежие + закрытие пропусков")
+	maxFill   = flag.Int("max-fill", 20, "предел итераций закрытия пропуска")
+	seedOld   = flag.Int("seed-old", 0, "подготовка: пролистать N страниц назад и сохранить ТОЛЬКО последнюю — имитация прошлой сессии, оставившей старый кусок")
 )
 
 // post — ровно те поля, которые нужны СРЕЗУ: идентичность, порядок, версия.
@@ -100,11 +103,16 @@ func main() {
 	fmt.Printf("\n═══ feedslice: канал %s ═══\n", *channelID)
 	fmt.Printf("хранилище: %s\n", *dbPath)
 
-	if *offline {
+	switch {
+	case *seedOld > 0:
+		runSeedOld(ctx, feed)
+	case *offline:
 		runOffline(ctx, feed, stats)
-		return
+	case *catchup:
+		runCatchup(ctx, feed, stats)
+	default:
+		runOnline(ctx, feed, stats)
 	}
-	runOnline(ctx, feed, stats)
 }
 
 // runOnline — server → cursor → local storage.
@@ -169,6 +177,229 @@ func runOnline(ctx context.Context, feed *localfeed.Store, stats *localfeed.Stat
 	report(ctx, feed, stats)
 }
 
+// fetch — один запрос getFeed. Возвращает записи в порядке сервера
+// (свежие первыми) и время ОТВЕТА СЕТИ отдельно от всего остального:
+// смешивать сетевую задержку с локальной стоимостью нельзя, иначе ни одно из
+// двух чисел ничего не значит.
+func fetch(d *dispatcher.Dispatcher, payload map[string]any) ([]localfeed.Record, []string, time.Duration) {
+	raw, _ := json.Marshal(payload)
+	t0 := time.Now()
+	resp, err := d.SendAction(actionGetFeed, raw)
+	rtt := time.Since(t0)
+	if err != nil {
+		fail("SendAction: %v", err)
+	}
+	var fr feedResponse
+	if err := json.Unmarshal(resp, &fr); err != nil {
+		fail("разбор ответа: %v", err)
+	}
+	if !fr.OK {
+		fail("сервер отверг: %s", fr.Error)
+	}
+	recs := make([]localfeed.Record, 0, len(fr.Data.Order))
+	for _, id := range fr.Data.Order {
+		p := fr.Data.Posts[id]
+		body, _ := json.Marshal(p)
+		recs = append(recs, localfeed.Record{
+			ID: p.ID, OrderKey: p.CreateAt, Version: p.UpdateAt, Body: body,
+		})
+	}
+	return recs, fr.Data.Order, rtt
+}
+
+// runSeedOld готовит состояние «прошлая сессия оставила старый кусок».
+//
+// Нужен, чтобы пропуск возник на НАСТОЯЩИХ данных, а не был подстроен записью
+// в базу мимо кода: сервер листается назад обычным before, и в хранилище
+// кладётся только последняя страница. Всё, что выше, остаётся неизвестным —
+// ровно то, что бывает, когда приложение долго не открывали.
+//
+// Блок объявляется DirBefore с якорем на посте, ОТ которого сервер отсчитывал
+// последнюю страницу, и этот пост входит в блок. Иначе сегмент утверждал бы
+// полноту до позиции, записи которой нет в хранилище.
+func runSeedOld(ctx context.Context, feed *localfeed.Store) {
+	d, err := dispatcher.New(dispatcher.Config{
+		Endpoint: ports.Endpoint(*addr), SessionToken: *sessionID,
+		ConnectTimeout: 15 * time.Second, CallTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		fail("dispatcher: %v", err)
+	}
+	defer d.Close()
+
+	fmt.Printf("\n── подготовка: листаем %d страниц назад, сохраняем только последнюю ──\n", *seedOld)
+
+	var (
+		cursor     string
+		anchorRec  *localfeed.Record
+		lastBlock  []localfeed.Record
+		lastAnchor *localfeed.Record
+	)
+	for i := 1; i <= *seedOld; i++ {
+		payload := map[string]any{"channel_id": *channelID, "limit": *pageSize}
+		if cursor != "" {
+			payload["before"] = cursor
+		}
+		recs, order, rtt := fetch(d, payload)
+		if len(recs) == 0 {
+			fmt.Printf("  стр. %d: пусто — история закончилась раньше\n", i)
+			break
+		}
+		fmt.Printf("  стр. %d: %d записей за %s (не сохраняем, кроме последней)\n",
+			i, len(recs), rtt.Round(time.Millisecond))
+		lastBlock = recs
+		lastAnchor = anchorRec
+		last := recs[len(recs)-1]
+		cursor = order[len(order)-1]
+		anchorRec = &last
+	}
+	if len(lastBlock) == 0 {
+		fail("нечего сохранять")
+	}
+
+	block := localfeed.Block{Records: lastBlock, Dir: localfeed.DirNewest}
+	if lastAnchor != nil {
+		// Якорь входит в блок: сегмент не должен обещать полноту до позиции,
+		// записи которой в хранилище нет.
+		block.Records = append([]localfeed.Record{*lastAnchor}, lastBlock...)
+		p := localfeed.Position{OrderKey: lastAnchor.OrderKey, ID: lastAnchor.ID}
+		block.Anchor = &p
+		block.Dir = localfeed.DirBefore
+	}
+	res, err := feed.Ingest(ctx, *channelID, block)
+	if err != nil {
+		fail("Ingest(seed): %v", err)
+	}
+	fmt.Printf("  сохранено %d записей, сегментов: %d\n", res.Stored, res.Segments)
+	segs, _ := feed.Segments(ctx, *channelID)
+	printSegments(segs)
+}
+
+// runCatchup — сценарий «вернуться в канал после offline».
+//
+// Полный путь: самые свежие → обнаружение пропуска → закрытие пропуска
+// запросами after → локальное чтение, показывающее разрыв, если он остался.
+// Спецификация: docs/feed-catchup.md §5.
+func runCatchup(ctx context.Context, feed *localfeed.Store, stats *localfeed.Stats) {
+	d, err := dispatcher.New(dispatcher.Config{
+		Endpoint: ports.Endpoint(*addr), SessionToken: *sessionID,
+		ConnectTimeout: 15 * time.Second, CallTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		fail("dispatcher: %v", err)
+	}
+	defer d.Close()
+
+	before, _ := feed.Segments(ctx, *channelID)
+	fmt.Printf("\n── состояние до догрузки ──\n")
+	printSegments(before)
+
+	var netTotal time.Duration
+	var netCalls int
+
+	// ── шаг 1: самые свежие ──────────────────────────────────────────────
+	fmt.Println("\n── шаг 1: самые свежие (как при открытии экрана) ──")
+	recs, order, rtt := fetch(d, map[string]any{"channel_id": *channelID, "limit": *pageSize})
+	netTotal += rtt
+	netCalls++
+	res, err := feed.Ingest(ctx, *channelID, localfeed.Block{
+		Records: recs, Dir: localfeed.DirNewest, AtEnd: len(recs) < *pageSize,
+	})
+	if err != nil {
+		fail("Ingest(newest): %v", err)
+	}
+	fmt.Printf("  получено %d за %s | сегментов: %d | пропусков закрыто: %d\n",
+		len(recs), rtt.Round(time.Millisecond), res.Segments, res.GapsClosed)
+	if len(order) > 0 {
+		fmt.Printf("  верх канала: %s … низ блока: %s\n", short(order[0]), short(order[len(order)-1]))
+	}
+
+	// ── шаг 2: закрытие пропусков ────────────────────────────────────────
+	fmt.Println("\n── шаг 2: закрытие пропусков запросами after ──")
+	fills := 0
+	for {
+		anchor, ok, err := feed.GapAnchor(ctx, *channelID)
+		if err != nil {
+			fail("GapAnchor: %v", err)
+		}
+		if !ok {
+			fmt.Println("  пропусков нет — лента непрерывна")
+			break
+		}
+		if fills >= *maxFill {
+			fmt.Printf("  предел %d итераций исчерпан, пропуск остался — это НЕ ошибка,\n", *maxFill)
+			fmt.Printf("  а честная граница: закрытие продолжится при следующем запуске\n")
+			break
+		}
+		fills++
+
+		recs, order, rtt := fetch(d, map[string]any{
+			"channel_id": *channelID, "after": anchor.ID, "limit": *pageSize,
+		})
+		netTotal += rtt
+		netCalls++
+
+		// ГЛАВНЫЙ ВОПРОС ЖИВОГО ПРОГОНА (docs/feed-catchup.md §7): с какого
+		// конца сервер отдаёт записи после якоря. Сходимость требует
+		// БЛИЖАЙШИХ к якорю; ответ виден по тому, насколько отданное
+		// примыкает к якорю по времени.
+		if len(recs) > 0 {
+			nearest, farthest := recs[len(recs)-1], recs[0]
+			fmt.Printf("  заливка %d: якорь order=%d | ближний край блока order=%d (Δ=%d мс) | дальний order=%d\n",
+				fills, anchor.OrderKey, nearest.OrderKey, nearest.OrderKey-anchor.OrderKey, farthest.OrderKey)
+			_ = order
+		}
+
+		res, err := feed.Ingest(ctx, *channelID, localfeed.Block{
+			Records: recs, Anchor: &anchor, Dir: localfeed.DirAfter,
+			AtEnd: len(recs) < *pageSize,
+		})
+		if err != nil {
+			fail("Ingest(after): %v", err)
+		}
+		fmt.Printf("    получено %d за %s | сегментов: %d | пропусков закрыто: %d\n",
+			len(recs), rtt.Round(time.Millisecond), res.Segments, res.GapsClosed)
+
+		// Цикл обязан сходиться: якорь либо продвинулся, либо пропуск закрыт.
+		// Отсутствие движения — ошибка, а не повод для ещё одной итерации.
+		after, ok2, _ := feed.GapAnchor(ctx, *channelID)
+		if ok2 && after.ID == anchor.ID && res.GapsClosed == 0 && len(recs) > 0 {
+			fail("якорь не сдвинулся и пропуск не закрылся — цикл не сходится")
+		}
+	}
+
+	after, _ := feed.Segments(ctx, *channelID)
+	fmt.Printf("\n── состояние после догрузки ──\n")
+	printSegments(after)
+
+	readLocal(ctx, feed, stats, "локальное чтение с маркерами пропусков")
+	report(ctx, feed, stats)
+
+	fmt.Printf("\n── сеть, ОТДЕЛЬНО от локальной стоимости ──\n")
+	fmt.Printf("запросов к Bridge: %d | суммарно %s | в среднем %s на запрос\n",
+		netCalls, netTotal.Round(time.Millisecond),
+		(netTotal / time.Duration(max(netCalls, 1))).Round(time.Millisecond))
+}
+
+func printSegments(segs []localfeed.Segment) {
+	if len(segs) == 0 {
+		fmt.Println("  сегментов нет — о полноте ленты ничего не известно")
+		return
+	}
+	fmt.Printf("  сегментов: %d, пропусков между ними: %d\n", len(segs), len(segs)-1)
+	for i, sg := range segs {
+		fmt.Printf("    [%d] свежий край order=%d id=%s … старый край order=%d id=%s\n",
+			i, sg.Newest.OrderKey, short(sg.Newest.ID), sg.Oldest.OrderKey, short(sg.Oldest.ID))
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // runOffline — чтение без сети: доказывает offline reopen.
 func runOffline(ctx context.Context, feed *localfeed.Store, stats *localfeed.Stats) {
 	fmt.Println("\n── offline reopen: сети не касаемся ──")
@@ -192,10 +423,11 @@ func readLocal(ctx context.Context, feed *localfeed.Store, stats *localfeed.Stat
 			fail("более %d страниц — курсор не двигается", maxPages)
 		}
 		t0 := time.Now()
-		recs, err := feed.Page(ctx, *channelID, curKey, curID, *pageSize)
+		pg, err := feed.Page(ctx, *channelID, curKey, curID, *pageSize)
 		if err != nil {
 			fail("локальное чтение: %v", err)
 		}
+		recs := pg.Records
 		if len(recs) == 0 {
 			break
 		}
@@ -212,6 +444,11 @@ func readLocal(ctx context.Context, feed *localfeed.Store, stats *localfeed.Stat
 		}
 		lastID = recs[len(recs)-1].ID
 		fmt.Printf("  стр. %d: %d записей за %s\n", page, len(recs), time.Since(t0).Round(time.Microsecond))
+		if pg.GapAfter {
+			// Именно это и есть результат среза: разрыв ПОКАЗАН, а не
+			// склеен молча. Читатель видит границу известного.
+			fmt.Printf("  ╌╌ ПРОПУСК: ниже есть записи, но что между ними — неизвестно ╌╌\n")
+		}
 		last := recs[len(recs)-1]
 		curKey, curID = last.OrderKey, last.ID
 	}

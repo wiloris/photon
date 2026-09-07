@@ -60,7 +60,8 @@ func TestOrderNewestFirst(t *testing.T) {
 	if err := s.Put(ctx, "ch", []Record{rec("b", 200), rec("a", 100), rec("c", 300)}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := s.Page(ctx, "ch", 0, "", 10)
+	pg, err := s.Page(ctx, "ch", 0, "", 10)
+	got := pg.Records
 	if err != nil {
 		t.Fatalf("Page: %v", err)
 	}
@@ -83,7 +84,8 @@ func TestSameOrderKeyKeepsBothRecords(t *testing.T) {
 	if err := s.Put(ctx, "ch", []Record{rec("x", 100), rec("y", 100)}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := s.Page(ctx, "ch", 0, "", 10)
+	pg, err := s.Page(ctx, "ch", 0, "", 10)
+	got := pg.Records
 	if err != nil {
 		t.Fatalf("Page: %v", err)
 	}
@@ -123,7 +125,8 @@ func TestVersionUpdateReplacesRecord(t *testing.T) {
 	if err := s.Put(ctx, "ch", []Record{{ID: "a", OrderKey: 100, Version: 2, Body: json.RawMessage(`{"v":2}`)}}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := s.Page(ctx, "ch", 0, "", 10)
+	pg, err := s.Page(ctx, "ch", 0, "", 10)
+	got := pg.Records
 	if err != nil {
 		t.Fatalf("Page: %v", err)
 	}
@@ -162,7 +165,8 @@ func TestPagingCoversEveryRecordExactlyOnce(t *testing.T) {
 			t.Fatalf("более %d страниц на %d записях — курсор не двигается", maxPages, total)
 		}
 		pages++
-		page, err := s.Page(ctx, "ch", curKey, curID, 7)
+		pgr, err := s.Page(ctx, "ch", curKey, curID, 7)
+		page := pgr.Records
 		if err != nil {
 			t.Fatalf("Page: %v", err)
 		}
@@ -201,7 +205,8 @@ func TestChannelsAreIsolated(t *testing.T) {
 	if err := s.Put(ctx, "ch2", []Record{rec("b", 100)}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := s.Page(ctx, "ch1", 0, "", 10)
+	pg, err := s.Page(ctx, "ch1", 0, "", 10)
+	got := pg.Records
 	if err != nil {
 		t.Fatalf("Page: %v", err)
 	}
@@ -237,7 +242,8 @@ func TestSurvivesReopen(t *testing.T) {
 	}
 	defer st2.Close(ctx)
 	s2 := New(st2, nil)
-	got, err := s2.Page(ctx, "ch", 0, "", 10)
+	pg, err := s2.Page(ctx, "ch", 0, "", 10)
+	got := pg.Records
 	if err != nil {
 		t.Fatalf("Page после переоткрытия: %v", err)
 	}
