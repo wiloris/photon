@@ -72,6 +72,52 @@ func (r *readTx) ForEachPrefix(namespace string, prefix []byte, fn func(key, val
 	return nil
 }
 
+// ForEachPrefixFrom — обход строго после start (ADR-047).
+//
+// Позиционирование выполняется РОДНЫМ Cursor.Seek за O(log n) по B-дереву:
+// линейного пропуска записей до курсора здесь нет и быть не должно — ради
+// этого метод и заводился. Единственный шаг Next() после точного попадания в
+// start обеспечивает строгую исключаемость и линейным пропуском не является.
+func (r *readTx) ForEachPrefixFrom(namespace string, prefix, start []byte, fn func(key, value []byte) error) error {
+	b := r.tx.Bucket([]byte(namespace))
+	if b == nil {
+		return ports.ErrNamespaceNotFound
+	}
+
+	// Пустой start — обход с начала префикса, то есть в точности
+	// ForEachPrefix. Композиционное свойство контракта, а не краевой случай:
+	// проверяется сравнением выдач.
+	if len(start) == 0 {
+		return r.ForEachPrefix(namespace, prefix, fn)
+	}
+
+	// Непустой start обязан принадлежать префиксу. Иначе это курсор чужого
+	// префикса — ошибка вызывающего, и молчать о ней нельзя (ADR-047 §2).
+	if !bytes.HasPrefix(start, prefix) {
+		return ports.ErrCursorOutOfPrefix
+	}
+
+	c := b.Cursor()
+	k, v := c.Seek(start)
+	// Seek встаёт на первый ключ >= start. Если это ровно start — шагаем
+	// один раз: контракт требует СТРОГО больше.
+	if k != nil && bytes.Equal(k, start) {
+		k, v = c.Next()
+	}
+	for ; k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+		// Копирование по той же причине, что в Get и ForEach: срезы bbolt
+		// валидны только на время жизни транзакции.
+		keyCopy := make([]byte, len(k))
+		copy(keyCopy, k)
+		valCopy := make([]byte, len(v))
+		copy(valCopy, v)
+		if err := fn(keyCopy, valCopy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // writeTx реализует ports.WriteTx, встраивая readTx для операций
 // чтения — тот же bbolt.Tx используется для чтения и записи внутри
 // одной транзакции Update.

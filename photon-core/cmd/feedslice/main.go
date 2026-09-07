@@ -184,7 +184,13 @@ func readLocal(ctx context.Context, feed *localfeed.Store, stats *localfeed.Stat
 	page := 0
 	var firstID, lastID string
 	var prevKey int64 = 1<<63 - 1
+	// Предел: курсор, не двигающийся с места, обязан завершиться отказом,
+	// а не бесконечной печатью страниц. Тот же принцип, что в тестах.
+	const maxPages = 10000
 	for {
+		if page > maxPages {
+			fail("более %d страниц — курсор не двигается", maxPages)
+		}
 		t0 := time.Now()
 		recs, err := feed.Page(ctx, *channelID, curKey, curID, *pageSize)
 		if err != nil {

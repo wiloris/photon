@@ -139,10 +139,15 @@ func (s *Store) Put(ctx context.Context, channelID string, recs []Record) error 
 // afterKey/afterID — позиция, ПОСЛЕ которой продолжать (для «загрузить ещё»).
 // Пустой afterID означает «с начала», то есть с самых свежих.
 //
-// ЗДЕСЬ ЖЕ ИЗМЕРЯЕТСЯ ГЛАВНОЕ ОГРАНИЧЕНИЕ. ForEachPrefix умеет идти только от
-// начала префикса: seek'а в порт не заложено. Значит, чтобы отдать вторую
-// страницу, приходится пройти и отбросить всю первую. Счётчик scanned копит
-// именно это — число записей, просмотренных и выброшенных.
+// С ADR-047 позиционирование выполняет сам порт: ForEachPrefixFrom встаёт на
+// первый ключ строго после курсора родным Seek за O(log n). Прежняя редакция
+// проходила и выбрасывала все предыдущие страницы вручную — стоимость N-й
+// страницы была O(N·limit), что и было измерено (страница №100 просматривала
+// 5000 записей ради 50).
+//
+// Счётчик skipped сохранён намеренно: он обязан остаться НУЛЁМ. Ненулевое
+// значение означало бы, что линейный пропуск вернулся, — журнал ловит это
+// без отдельного теста.
 func (s *Store) Page(ctx context.Context, channelID string, afterKey int64, afterID string, limit int) ([]Record, error) {
 	if channelID == "" {
 		return nil, ErrEmptyChannel
@@ -154,24 +159,19 @@ func (s *Store) Page(ctx context.Context, channelID string, afterKey int64, afte
 	var (
 		out     []Record
 		scanned int
-		skipped int
-		started = afterID == ""
-		cutoff  = key(channelID, afterKey, afterID)
 	)
+
+	// Пустой курсор — с начала префикса. Порт трактует пустой start именно
+	// так, поэтому отдельной ветки здесь не нужно.
+	var start []byte
+	if afterID != "" {
+		start = key(channelID, afterKey, afterID)
+	}
 
 	errStop := errors.New("stop")
 	err := s.st.View(ctx, func(tx ports.ReadTx) error {
-		e := tx.ForEachPrefix(Namespace, prefix(channelID), func(k, v []byte) error {
+		e := tx.ForEachPrefixFrom(Namespace, prefix(channelID), start, func(k, v []byte) error {
 			scanned++
-			if !started {
-				// Пропускаем всё до курсора включительно. Это и есть цена
-				// отсутствия seek: O(offset) на каждую следующую страницу.
-				skipped++
-				if string(k) == string(cutoff) {
-					started = true
-				}
-				return nil
-			}
 			r, derr := decode(v)
 			if derr != nil {
 				return derr
@@ -187,7 +187,7 @@ func (s *Store) Page(ctx context.Context, channelID string, afterKey int64, afte
 		}
 		return nil
 	})
-	s.stats.countRead(scanned, skipped, len(out))
+	s.stats.countRead(scanned, 0, len(out))
 	if err != nil {
 		return nil, fmt.Errorf("localfeed: page: %w", err)
 	}

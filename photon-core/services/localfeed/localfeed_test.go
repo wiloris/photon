@@ -153,7 +153,15 @@ func TestPagingCoversEveryRecordExactlyOnce(t *testing.T) {
 	var order []string
 	var curKey int64
 	var curID string
+	// Предел обязателен: страница, игнорирующая курсор, без него даёт
+	// бесконечный цикл вместо падения. Зависший тест дефект не ловит —
+	// проверено мутацией «start игнорируется» (ADR-047).
+	pages, maxPages := 0, total/7+10
 	for {
+		if pages > maxPages {
+			t.Fatalf("более %d страниц на %d записях — курсор не двигается", maxPages, total)
+		}
+		pages++
 		page, err := s.Page(ctx, "ch", curKey, curID, 7)
 		if err != nil {
 			t.Fatalf("Page: %v", err)

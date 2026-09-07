@@ -18,6 +18,14 @@ var (
 	// Storage.Migrate ещё не зарегистрировал этот namespace.
 	// Порт намеренно не создаёт namespace неявно — см. ADR-010.
 	ErrNamespaceNotFound = errors.New("ports: namespace not found")
+
+	// ErrCursorOutOfPrefix — непустой start в ForEachPrefixFrom не
+	// принадлежит prefix. Это ошибка ВЫЗЫВАЮЩЕГО, а не краевой случай
+	// данных: такой start возникает ровно одним способом — курсор,
+	// взятый от другого префикса. Тихая пустая выдача выглядела бы как
+	// «данные закончились», а обход с начала — как «данные другого
+	// префикса»; обе неверны и обе молчаливы. См. ADR-047.
+	ErrCursorOutOfPrefix = errors.New("ports: cursor start is outside prefix")
 )
 
 // Crypto
