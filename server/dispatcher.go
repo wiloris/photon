@@ -20,19 +20,56 @@ type Dispatcher struct {
 	engram  *EngramHandler
 	file    *FileHandler
 	wall    *WallHandler
+	media   *MediaHandler
 }
 
 func NewDispatcher(p *Plugin) *Dispatcher {
+	store := NewFSMediaStore(p.API.GetConfig)
 	return &Dispatcher{
 		plugin:  p,
-		authz:   newAuthz(p.API),
+		authz:   newAuthz(p.API, store),
 		post:    &PostHandler{plugin: p},
 		user:    &UserHandler{plugin: p},
 		channel: &ChannelHandler{plugin: p},
 		engram:  NewEngramHandler(p), // инициализируем через конструктор (rate limiter)
 		file:    &FileHandler{plugin: p},
 		wall:    &WallHandler{plugin: p},
+		media:   &MediaHandler{plugin: p, store: store},
 	}
+}
+
+// Authorize — ЕДИНСТВЕННАЯ точка принятия решения о доступе.
+//
+// Вынесена из Dispatch, чтобы медийный путь, который несёт двоичный хвост и
+// потому не проходит через Dispatch, пользовался ТОЙ ЖЕ таблицей правил и тем
+// же resolve → policy. Две точки ВЫЗОВА допустимы, две точки РЕШЕНИЯ — нет:
+// именно это требование ADR-039 §6 и закрывало HTTP-вход, зарегистрированный
+// без middleware.
+//
+// Возвращает nil, если действие разрешено, иначе готовый отказ — чтобы форма
+// ответа и запись в журнал тоже не разошлись между путями.
+//
+// Три различимых исхода ADR-039 §8 сохранены, и порядок существен: неизвестный
+// action обязан остаться отличим от отказа авторизации, а действие без правила
+// не должно доходить до handler'а.
+func (d *Dispatcher) Authorize(userID string, header HeaderFrame, rawPayload json.RawMessage) *Response {
+	if _, known := rules[header.Action]; !known {
+		d.plugin.API.LogWarn("[Photon] Unknown action code",
+			"user_id", userID,
+			"action", header.Action,
+			"resource", header.Resource,
+		)
+		return &Response{OK: false, Error: fmt.Sprintf("unknown action: %d", header.Action)}
+	}
+	if err := d.authz.authorize(userID, header.Action, rawPayload); err != nil {
+		d.plugin.API.LogWarn("[Photon] Authorization denied",
+			"user_id", userID,
+			"action", header.Action,
+			"resource", header.Resource,
+		)
+		return &Response{OK: false, Error: errForbidden.Error()}
+	}
+	return nil
 }
 
 // Dispatch — центральный роутер.
@@ -43,24 +80,11 @@ func (d *Dispatcher) Dispatch(userID string, header HeaderFrame, rawPayload json
 		"action", header.Action,
 	)
 
-	// Три исхода ADR-039 §8. Порядок существенен: неизвестный action обязан
-	// остаться отличим от отказа авторизации, а действие без правила не должно
-	// доходить до handler'а — §7.1, поведение по умолчанию есть отказ.
-	if _, known := rules[header.Action]; !known {
-		d.plugin.API.LogWarn("[Photon] Unknown action code",
-			"user_id", userID,
-			"action", header.Action,
-			"resource", header.Resource,
-		)
-		return Response{OK: false, Error: fmt.Sprintf("unknown action: %d", header.Action)}
-	}
-	if err := d.authz.authorize(userID, header.Action, rawPayload); err != nil {
-		d.plugin.API.LogWarn("[Photon] Authorization denied",
-			"user_id", userID,
-			"action", header.Action,
-			"resource", header.Resource,
-		)
-		return Response{OK: false, Error: errForbidden.Error()}
+	// Решение принимает Authorize — одна точка на все входы (ADR-039 §6).
+	// Здесь только применение результата: §7.1, поведение по умолчанию есть
+	// отказ.
+	if deny := d.Authorize(userID, header, rawPayload); deny != nil {
+		return *deny
 	}
 
 	switch {
@@ -76,6 +100,8 @@ func (d *Dispatcher) Dispatch(userID string, header HeaderFrame, rawPayload json
 		return d.file.Handle(userID, header.Action, rawPayload)
 	case header.Action >= 600 && header.Action <= 699:
 		return d.wall.Handle(userID, header.Action, rawPayload)
+	case header.Action >= 700 && header.Action <= 799:
+		return d.media.Handle(userID, header.Action, rawPayload)
 	default:
 		// Недостижимо: код без правила отсеян выше. Оставлено намеренно —
 		// switch по диапазонам и таблица правил могут разойтись только через

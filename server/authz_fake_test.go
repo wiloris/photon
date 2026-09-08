@@ -86,3 +86,30 @@ func (f *fakeAuthzAPI) GetConfig() *model.Config {
 	c.ComplianceSettings.Enable = model.NewPointer(f.compliance)
 	return c
 }
+
+// fakeMediaStore — индекс media в памяти. Нужен, потому что objMedia
+// резолвит канал через MediaStore, а не через API Mattermost: авторитет для
+// media принадлежит хранилищу (ADR-048 §7).
+type fakeMediaStore struct{ objs map[string]*MediaObject }
+
+func newFakeMediaStore() *fakeMediaStore {
+	return &fakeMediaStore{objs: map[string]*MediaObject{}}
+}
+
+func (s *fakeMediaStore) add(m *MediaObject) *fakeMediaStore {
+	s.objs[m.MediaID] = m
+	return s
+}
+
+func (s *fakeMediaStore) Get(mediaID string) (*MediaObject, error) {
+	m, ok := s.objs[mediaID]
+	if !ok {
+		return nil, ErrMediaNotFound
+	}
+	return m, nil
+}
+
+func (s *fakeMediaStore) PutMeta(m *MediaObject) error {
+	s.objs[m.MediaID] = m
+	return nil
+}

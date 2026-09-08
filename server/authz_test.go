@@ -81,7 +81,13 @@ func newFixture() *authz {
 		model.PermissionAddReaction, model.PermissionRemoveReaction, model.PermissionUploadFile,
 		model.PermissionManagePublicChannelMembers, model.PermissionManagePublicChannelProperties,
 	)
-	return newAuthz(f)
+	// Индекс media: один объект в публичном канале и один в приватном —
+	// ровно как каналы у постов, чтобы правила 700-702 проверялись той же
+	// матрицей субъектов, что и остальные.
+	store := newFakeMediaStore().
+		add(&MediaObject{MediaID: "media_pub", ChannelID: cPub, State: MediaAvailable}).
+		add(&MediaObject{MediaID: "media_priv", ChannelID: cPriv, State: MediaAvailable})
+	return newAuthz(f, store)
 }
 
 func pl(t *testing.T, v any) json.RawMessage {

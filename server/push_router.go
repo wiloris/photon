@@ -33,7 +33,11 @@ type PushRouter struct {
 }
 
 func NewPushRouter(p *Plugin, registry *PushRegistry) *PushRouter {
-	return &PushRouter{plugin: p, authz: newAuthz(p.API), sink: registry}
+	// MediaStore здесь nil: push-роутер разрешает объекты постов, каналов и
+	// пользователей, но не медийные — objMedia на этом пути недостижим. Если
+	// это когда-нибудь перестанет быть правдой, objMedia откажет, а не
+	// разыменует nil (authz.go).
+	return &PushRouter{plugin: p, authz: newAuthz(p.API, nil), sink: registry}
 }
 
 func (r *PushRouter) Route(event PushEvent) {

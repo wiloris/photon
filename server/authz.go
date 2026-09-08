@@ -37,9 +37,17 @@ type authzAPI interface {
 	GetConfig() *model.Config
 }
 
-type authz struct{ api authzAPI }
+type authz struct {
+	api authzAPI
+	// media — авторитетный индекс для резолва objMedia (ADR-048 §7).
+	// Может быть nil там, где медийные объекты не разрешаются (push-роутер):
+	// тогда objMedia отказывает, а не паникует — отказ по умолчанию, §7.2.
+	media MediaStore
+}
 
-func newAuthz(api authzAPI) *authz { return &authz{api: api} }
+func newAuthz(api authzAPI, media MediaStore) *authz {
+	return &authz{api: api, media: media}
+}
 
 // ── объекты ──────────────────────────────────────────────────────────────────
 
@@ -57,6 +65,7 @@ const (
 	objKV                       // key — пространство имён по построению
 	objWall                     // user_id → канал стены
 	objMember                   // channel_id + user_id
+	objMedia                    // media_id → канал через MediaStore
 )
 
 // objectRef — разрешённый объект. Заполняется resolve, читается policy.
@@ -77,6 +86,7 @@ type payloadFields struct {
 	PostID       string `json:"post_id"`
 	RootID       string `json:"root_id"`
 	FileID       string `json:"file_id"`
+	MediaID      string `json:"media_id"`
 	UserID       string `json:"user_id"`
 	TargetUserID string `json:"target_user_id"`
 	TeamID       string `json:"team_id"`
@@ -184,6 +194,29 @@ func (z *authz) resolve(kind objectKind, subject string, raw json.RawMessage) (o
 		ch, err := z.channelByID(info.ChannelId)
 		if err != nil {
 			return o, err
+		}
+		o.channel = ch
+		return o, nil
+
+	case objMedia:
+		// Форма повторяет objFile: идентификатор → метаданные → канал →
+		// право чтения канала. Отличие одно: авторитет здесь MediaStore, а
+		// не Mattermost, потому что байты и связь с каналом принадлежат ему
+		// (ADR-048 §7).
+		//
+		// Отсутствие объекта и отсутствие хранилища дают ОДИН И ТОТ ЖЕ отказ,
+		// что и отсутствие права: различать их значило бы позволить пробовать
+		// существование чужих media_id (ADR-039, media-transfer.md §5).
+		if p.MediaID == "" || z.media == nil {
+			return o, errForbidden
+		}
+		mo, err := z.media.Get(p.MediaID)
+		if err != nil || mo == nil {
+			return o, errForbidden
+		}
+		ch, cerr := z.channelByID(mo.ChannelID)
+		if cerr != nil {
+			return o, cerr
 		}
 		o.channel = ch
 		return o, nil
@@ -428,6 +461,15 @@ var rules = map[int]rule{
 	ActionEngramList:       {objKV, allOf(authenticated(), ownNamespace())},
 	ActionEngramBatchStore: {objKV, allOf(authenticated(), ownNamespace())},
 	ActionEngramBatchQuery: {objKV, allOf(authenticated(), ownNamespace())},
+
+	// ── MediaResource ──
+	// Загрузка авторизуется ПО КАНАЛУ, а не по объекту: в момент загрузки
+	// объекта ещё нет. Та же форма, что у ActionUploadFile
+	// (media-transfer.md §12). Право берётся то же самое — вложение остаётся
+	// вложением независимо от того, где лежат байты.
+	ActionMediaUpload:   {objChannel, permChan(model.PermissionUploadFile)},
+	ActionMediaDownload: {objMedia, readC()},
+	ActionMediaGetInfo:  {objMedia, readC()},
 
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},

@@ -103,6 +103,13 @@ const (
 	ActionGetOrCreateWall = int(photonpb.Action_ACTION_GET_OR_CREATE_WALL)
 	ActionGetWallPosts    = int(photonpb.Action_ACTION_GET_WALL_POSTS)
 	ActionPublishWallPost = int(photonpb.Action_ACTION_PUBLISH_WALL_POST)
+
+	// ── MediaResource (700-702) ──
+	// Стримы 700 и 701 несут двоичный хвост (media-transfer.md §1) и потому
+	// не проходят через обычный JSON-путь Dispatch — см. handler_media.go.
+	ActionMediaUpload   = int(photonpb.Action_ACTION_MEDIA_UPLOAD)
+	ActionMediaDownload = int(photonpb.Action_ACTION_MEDIA_DOWNLOAD)
+	ActionMediaGetInfo  = int(photonpb.Action_ACTION_MEDIA_GET_INFO)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────
@@ -242,4 +249,30 @@ type UploadFilePayload struct {
 
 type FileIDPayload struct {
 	FileID string `json:"file_id"`
+}
+
+// ── MediaResource payloads ────────────────────────────────────────────────────
+
+// MediaIDPayload — запрос по идентификатору объекта (701, 702).
+type MediaIDPayload struct {
+	MediaID string `json:"media_id"`
+}
+
+// MediaRef — запись о вложении в props сообщения.
+//
+// Состав заморожен ADR-048 §3. Клиент присылает её ТИПИЗИРОВАННО в
+// CreatePostPayload; сырые props не принимаются, props строит Bridge.
+type MediaRef struct {
+	MediaID string `json:"media_id"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	Mime    string `json:"mime"`
+	Name    string `json:"name"`
+	W       int32  `json:"w,omitempty"`
+	H       int32  `json:"h,omitempty"`
+}
+
+// MediaInfoResponse — ответ 702: метаданные без тела.
+type MediaInfoResponse struct {
+	Media MediaRef `json:"media"`
 }
