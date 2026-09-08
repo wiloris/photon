@@ -451,6 +451,14 @@ func (c *countingCodec) ReadResponse(r io.Reader) (Response, error) {
 	c.note("ReadResponse")
 	return c.inner.ReadResponse(r)
 }
+func (c *countingCodec) WriteRequestStream(w io.Writer, req Request, body io.Reader) error {
+	c.note("WriteRequestStream")
+	return c.inner.WriteRequestStream(w, req, body)
+}
+func (c *countingCodec) ReadResponseStream(r io.Reader, sink io.Writer) (Response, error) {
+	c.note("ReadResponseStream")
+	return c.inner.ReadResponseStream(r, sink)
+}
 func (c *countingCodec) ReadPush(r io.Reader) (Push, error) {
 	c.note("ReadPush")
 	return c.inner.ReadPush(r)

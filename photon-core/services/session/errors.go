@@ -83,4 +83,30 @@ var (
 	// потому что только он его видит; решать, восстанавливать ли связь, — слой
 	// выше (bridge-session.md §6, п. 7).
 	ErrConnectionLost = errors.New("session: connection lost")
+
+	// ── потоковая передача (DoStream) ────────────────────────────────────
+	//
+	// Все четыре — про ГРАНИЦУ кадра, и каждая соответствует случаю, который
+	// без явной ошибки прошёл бы тихо: длина правдоподобна, поток валиден,
+	// данные неверны (media-transfer.md §2, §3).
+
+	// ErrStreamDirection — заданы одновременно и body, и sink. Направление
+	// тела задаётся действием, а не переговорами: стрим не может нести
+	// двоичный хвост в обе стороны (media-transfer.md §1). Ошибка вызывающего,
+	// проверяется ДО открытия стрима — ни один байт не отправляется.
+	ErrStreamDirection = errors.New("session: body and sink are mutually exclusive")
+
+	// ErrBodyLengthRequired — sink задан, сервер ответил ok, но длину тела не
+	// объявил. Читать «до конца» здесь нельзя: конец потока неотличим от
+	// обрыва (media-transfer.md §3).
+	ErrBodyLengthRequired = errors.New("session: response declares no body length")
+
+	// ErrBodyTruncated — тело кончилось раньше объявленной длины. Это ОШИБКА,
+	// а не усечённый успех: частично полученное тело результатом не является
+	// (media-transfer.md §7).
+	ErrBodyTruncated = errors.New("session: body shorter than declared length")
+
+	// ErrBodyLengthInvalid — объявленная длина отрицательна. Проверяется до
+	// чтения: отрицательная длина превратила бы копирование в бесконечное.
+	ErrBodyLengthInvalid = errors.New("session: declared body length is invalid")
 )

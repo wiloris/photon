@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/wiloris/photon-core/ports"
@@ -334,6 +335,110 @@ func (s *Session) Do(ctx context.Context, action int32, payload []byte) (Respons
 		// дольше своего ctx, и стрим закрывается на запись — сервер видит
 		// конец запроса. done буферизован, поэтому горутина не повиснет на
 		// отправке в канал, который никто не читает.
+		stream.Close()
+		return Response{}, ctx.Err()
+	}
+}
+
+// DoStream отправляет action, за которым может идти двоичный хвост, и/или
+// принимает такой хвост в ответ. Один вызов — один стрим, как у Do.
+//
+// Форма закреплена ADR-049 §4. Четыре комбинации (media-transfer.md §6):
+//
+//   - body != nil, sink == nil — загрузка: пишется всё, что отдаст body;
+//     ограничить его обязан вызывающий, объявив длину в payload'е;
+//   - body == nil, sink != nil — скачивание: читается ровно объявленная сервером
+//     Response.BodyLength;
+//   - оба nil — обычное действие, поведение совпадает с Do;
+//   - оба заданы — ошибка вызывающего, ни один байт не отправляется.
+//
+// СЫРОЙ ports.Stream наружу не отдаётся, и это не стилистика. Правило границы
+// тела содержит две неочевидные тонкости, каждая из которых при нарушении
+// теряет данные ТИХО (ADR-049 §2). Отдав стрим вызывающим, мы размножили бы
+// это правило по всем местам вызова и сделали бы будущую смену формата
+// переписыванием каждого из них — ровно то, ради чего Codec объявлен
+// посообщенчно (ADR-034 п.4).
+//
+// Тело ни в одну сторону не собирается в память целиком: сигнатура принимает
+// io.Reader и io.Writer, а не []byte (media-transfer.md §10).
+func (s *Session) DoStream(ctx context.Context, action int32, payload []byte,
+	body io.Reader, sink io.Writer) (Response, error) {
+
+	if body != nil && sink != nil {
+		return Response{}, ErrStreamDirection
+	}
+
+	resource, err := ResourceFor(action)
+	if err != nil {
+		return Response{}, err
+	}
+
+	s.mu.Lock()
+	switch s.state {
+	case StateClosed:
+		s.mu.Unlock()
+		return Response{}, ErrSessionClosed
+	case StateReady:
+	case StateFailed:
+		lost := s.lost
+		s.mu.Unlock()
+		if lost {
+			return Response{}, ErrConnectionLost
+		}
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, StateFailed)
+	default:
+		st := s.state
+		s.mu.Unlock()
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, st)
+	}
+	conn := s.conn
+	s.mu.Unlock()
+
+	stream, err := conn.OpenStream(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
+		return Response{}, s.markLost(fmt.Errorf("session: open media stream: %w", err))
+	}
+
+	type result struct {
+		resp Response
+		err  error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		req := Request{Action: action, Resource: resource, Payload: payload}
+		writeErr := s.codec.WriteRequestStream(stream, req, body)
+
+		// Ответ читается ДАЖЕ ЕСЛИ запись не удалась. Сервер вправе отказать,
+		// не дочитав тело, и тогда завершение стрима с его стороны обрывает
+		// незаконченную запись клиента: ошибка записи оказывается следствием,
+		// а причина — в JSON-ответе. Вернуть здесь writeErr значило бы
+		// показать «сбой сети» вместо «нет прав» (media-transfer.md §6).
+		resp, readErr := s.codec.ReadResponseStream(stream, sink)
+		switch {
+		case readErr != nil && writeErr != nil:
+			// Ответа нет и запись не прошла — причина в записи, она первая.
+			done <- result{err: writeErr}
+		case readErr != nil:
+			done <- result{resp: resp, err: readErr}
+		default:
+			done <- result{resp: resp}
+		}
+	}()
+
+	select {
+	case r := <-done:
+		stream.Close()
+		return r.resp, r.err
+
+	case <-ctx.Done():
+		// То же ограничение, что у Do: ports.Stream.Close — half-close только
+		// пишущей стороны, CancelRead порт не экспортирует (ADR-049 §5).
+		// Горутина останется на чтении до ответа сервера или закрытия
+		// соединения; освободить брошенный стрим клиент не может.
 		stream.Close()
 		return Response{}, ctx.Err()
 	}

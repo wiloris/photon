@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,6 +117,11 @@ type responseFrame struct {
 	OK    bool            `json:"ok"`
 	Data  json.RawMessage `json:"data,omitempty"`
 	Error string          `json:"error,omitempty"`
+
+	// BodyLength — длина двоичного хвоста за этим кадром. Поле конверта:
+	// см. комментарий у Response.BodyLength. Отсутствует у всех действий,
+	// кроме медийного скачивания, и omitempty оставляет провод прежним.
+	BodyLength int64 `json:"body_length,omitempty"`
 }
 
 func (JSONCodec) WriteRequest(w io.Writer, req Request) error {
@@ -166,7 +172,88 @@ func (JSONCodec) ReadResponse(r io.Reader) (Response, error) {
 	if len(f.Data) > 0 {
 		data = append([]byte(nil), f.Data...)
 	}
-	return Response{OK: f.OK, Error: f.Error, Data: data}, nil
+	return Response{OK: f.OK, Error: f.Error, Data: data, BodyLength: f.BodyLength}, nil
+}
+
+// ── Потоковая передача ──────────────────────────────────────────────────────
+
+// skipLeadingWhitespace отбрасывает пробельные байты, которыми JSON разделяет
+// значения.
+//
+// Нужен потому, что json.Encoder дописывает "\n" после каждого значения, а
+// json.Decoder этот разделитель не потребляет: он остаётся в Buffered() и без
+// отбрасывания попал бы В НАЧАЛО тела. Измерено — тело выходило на один байт
+// длиннее отправленного (ADR-049 §2).
+func skipLeadingWhitespace(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			return br
+		}
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			continue
+		}
+		_ = br.UnreadByte()
+		return br
+	}
+}
+
+func (c JSONCodec) WriteRequestStream(w io.Writer, req Request, body io.Reader) error {
+	if err := c.WriteRequest(w, req); err != nil {
+		return err
+	}
+	if body == nil {
+		return nil
+	}
+	// Копируется ВСЁ, что отдаст body, и ничего сверх того: сколько байт
+	// отправить, решает вызывающий, объявивший длину в payload'е. Расхождение
+	// объявленного с отправленным обнаруживает приёмник — он читает ровно
+	// объявленное (media-transfer.md §3).
+	if _, err := io.Copy(w, body); err != nil {
+		return fmt.Errorf("session: write body: %w", err)
+	}
+	return nil
+}
+
+func (JSONCodec) ReadResponseStream(r io.Reader, sink io.Writer) (Response, error) {
+	dec := json.NewDecoder(r)
+	var f responseFrame
+	if err := dec.Decode(&f); err != nil {
+		return Response{}, fmt.Errorf("%w: response: %v", ErrMalformedFrame, err)
+	}
+	var data []byte
+	if len(f.Data) > 0 {
+		data = append([]byte(nil), f.Data...)
+	}
+	resp := Response{OK: f.OK, Error: f.Error, Data: data, BodyLength: f.BodyLength}
+
+	// Тела нет: либо его не ждут, либо сервер отказал. Отказ хвоста не несёт —
+	// иначе клиент читал бы данные из ответа, которого не было.
+	if sink == nil || !f.OK {
+		return resp, nil
+	}
+	if f.BodyLength < 0 {
+		return resp, ErrBodyLengthInvalid
+	}
+	if f.BodyLength == 0 {
+		return resp, ErrBodyLengthRequired
+	}
+
+	// ГРАНИЦА ТЕЛА. Обе половины обязательны и обе проверены саботажем:
+	// без Buffered() теряется прочитанное декодером впрок (при теле меньше
+	// буфера — всё тело целиком), без отбрасывания пробелов к телу
+	// приклеивается разделитель (ADR-049 §2).
+	body := io.MultiReader(skipLeadingWhitespace(dec.Buffered()), r)
+
+	n, err := io.CopyN(sink, body, f.BodyLength)
+	if err == io.EOF || (err == nil && n != f.BodyLength) {
+		return resp, fmt.Errorf("%w: получено %d из %d", ErrBodyTruncated, n, f.BodyLength)
+	}
+	if err != nil {
+		return resp, fmt.Errorf("session: read body: %w", err)
+	}
+	return resp, nil
 }
 
 // ── Push ────────────────────────────────────────────────────────────────────

@@ -88,6 +88,20 @@ var classTable = []struct {
 	{session.ErrInvalidPayload, ClassInvalidArgument},
 	{ErrNoEndpoint, ClassNotConnected},
 
+	// Потоковая передача. Все четыре — ошибки АРГУМЕНТА или КАДРА, а не
+	// связи: повторять вызов с теми же параметрами бессмысленно, и класс
+	// обязан вести вызывающего не к ретраю, а к исправлению.
+	//
+	// ErrStreamDirection и ErrBodyLengthInvalid — заведомо ошибка вызывающего
+	// или сервера, обнаруженная до чтения тела. ErrBodyLengthRequired и
+	// ErrBodyTruncated — нарушение контракта кадра сервером: тело либо не
+	// объявлено, либо кончилось раньше объявленного. Ни то ни другое не
+	// лечится повтором, поэтому не ClassNotConnected (media-transfer.md §3, §7).
+	{session.ErrStreamDirection, ClassInvalidArgument},
+	{session.ErrBodyLengthInvalid, ClassInvalidArgument},
+	{session.ErrBodyLengthRequired, ClassInvalidArgument},
+	{session.ErrBodyTruncated, ClassInvalidArgument},
+
 	// Связи нет. ErrNotReady и ErrConnectionLost намеренно сходятся в один
 	// класс: оба ведут клиента к одному решению — повторить вызов, который и
 	// переподключится (D-3, §7.1).

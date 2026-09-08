@@ -40,6 +40,12 @@ var known = map[string]error{
 
 	"ErrNoEndpoint": ErrNoEndpoint,
 	"ErrClosed":     ErrClosed,
+
+	// Потоковая передача (DoStream).
+	"ErrStreamDirection":    session.ErrStreamDirection,
+	"ErrBodyLengthRequired": session.ErrBodyLengthRequired,
+	"ErrBodyTruncated":      session.ErrBodyTruncated,
+	"ErrBodyLengthInvalid":  session.ErrBodyLengthInvalid,
 }
 
 func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
