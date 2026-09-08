@@ -370,7 +370,10 @@ func TestT8_UnknownActionRejected(t *testing.T) {
 	// 150 лежит В диапазоне Post, но такого action'а не существует.
 	// Проверка диапазона без проверки enum пропустила бы его, и сервер
 	// отверг бы запрос невнятной ошибкой уже по сети.
-	for _, code := range []int32{0, 1, 99, 150, 250, 700, 9999, -1} {
+	// 700 из этого списка убран: с вводом MediaResource (ADR-049 §8) код
+	// существует. Заменён на 750 — он лежит В диапазоне Media, но такого
+	// action'а нет, то есть проверяет ровно то же свойство.
+	for _, code := range []int32{0, 1, 99, 150, 250, 750, 9999, -1} {
 		if _, err := ResourceFor(code); !errors.Is(err, ErrUnknownAction) {
 			t.Errorf("ResourceFor(%d) err = %v, want ErrUnknownAction", code, err)
 		}

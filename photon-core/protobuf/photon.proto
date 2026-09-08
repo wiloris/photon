@@ -58,7 +58,14 @@ enum Resource {
   RESOURCE_ENGRAM      = 4;
   RESOURCE_FILE        = 5;
   RESOURCE_WALL        = 6;
-  // 7-99 reserved for future resources
+  // RESOURCE_MEDIA — media ENGRAM: байты живут в MediaStore Bridge, а не в
+  // файловом хранилище Mattermost. Отдельный ресурс, а не расширение
+  // RESOURCE_FILE: ADR-048 вывел FileInfo/file_id из модели, и общий ресурс
+  // сделал бы неразличимым по коду действия, о каком из двух хранилищ речь
+  // (ADR-049 §8). RESOURCE_FILE и действия 500-505 при этом не меняются и
+  // legacy не объявляются.
+  RESOURCE_MEDIA       = 7;
+  // 8-99 reserved for future resources
 }
 
 // Action — явные именованные action-коды. Номера здесь совпадают с
@@ -141,6 +148,14 @@ enum Action {
   ACTION_GET_OR_CREATE_WALL = 600;
   ACTION_GET_WALL_POSTS     = 601;
   ACTION_PUBLISH_WALL_POST  = 602;
+
+  // ── MediaResource (700-702) ─────────────────────────────────────
+  // Диапазон 700+ закреплён ADR-049 §8. Стримы этих действий несут
+  // двоичный хвост после двух JSON-кадров (docs/media-transfer.md §1) —
+  // единственные действия, у которых он есть.
+  ACTION_MEDIA_UPLOAD   = 700;
+  ACTION_MEDIA_DOWNLOAD = 701;
+  ACTION_MEDIA_GET_INFO = 702;
 }
 
 enum EventType {
@@ -200,7 +215,7 @@ message HandshakeResponse {
 // сейчас — и именно поэтому его легко не заметить.
 
 message PhotonRequest {
-  int32    action   = 1; // 100-699 action codes
+  int32    action   = 1; // 100-799 action codes
   Resource resource = 2;
 
   oneof payload {
@@ -270,6 +285,11 @@ message PhotonRequest {
     WallPayload          get_or_create_wall = 600;
     WallPostsPayload     get_wall_posts     = 601;
     PublishWallPostPayload publish_wall_post = 602;
+
+    // ── MediaResource (700-702) ───────────────────────── field numbers 700-702
+    MediaUploadPayload media_upload   = 700;
+    MediaIDPayload     media_download = 701;
+    MediaIDPayload     media_get_info = 702;
   }
 }
 
@@ -311,6 +331,11 @@ message PhotonResponse {
     FileInfo         file_info   = 502;
     FileBytesResponse file_bytes = 501;
     FileURLResponse  file_url    = 503;
+
+    // ── MediaResource responses ───────────────────────── field numbers 700-702
+    MediaUploadResponse media_uploaded = 700;
+    MediaDownloadHeader media_download = 701;
+    MediaInfoResponse   media_info     = 702;
 
     // ── Generic (для простых ответов) ─────────────────── field number 999
     GenericResponse generic = 999;
@@ -495,6 +520,12 @@ message CreatePostPayload {
   string message           = 2;
   string root_id           = 3;
   repeated string file_ids = 4;
+
+  // photon_media — вложения ENGRAM. Поле ТИПИЗИРОВАНО намеренно: сырые props
+  // от клиента не принимаются, Bridge строит props сам и проверяет владение
+  // каждым media_id до записи (ADR-048 §3, §4). Приём сырых props дал бы
+  // клиенту запись в чужие ключи.
+  repeated MediaRef photon_media = 5;
 }
 
 message GetFeedPayload {
@@ -691,6 +722,63 @@ message EngramBatchError {
 message EngramBatchQueryResponse {
   map<string, EngramEntry> entries = 1;
   repeated string          missing = 2;
+}
+
+// ── MediaResource payloads ────────────────────────────────────────────────────
+
+// MediaRef — запись о вложении в Message.props.photon_media[].
+//
+// Состав и неизменяемость полей заморожены ADR-048 §3: media_id, sha256, size,
+// mime, name обязательны и неизменяемы для данного media_id; w/h опциональны и
+// только для изображений. Серверный жизненный цикл (expires_at, state) сюда НЕ
+// входит — он живёт в MediaStore и запрашивается по требованию, иначе истечение
+// TTL требовало бы править сообщение.
+message MediaRef {
+  string media_id = 1;
+  string sha256   = 2; // hex, 64 символа
+  int64  size     = 3;
+  string mime     = 4;
+  string name     = 5; // исходное имя файла
+  int32  w        = 6; // только для изображений
+  int32  h        = 7;
+}
+
+// MediaUploadPayload — второй JSON-кадр стрима загрузки; далее идёт тело.
+//
+// sha256 объявляется ДО передачи: это делает проверку целостности
+// двусторонней, а не только клиентской (media-transfer.md §9).
+message MediaUploadPayload {
+  string channel_id  = 1;
+  string name        = 2;
+  string mime        = 3;
+  string sha256      = 4;
+  int64  body_length = 5; // обязателен; приёмник читает ровно столько байт
+}
+
+message MediaIDPayload { string media_id = 1; }
+
+// ── MediaResource responses ───────────────────────────────────────────────────
+
+message MediaUploadResponse {
+  string media_id = 1;
+  string sha256   = 2;
+  int64  size     = 3;
+}
+
+// MediaDownloadHeader — JSON-ответ, ПРЕДШЕСТВУЮЩИЙ телу. Порядок обратен
+// загрузке намеренно: иначе клиент не отличил бы отказ от начала данных, не
+// прочитав их (media-transfer.md §1).
+message MediaDownloadHeader {
+  string media_id    = 1;
+  string sha256      = 2;
+  int64  size        = 3;
+  string mime        = 4;
+  string name        = 5;
+  int64  body_length = 6;
+}
+
+message MediaInfoResponse {
+  MediaRef media = 1;
 }
 
 // ── FileResource payloads ─────────────────────────────────────────────────────

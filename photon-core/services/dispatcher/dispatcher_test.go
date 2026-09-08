@@ -21,7 +21,10 @@ func TestT1_UnknownActionRejectedWithoutNetwork(t *testing.T) {
 	br := newFakeBridge()
 	d := newDispatcher(t, br, nil)
 
-	for _, code := range []int32{0, 42, 150, 700, 424242, -1} {
+	// 700 заменён на 750: с вводом MediaResource (ADR-049 §8) код 700
+	// существует, а 750 лежит в его диапазоне и по-прежнему не существует —
+	// проверяемое свойство то же.
+	for _, code := range []int32{0, 42, 150, 750, 424242, -1} {
 		resp, err := d.SendAction(code, []byte(`{}`))
 		if !errors.Is(err, session.ErrUnknownAction) && !errors.Is(err, session.ErrNoResourceForAction) {
 			t.Fatalf("code %d: err = %v, want ErrUnknownAction/ErrNoResourceForAction", code, err)
