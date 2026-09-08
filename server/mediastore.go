@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,20 @@ var (
 	ErrMediaInvalidID = errors.New("media: invalid id")
 )
 
+// BlobWriter — запись тела с ЯВНОЙ фиксацией.
+//
+// Commit/Discard вынесены в контракт, а не спрятаны в реализацию, потому что
+// от них зависит корректность: недописанное тело не должно быть наблюдаемым ни
+// одной секунды. Загрузка, оборвавшаяся на середине, обязана не оставить
+// следов, а не оставить объект с половиной байтов.
+type BlobWriter interface {
+	io.Writer
+	// Commit делает записанное видимым.
+	Commit() error
+	// Discard выбрасывает недописанное. Идемпотентен.
+	Discard() error
+}
+
 // MediaStore — контракт хранилища. Интерфейс, а не структура: ADR-049 §8
 // требует, чтобы бэкенд заменялся без изменения протокола.
 type MediaStore interface {
@@ -89,6 +104,16 @@ type MediaStore interface {
 	Get(mediaID string) (*MediaObject, error)
 	// PutMeta записывает метаданные объекта.
 	PutMeta(m *MediaObject) error
+	// CreateBlob открывает запись тела.
+	CreateBlob(mediaID string) (BlobWriter, error)
+	// OpenBlob открывает чтение тела или возвращает ErrMediaNotFound.
+	OpenBlob(mediaID string) (io.ReadCloser, error)
+	// DiscardObject убирает объект целиком — тело и метаданные.
+	//
+	// Это НЕ жизненный цикл удаления media (он вне первого среза, ADR-048
+	// §12): единственный вызывающий — неудавшаяся загрузка, которая обязана
+	// не оставить за собой ни байтов, ни записи.
+	DiscardObject(mediaID string) error
 }
 
 // fsMediaStore — реализация поверх локальной файловой системы.
@@ -184,6 +209,88 @@ func (s *fsMediaStore) PutMeta(m *MediaObject) error {
 	}
 	if err := os.Rename(tmp, filepath.Join(dir, "meta.json")); err != nil {
 		return fmt.Errorf("media: commit meta: %w", err)
+	}
+	return nil
+}
+
+// fsBlobWriter — запись во временный файл с переименованием при фиксации.
+//
+// Тот же приём, что у метаданных, и по той же причине: частично записанное
+// тело не должно быть отличимо от отсутствующего — иначе объект выглядел бы
+// целым, а его байты были бы обрезаны.
+type fsBlobWriter struct {
+	f    *os.File
+	tmp  string
+	dest string
+	done bool
+}
+
+func (w *fsBlobWriter) Write(p []byte) (int, error) { return w.f.Write(p) }
+
+func (w *fsBlobWriter) Commit() error {
+	if w.done {
+		return nil
+	}
+	w.done = true
+	if err := w.f.Close(); err != nil {
+		_ = os.Remove(w.tmp)
+		return fmt.Errorf("media: close blob: %w", err)
+	}
+	if err := os.Rename(w.tmp, w.dest); err != nil {
+		_ = os.Remove(w.tmp)
+		return fmt.Errorf("media: commit blob: %w", err)
+	}
+	return nil
+}
+
+func (w *fsBlobWriter) Discard() error {
+	if w.done {
+		return nil
+	}
+	w.done = true
+	_ = w.f.Close()
+	_ = os.Remove(w.tmp)
+	return nil
+}
+
+func (s *fsMediaStore) CreateBlob(mediaID string) (BlobWriter, error) {
+	dir, err := s.objectDir(mediaID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("media: mkdir: %w", err)
+	}
+	tmp := filepath.Join(dir, "blob.tmp")
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("media: create blob: %w", err)
+	}
+	return &fsBlobWriter{f: f, tmp: tmp, dest: filepath.Join(dir, "blob")}, nil
+}
+
+func (s *fsMediaStore) OpenBlob(mediaID string) (io.ReadCloser, error) {
+	dir, err := s.objectDir(mediaID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(filepath.Join(dir, "blob"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrMediaNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("media: open blob: %w", err)
+	}
+	return f, nil
+}
+
+func (s *fsMediaStore) DiscardObject(mediaID string) error {
+	dir, err := s.objectDir(mediaID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("media: discard object: %w", err)
 	}
 	return nil
 }

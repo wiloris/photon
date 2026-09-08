@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -90,10 +92,13 @@ func (f *fakeAuthzAPI) GetConfig() *model.Config {
 // fakeMediaStore — индекс media в памяти. Нужен, потому что objMedia
 // резолвит канал через MediaStore, а не через API Mattermost: авторитет для
 // media принадлежит хранилищу (ADR-048 §7).
-type fakeMediaStore struct{ objs map[string]*MediaObject }
+type fakeMediaStore struct {
+	objs  map[string]*MediaObject
+	blobs map[string][]byte
+}
 
 func newFakeMediaStore() *fakeMediaStore {
-	return &fakeMediaStore{objs: map[string]*MediaObject{}}
+	return &fakeMediaStore{objs: map[string]*MediaObject{}, blobs: map[string][]byte{}}
 }
 
 func (s *fakeMediaStore) add(m *MediaObject) *fakeMediaStore {
@@ -110,6 +115,57 @@ func (s *fakeMediaStore) Get(mediaID string) (*MediaObject, error) {
 }
 
 func (s *fakeMediaStore) PutMeta(m *MediaObject) error {
-	s.objs[m.MediaID] = m
+	// Копия, а не ссылка: сервис мутирует объект между записями (Attach), и
+	// хранилище, отдающее ту же структуру, скрыло бы пропущенный PutMeta.
+	c := *m
+	s.objs[m.MediaID] = &c
+	return nil
+}
+
+// ── байты ────────────────────────────────────────────────────────────────
+
+type fakeBlobWriter struct {
+	s       *fakeMediaStore
+	id      string
+	buf     bytes.Buffer
+	done    bool
+	commits *int
+}
+
+func (w *fakeBlobWriter) Write(p []byte) (int, error) { return w.buf.Write(p) }
+
+func (w *fakeBlobWriter) Commit() error {
+	if w.done {
+		return nil
+	}
+	w.done = true
+	if w.s.blobs == nil {
+		w.s.blobs = map[string][]byte{}
+	}
+	w.s.blobs[w.id] = append([]byte(nil), w.buf.Bytes()...)
+	return nil
+}
+
+func (w *fakeBlobWriter) Discard() error {
+	w.done = true
+	w.buf.Reset()
+	return nil
+}
+
+func (s *fakeMediaStore) CreateBlob(mediaID string) (BlobWriter, error) {
+	return &fakeBlobWriter{s: s, id: mediaID}, nil
+}
+
+func (s *fakeMediaStore) OpenBlob(mediaID string) (io.ReadCloser, error) {
+	b, ok := s.blobs[mediaID]
+	if !ok {
+		return nil, ErrMediaNotFound
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func (s *fakeMediaStore) DiscardObject(mediaID string) error {
+	delete(s.objs, mediaID)
+	delete(s.blobs, mediaID)
 	return nil
 }
