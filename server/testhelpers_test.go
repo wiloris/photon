@@ -35,3 +35,30 @@ func cfgPrivacy(showEmail, showFullName bool) *model.Config {
 // plugintestAPI — псевдоним, чтобы тесты не тащили импорт plugintest ради
 // одного типа в сигнатуре helper'а.
 type plugintestAPI = plugintest.API
+
+// quietAPIWithErrorSink — как quietAPI, но LogError дополнительно уходит в
+// канал. Порядок регистрации существен: перехват объявляется ПЕРВЫМ, иначе
+// сработает общая заглушка, и Run никогда не вызовется.
+func quietAPIWithErrorSink(sink chan<- string) *plugintest.API {
+	api := &plugintest.API{}
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			if len(args) == 0 {
+				return
+			}
+			msg, ok := args.Get(0).(string)
+			if !ok {
+				return
+			}
+			select {
+			case sink <- msg:
+			default:
+			}
+		}).Maybe()
+	for _, m := range []string{"LogDebug", "LogInfo", "LogWarn"} {
+		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	}
+	return api
+}

@@ -180,6 +180,22 @@ func (s *MediaService) Upload(req UploadRequest, body io.Reader) (*MediaObject, 
 	return obj, nil
 }
 
+// Info возвращает метаданные объекта, если его байты доступны.
+//
+// Нужен отдельно от Download потому, что на скачивании JSON-ответ идёт ПЕРЕД
+// телом (media-transfer.md §1), а в ответе обязана быть длина. Узнать её,
+// не прочитав метаданные заранее, нельзя.
+func (s *MediaService) Info(mediaID string) (*MediaObject, error) {
+	obj, err := s.store.Get(mediaID)
+	if err != nil {
+		return nil, err
+	}
+	if !obj.HasBytes() {
+		return obj, ErrMediaUnavailable
+	}
+	return obj, nil
+}
+
 // Download отдаёт байты объекта потоково.
 //
 // Авторизация здесь НЕ выполняется: она уже сделана до входа в сервис. Здесь

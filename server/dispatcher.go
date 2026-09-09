@@ -21,20 +21,29 @@ type Dispatcher struct {
 	file    *FileHandler
 	wall    *WallHandler
 	media   *MediaHandler
+	// mediaService — исполнитель медийных операций. Держится здесь, чтобы у
+	// обычного пути и у медийного стрима были ОДИН экземпляр сервиса и одно
+	// хранилище: два экземпляра разошлись бы по состоянию.
+	mediaService *MediaService
 }
+
+// mediaSvc — доступ к сервису для медийной ветки стрима.
+func (d *Dispatcher) mediaSvc() *MediaService { return d.mediaService }
 
 func NewDispatcher(p *Plugin) *Dispatcher {
 	store := NewFSMediaStore(p.API.GetConfig)
+	mediaSvcInstance := NewMediaService(store)
 	return &Dispatcher{
-		plugin:  p,
-		authz:   newAuthz(p.API, store),
-		post:    &PostHandler{plugin: p},
-		user:    &UserHandler{plugin: p},
-		channel: &ChannelHandler{plugin: p},
-		engram:  NewEngramHandler(p), // инициализируем через конструктор (rate limiter)
-		file:    &FileHandler{plugin: p},
-		wall:    &WallHandler{plugin: p},
-		media:   &MediaHandler{plugin: p, store: store},
+		plugin:       p,
+		authz:        newAuthz(p.API, store),
+		post:         &PostHandler{plugin: p, media: mediaSvcInstance},
+		user:         &UserHandler{plugin: p},
+		channel:      &ChannelHandler{plugin: p},
+		engram:       NewEngramHandler(p), // инициализируем через конструктор (rate limiter)
+		file:         &FileHandler{plugin: p},
+		wall:         &WallHandler{plugin: p},
+		media:        &MediaHandler{plugin: p, store: store},
+		mediaService: mediaSvcInstance,
 	}
 }
 

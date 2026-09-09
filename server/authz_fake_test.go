@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -93,6 +94,10 @@ func (f *fakeAuthzAPI) GetConfig() *model.Config {
 // резолвит канал через MediaStore, а не через API Mattermost: авторитет для
 // media принадлежит хранилищу (ADR-048 §7).
 type fakeMediaStore struct {
+	// Мьютекс обязателен: к хранилищу обращаются ОДНОВРЕМЕННО горутина
+	// обработчика стрима и сам тест. Без него -race падает на первом же
+	// сквозном прогоне — так и было найдено.
+	mu    sync.Mutex
 	objs  map[string]*MediaObject
 	blobs map[string][]byte
 }
@@ -102,11 +107,41 @@ func newFakeMediaStore() *fakeMediaStore {
 }
 
 func (s *fakeMediaStore) add(m *MediaObject) *fakeMediaStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.objs[m.MediaID] = m
 	return s
 }
 
+// snapshot — копии для проверок в тесте: читать карты напрямую нельзя.
+func (s *fakeMediaStore) blob(id string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.blobs[id]
+	return append([]byte(nil), b...), ok
+}
+
+func (s *fakeMediaStore) objectCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.objs)
+}
+
+func (s *fakeMediaStore) setBlob(id string, b []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blobs[id] = b
+}
+
+func (s *fakeMediaStore) dropBlob(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.blobs, id)
+}
+
 func (s *fakeMediaStore) Get(mediaID string) (*MediaObject, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	m, ok := s.objs[mediaID]
 	if !ok {
 		return nil, ErrMediaNotFound
@@ -115,6 +150,8 @@ func (s *fakeMediaStore) Get(mediaID string) (*MediaObject, error) {
 }
 
 func (s *fakeMediaStore) PutMeta(m *MediaObject) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// Копия, а не ссылка: сервис мутирует объект между записями (Attach), и
 	// хранилище, отдающее ту же структуру, скрыло бы пропущенный PutMeta.
 	c := *m
@@ -139,6 +176,8 @@ func (w *fakeBlobWriter) Commit() error {
 		return nil
 	}
 	w.done = true
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
 	if w.s.blobs == nil {
 		w.s.blobs = map[string][]byte{}
 	}
@@ -157,6 +196,8 @@ func (s *fakeMediaStore) CreateBlob(mediaID string) (BlobWriter, error) {
 }
 
 func (s *fakeMediaStore) OpenBlob(mediaID string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	b, ok := s.blobs[mediaID]
 	if !ok {
 		return nil, ErrMediaNotFound
@@ -165,7 +206,15 @@ func (s *fakeMediaStore) OpenBlob(mediaID string) (io.ReadCloser, error) {
 }
 
 func (s *fakeMediaStore) DiscardObject(mediaID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.objs, mediaID)
 	delete(s.blobs, mediaID)
 	return nil
+}
+
+// blobEquals — сравнение тела через потокобезопасный доступ.
+func blobEquals(s *fakeMediaStore, id string, want []byte) bool {
+	got, ok := s.blob(id)
+	return ok && bytes.Equal(got, want)
 }

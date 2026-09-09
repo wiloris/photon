@@ -16,6 +16,9 @@ import (
 //	114=GetPostSocialInfo
 type PostHandler struct {
 	plugin *Plugin
+	// media — тот же экземпляр сервиса, что у медийного стрима. Один на всех:
+	// два разошлись бы по состоянию хранилища.
+	media *MediaService
 }
 
 func (h *PostHandler) Handle(userID string, action int, raw json.RawMessage) Response {
@@ -66,6 +69,15 @@ func (h *PostHandler) createPost(userID string, raw json.RawMessage) Response {
 	if p.ChannelID == "" || p.Message == "" {
 		return Response{OK: false, Error: "channel_id and message are required"}
 	}
+	// Вложения ENGRAM проверяются ДО создания поста: сообщение не должно
+	// появиться со ссылкой на media, которой нет или которая чужая.
+	refs, err := h.resolveMedia(userID, p.ChannelID, p.PhotonMedia)
+	if err != nil {
+		h.plugin.API.LogWarn("[Photon][PostHandler] photon_media rejected",
+			"user_id", userID, "channel_id", p.ChannelID, "error", err.Error())
+		return Response{OK: false, Error: mediaErrorText(err)}
+	}
+
 	post := &model.Post{
 		UserId:    userID,
 		ChannelId: p.ChannelID,
@@ -73,15 +85,80 @@ func (h *PostHandler) createPost(userID string, raw json.RawMessage) Response {
 		RootId:    p.RootID,
 		FileIds:   p.FileIds,
 	}
+	if len(refs) > 0 {
+		// props строятся ЗДЕСЬ, из метаданных хранилища. Пространство имён
+		// photon_* — единственное, куда пишет Photon; чужие ключи не
+		// трогаются (ADR-048 §3).
+		post.AddProp("photon_media", refs)
+	}
 	created, appErr := h.plugin.API.CreatePost(post)
 	if appErr != nil {
 		h.plugin.API.LogError("[Photon][PostHandler] CreatePost API error",
 			"user_id", userID, "channel_id", p.ChannelID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
 	}
+	// Прикрепление ПОСЛЕ создания: до него post_id не существует.
+	for _, r := range refs {
+		if _, err := h.media.Attach(r.MediaID, created.Id); err != nil {
+			// Пост уже создан и его props ссылаются на существующие объекты;
+			// неудача перевода в ATTACHED не делает сообщение неверным, но
+			// обязана быть видна: объект останется STORED и будет найден как
+			// брошенный.
+			h.plugin.API.LogError("[Photon][PostHandler] Attach failed after post creation",
+				"user_id", userID, "post_id", created.Id, "media_id", r.MediaID,
+				"error", err.Error())
+		}
+	}
+
 	h.plugin.API.LogInfo("[Photon][PostHandler] Post created",
-		"user_id", userID, "post_id", created.Id, "channel_id", p.ChannelID)
+		"user_id", userID, "post_id", created.Id, "channel_id", p.ChannelID,
+		"media", len(refs))
 	return Response{OK: true, Data: created}
+}
+
+// resolveMedia проверяет заявленные вложения и строит записи props из
+// АВТОРИТЕТНЫХ метаданных.
+//
+// Из запроса берётся только media_id. Всё остальное — sha256, размер, тип,
+// имя — читается из MediaStore: клиент не может объявить о вложении то, чего
+// в нём нет (ADR-048 §3, §4).
+//
+// Правила допуска — ADR-048 §4: объект обязан существовать, лежать в ТОМ ЖЕ
+// канале, что и пост, быть загружен ЭТИМ пользователем и иметь байты. Любая
+// неудача — отказ, а не пропуск вложения: молча создать пост без вложения
+// значило бы потерять то, что пользователь отправил.
+func (h *PostHandler) resolveMedia(userID, channelID string, want []MediaRef) ([]MediaRef, error) {
+	if len(want) == 0 {
+		return nil, nil
+	}
+	svc := h.media
+	out := make([]MediaRef, 0, len(want))
+	seen := map[string]bool{}
+	for _, w := range want {
+		if w.MediaID == "" || seen[w.MediaID] {
+			return nil, fmt.Errorf("%w: media_id is empty or duplicated", ErrMediaInvalidRequest)
+		}
+		seen[w.MediaID] = true
+
+		obj, err := svc.Info(w.MediaID)
+		if err != nil {
+			return nil, err
+		}
+		if obj.ChannelID != channelID {
+			return nil, ErrMediaNotFound
+		}
+		if obj.UploaderID != userID {
+			return nil, ErrMediaNotFound
+		}
+		if obj.PostID != "" {
+			return nil, ErrMediaAlreadyAttached
+		}
+		out = append(out, MediaRef{
+			MediaID: obj.MediaID, SHA256: obj.SHA256, Size: obj.Size,
+			Mime: obj.Mime, Name: obj.Name, W: obj.W, H: obj.H,
+		})
+	}
+	return out, nil
 }
 
 // getFeed — Action 101.

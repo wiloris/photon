@@ -478,6 +478,15 @@ func (ql *QuicListener) handleStream(stream *quic.Stream, sessionID string, remo
 	ql.plugin.API.LogInfo("[Photon] Action",
 		"user_id", userID, "resource", header.Resource, "action", header.Action)
 
+	// Медийная ветка. Отделяется ЗДЕСЬ, а не внутри Dispatch, по одной
+	// причине: Dispatch принимает разобранный payload и возвращает Response —
+	// стрима он не видит и видеть не может. Авторизация при этом остаётся
+	// общей: handleMediaStream зовёт тот же Dispatcher.Authorize (ADR-039 §6).
+	if isMediaTransfer(header.Action) {
+		ql.handleMediaStream(stream, dec, userID, header, payload)
+		return
+	}
+
 	resp := ql.dispatcher.Dispatch(userID, header, payload)
 	writeResponse(stream, resp)
 }

@@ -83,7 +83,7 @@ func TestUploadRejectsWrongHash(t *testing.T) {
 
 	_, err := s.Upload(req, bytes.NewReader(body))
 	require.ErrorIs(t, err, ErrMediaIntegrity)
-	require.Empty(t, store.objs, "объект не должен появляться при несовпадении хеша")
+	require.Zero(t, store.objectCount(), "объект не должен появляться при несовпадении хеша")
 	require.Empty(t, store.blobs, "байты не должны оставаться при несовпадении хеша")
 }
 
@@ -96,7 +96,7 @@ func TestUploadRejectsShortBody(t *testing.T) {
 
 	_, err := s.Upload(req, bytes.NewReader(body))
 	require.ErrorIs(t, err, ErrMediaSizeMismatch)
-	require.Empty(t, store.objs)
+	require.Zero(t, store.objectCount())
 	require.Empty(t, store.blobs)
 }
 
@@ -150,7 +150,7 @@ func TestUploadFailureLeavesNothingBehind(t *testing.T) {
 
 	_, err := s.Upload(req, io.MultiReader(bytes.NewReader(body[:100]), errReader{}))
 	require.Error(t, err)
-	require.Empty(t, store.objs, "после обрыва не должно остаться метаданных")
+	require.Zero(t, store.objectCount(), "после обрыва не должно остаться метаданных")
 	require.Empty(t, store.blobs, "после обрыва не должно остаться байтов")
 }
 
@@ -238,7 +238,7 @@ func TestDownloadRejectsTruncatedBlob(t *testing.T) {
 	body := payload(1000)
 	obj, err := s.Upload(upReq(body), bytes.NewReader(body))
 	require.NoError(t, err)
-	store.blobs[obj.MediaID] = body[:500] // порча на диске
+	store.setBlob(obj.MediaID, body[:500]) // порча на диске
 
 	var got bytes.Buffer
 	_, err = s.Download(obj.MediaID, &got)
@@ -271,7 +271,7 @@ func TestAttachWithoutBytesStaysAttached(t *testing.T) {
 	body := payload(100)
 	obj, err := s.Upload(upReq(body), bytes.NewReader(body))
 	require.NoError(t, err)
-	delete(store.blobs, obj.MediaID) // байты исчезли
+	store.dropBlob(obj.MediaID) // байты исчезли
 
 	att, err := s.Attach(obj.MediaID, "post1")
 	require.Error(t, err)

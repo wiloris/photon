@@ -152,6 +152,18 @@ type CreatePostPayload struct {
 	Message   string   `json:"message"`
 	RootID    string   `json:"root_id,omitempty"`
 	FileIds   []string `json:"file_ids,omitempty"`
+
+	// PhotonMedia — вложения ENGRAM, ТИПИЗИРОВАННО.
+	//
+	// Поля кроме MediaID из запроса НЕ используются: props строятся из
+	// метаданных MediaStore, который и есть авторитет (ADR-048 §7). Иначе
+	// клиент мог бы объявить чужой sha256 или размер, и сообщение несло бы
+	// ложь о вложении.
+	//
+	// Сырых props в этой структуре нет и не будет: приём произвольного props
+	// дал бы клиенту запись в чужие ключи, включая те, что пишет сам
+	// Mattermost (ADR-048 §3).
+	PhotonMedia []MediaRef `json:"photon_media,omitempty"`
 }
 
 type GetFeedPayload struct {
