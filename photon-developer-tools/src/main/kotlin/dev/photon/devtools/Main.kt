@@ -2,7 +2,6 @@ package dev.photon.devtools
 
 import dev.photon.core.Photon
 import dev.photon.core.PhotonEventListener
-import dev.photon.core.PhotonException
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -72,25 +71,11 @@ private class Dashboard {
      * сказал нет».
      */
     fun send(p: Photon, action: Int, payload: String): String? {
-        val started = System.nanoTime()
-        return try {
-            val response = p.sendAction(action, payload)
-            val ms = (System.nanoTime() - started) / 1_000_000
-            val verdictOk = !Regex("\"ok\"\\s*:\\s*false").containsMatchIn(response)
-            val outcome = if (verdictOk) {
-                "OK (вызов состоялся, вердикт положительный)"
-            } else {
-                val reason = Regex("\"error\"\\s*:\\s*\"([^\"]*)\"").find(response)?.groupValues?.get(1)
-                "ВЕРДИКТ ok:false — ${reason ?: "причина не указана"} (вызов состоялся!)"
-            }
-            actions.add(ActionRecord(stamp(), action, payload, outcome, ms))
-            response
-        } catch (e: PhotonException) {
-            val ms = (System.nanoTime() - started) / 1_000_000
-            actions.add(ActionRecord(stamp(), action, payload,
-                "ОШИБКА ВЫЗОВА code=${e.code} ${e.nativeMessage ?: ""}", ms))
-            null
-        }
+        // Классификация живёт в Outcome.kt и только там: Network Lab
+        // пользуется той же, и две копии разошлись бы.
+        val r = call(p, action, payload)
+        actions.add(ActionRecord(stamp(), action, payload, r.detail, r.millis.toLong()))
+        return r.response
     }
 
     fun printActions() {
@@ -114,6 +99,24 @@ private fun config(endpoint: String, token: String) =
     """{"bridge":{"endpoint":"$endpoint","session_token":"$token","connect_timeout_ms":15000,"call_timeout_ms":20000}}"""
 
 fun main(args: Array<String>) {
+    // Network Lab — отдельный диагностический режим, а не часть Dashboard:
+    // у него другой объём работы и другой отчёт.
+    if (args.isNotEmpty() && args[0] == "--network-lab") {
+        if (args.size < 3) {
+            System.err.println("нужно: --network-lab <endpoint> <sessionId> " +
+                "[серия] [потоки] [на поток] [секунд]")
+            kotlin.system.exitProcess(2)
+        }
+        Photon.loadLibrary()
+        NetworkLab(args[1], args[2]).run(
+            serialCount = args.getOrNull(3)?.toIntOrNull() ?: 200,
+            threads = args.getOrNull(4)?.toIntOrNull() ?: 8,
+            perThread = args.getOrNull(5)?.toIntOrNull() ?: 25,
+            soakSeconds = args.getOrNull(6)?.toIntOrNull() ?: 20,
+        )
+        return
+    }
+
     println("Photon Developer Tools — Dashboard (Phase 16)")
     println("путь: Kotlin → JNI → C ABI → Photon Core\n")
 
