@@ -50,6 +50,35 @@ class Photon private constructor(private var handle: Long) : java.io.Closeable {
         if (closed) null else PhotonNative.getLastError(handle)
 
     /**
+     * Контексты доставки, полученные от setEventListener.
+     *
+     * Накапливаются намеренно. Освободить контекст сразу при замене
+     * слушателя нельзя: Photon_SetEventCallback не даёт дождаться уже
+     * НАЧАВШЕЙСЯ доставки со старым user_data, и освобождение стало бы
+     * гонкой (jni-events.md §3.2). Ждать такого момента умеет только
+     * Photon_Destroy, поэтому все контексты освобождаются после него.
+     */
+    private val eventContexts = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+
+    /**
+     * Устанавливает слушателя событий и ЗАПУСКАЕТ подписку — это единственный
+     * вызов, выражающий намерение получать события. Повторный вызов заменяет
+     * адресата, null отцепляет его, подписку не останавливая.
+     *
+     * Слушатель вызывается СИНХРОННО, на потоке доставки ядра: ни очереди, ни
+     * исполнителя между ядром и слушателем нет. Переход на UI-поток — дело
+     * вызывающего слоя, а не этой обёртки (jni-events.md, D1).
+     */
+    fun setEventListener(listener: PhotonEventListener?) {
+        check(!closed) { "Photon instance is closed" }
+
+        val ctx = PhotonNative.setEventListener(handle, listener)
+        if (ctx != 0L) {
+            eventContexts.add(ctx)
+        }
+    }
+
+    /**
      * Освобождает инстанс. Идемпотентен: повторный вызов безопасен —
      * как из-за флага [closed] здесь, так и из-за гарантии C ABI
      * (Photon_Destroy на уже уничтоженном handle — no-op, ADR-028).
@@ -60,7 +89,17 @@ class Photon private constructor(private var handle: Long) : java.io.Closeable {
     override fun close() {
         if (closed) return
         closed = true
+
+        // Порядок обязателен и не подлежит перестановке: только после
+        // возврата из Photon_Destroy C ABI гарантирует, что колбэк не будет
+        // вызван ни разу и ни из какого потока. Освободить GlobalRef раньше
+        // — use-after-free на стороне JVM (jni-events.md §3.3).
         PhotonNative.destroy(handle)
+
+        while (true) {
+            val ctx = eventContexts.poll() ?: break
+            PhotonNative.releaseEventListener(ctx)
+        }
         handle = 0
     }
 

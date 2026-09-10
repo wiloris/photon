@@ -200,3 +200,168 @@ JNIEXPORT jstring JNICALL Java_dev_photon_core_PhotonNative_getLastError
     }
     return (*env)->NewStringUTF(env, msg);
 }
+
+/* ── События ────────────────────────────────────────────────────────────
+ *
+ * Контракт — photon-bindings/docs/jni-events.md. Кратко о том, что здесь
+ * нормативно, а что деталь реализации.
+ *
+ * D1: доставка синхронная, НА ПОТОКЕ ДОСТАВКИ ядра. Мост не заводит ни
+ * очереди, ни исполнителя, ни собственного потока. Поэтому порядок событий
+ * и свойство «колбэки никогда не параллельны» переходят из ядра как есть
+ * (event-delivery.md §9.1), а реентерабельный Photon_Destroy продолжает
+ * опознаваться сравнением идентификатора OS-потока (§10.3): увод колбэка на
+ * другой поток сломал бы это опознание.
+ *
+ * D2: AttachCurrentThread перед вызовом, если поток ещё не присоединён, и
+ * DetachCurrentThread после — ТОЛЬКО если присоединил этот же вызов. Поток
+ * доставки принадлежит пулу Go (насос снимает LockOSThread через defer, и
+ * поток возвращается в пул, а не умирает), поэтому постоянное присоединение
+ * накапливало бы attached-потоки по одному на каждый созданный инстанс.
+ * AttachCurrentThreadAsDaemon здесь не используется.
+ *
+ * D4: исключение слушателя фиксируется и очищается, доставка продолжается,
+ * слушатель НЕ отцепляется. Пробросить его в Go нельзя — вызывающий тут
+ * C-функция, вызванная из горутины; оставить непогашенным нельзя тем более:
+ * следующий JNI-вызов в этом потоке упал бы на pending exception.
+ *
+ * Мост не берёт СВОИХ мьютексов вокруг вызова слушателя. Ядро специально
+ * отпускает c.mu до вызова (§9.1), и замок моста вернул бы ровно тот дефект:
+ * рядовое «получил MESSAGE → отправил действие» упёрлось бы в него.
+ */
+
+static JavaVM* g_vm = NULL;
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    (void)reserved;
+    g_vm = vm;
+    return JNI_VERSION_1_6;
+}
+
+/*
+ * Контекст доставки. Живёт как user_data и обязан оставаться валидным до
+ * возврата из Photon_Destroy — прямое требование photon_core.h. Поэтому
+ * освобождает его отдельный вызов releaseEventListener, а не destroy:
+ * мост не ведёт реестра «handle → ctx», порядок обеспечивает вызывающий.
+ */
+typedef struct {
+    jobject   listener;  /* GlobalRef, владение у моста */
+    jmethodID on_event;  /* кэшируется при установке: поиск по классу на
+                            каждом событии — работа в горячем пути */
+} photon_listener_ctx;
+
+static void photon_event_bridge(const char* event_json, void* user_data) {
+    photon_listener_ctx* ctx = (photon_listener_ctx*)user_data;
+    if (ctx == NULL || ctx->listener == NULL || g_vm == NULL) {
+        return;
+    }
+
+    JNIEnv* env = NULL;
+    int attached_here = 0;
+
+    jint rc = (*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6);
+    if (rc == JNI_EDETACHED) {
+        if ((*g_vm)->AttachCurrentThread(g_vm, (void**)&env, NULL) != JNI_OK) {
+            return; /* без env сделать нельзя ничего, включая логирование */
+        }
+        attached_here = 1;
+    } else if (rc != JNI_OK || env == NULL) {
+        return;
+    }
+
+    /* event_json невалиден сразу после возврата из колбэка (photon_core.h),
+       поэтому копия в JVM-heap делается здесь, внутри вызова. */
+    jstring js = (*env)->NewStringUTF(env, event_json != NULL ? event_json : "");
+    if (js != NULL) {
+        (*env)->CallVoidMethod(env, ctx->listener, ctx->on_event, js);
+        if ((*env)->ExceptionCheck(env)) {
+            /* D4: зафиксировать и погасить. Поток событий обязан продолжиться. */
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+        /* Локальная ссылка освобождается явно: поток может быть присоединён
+           надолго, и автоматическая очистка фрейма не наступит сама. */
+        (*env)->DeleteLocalRef(env, js);
+    } else if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+
+    if (attached_here) {
+        (*g_vm)->DetachCurrentThread(g_vm);
+    }
+}
+
+/*
+ * setEventListener возвращает указатель на контекст как jlong. Вызывающий
+ * обязан передать его в releaseEventListener ПОСЛЕ возврата из destroy.
+ *
+ * listener == NULL отцепляет адресата, подписку не останавливая (так
+ * устроен C ABI), и возвращает 0.
+ */
+JNIEXPORT jlong JNICALL Java_dev_photon_core_PhotonNative_setEventListener
+  (JNIEnv* env, jclass clazz, jlong handle, jobject listener) {
+    (void)clazz;
+
+    PhotonHandle* h = handle_from_jlong(handle);
+    if (h == NULL) {
+        return 0;
+    }
+
+    if (listener == NULL) {
+        Photon_SetEventCallback(h, NULL, NULL);
+        return 0;
+    }
+
+    jclass cls = (*env)->GetObjectClass(env, listener);
+    jmethodID mid = (*env)->GetMethodID(env, cls, "onEvent", "(Ljava/lang/String;)V");
+    (*env)->DeleteLocalRef(env, cls);
+    if (mid == NULL) {
+        /* GetMethodID оставил NoSuchMethodError — гасим и сообщаем нулём:
+           бросать из native здесь значило бы завести семантику сверх ABI. */
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        return 0;
+    }
+
+    photon_listener_ctx* ctx = (photon_listener_ctx*)malloc(sizeof(photon_listener_ctx));
+    if (ctx == NULL) {
+        return 0;
+    }
+    ctx->listener = (*env)->NewGlobalRef(env, listener);
+    ctx->on_event = mid;
+    if (ctx->listener == NULL) {
+        free(ctx);
+        return 0;
+    }
+
+    Photon_SetEventCallback(h, photon_event_bridge, ctx);
+    return (jlong)(intptr_t)ctx;
+}
+
+/*
+ * releaseEventListener освобождает GlobalRef и контекст.
+ *
+ * Безопасен ТОЛЬКО после возврата из Photon_Destroy: до этого момента
+ * доставка может идти с этим самым user_data, и освобождение стало бы
+ * use-after-free на стороне JVM (jni-events.md §3.3, §9.1).
+ *
+ * Устаревший контекст после замены слушателя освобождается тем же вызовом
+ * и тогда же: Photon_SetEventCallback не даёт дождаться уже начатой
+ * доставки со старым user_data, поэтому немедленное освобождение было бы
+ * гонкой.
+ */
+JNIEXPORT void JNICALL Java_dev_photon_core_PhotonNative_releaseEventListener
+  (JNIEnv* env, jclass clazz, jlong ctxPtr) {
+    (void)clazz;
+
+    photon_listener_ctx* ctx = (photon_listener_ctx*)(intptr_t)ctxPtr;
+    if (ctx == NULL) {
+        return;
+    }
+    if (ctx->listener != NULL) {
+        (*env)->DeleteGlobalRef(env, ctx->listener);
+        ctx->listener = NULL;
+    }
+    free(ctx);
+}

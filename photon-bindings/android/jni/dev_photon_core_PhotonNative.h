@@ -83,6 +83,22 @@ JNIEXPORT jint JNICALL Java_dev_photon_core_PhotonNative_lastSendActionResult
 JNIEXPORT jstring JNICALL Java_dev_photon_core_PhotonNative_getLastError
   (JNIEnv *, jclass, jlong);
 
+/*
+ * Class:     dev_photon_core_PhotonNative
+ * Method:    setEventListener
+ * Signature: (JLdev/photon/core/PhotonEventListener;)J
+ */
+JNIEXPORT jlong JNICALL Java_dev_photon_core_PhotonNative_setEventListener
+  (JNIEnv *, jclass, jlong, jobject);
+
+/*
+ * Class:     dev_photon_core_PhotonNative
+ * Method:    releaseEventListener
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_dev_photon_core_PhotonNative_releaseEventListener
+  (JNIEnv *, jclass, jlong);
+
 #ifdef __cplusplus
 }
 #endif

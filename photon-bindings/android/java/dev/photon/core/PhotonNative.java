@@ -87,6 +87,30 @@ public final class PhotonNative {
      */
     public static native String getLastError(long handle);
 
+    // ── События ─────────────────────────────────────────────────────
+
+    /**
+     * Устанавливает слушателя событий и ЗАПУСКАЕТ подписку: это единственный
+     * вызов ABI, выражающий намерение получать события ({@code Photon_Create}
+     * сети не касается). Повторный вызов заменяет адресата, {@code null}
+     * отцепляет его, подписку не останавливая.
+     *
+     * @return указатель на контекст доставки. Вызывающий обязан передать его
+     *         в {@link #releaseEventListener(long)} СТРОГО ПОСЛЕ возврата из
+     *         {@link #destroy(long)}: до этого момента доставка может идти с
+     *         этим самым контекстом. Для {@code listener == null} — 0.
+     */
+    public static native long setEventListener(long handle, PhotonEventListener listener);
+
+    /**
+     * Освобождает контекст, полученный от {@link #setEventListener}.
+     *
+     * Безопасно только после возврата из {@link #destroy(long)} — тогда C ABI
+     * уже гарантировал, что колбэк не будет вызван ни разу и ни из какого
+     * потока. Вызов с 0 — no-op.
+     */
+    public static native void releaseEventListener(long ctx);
+
     // ── Коды результата (зеркалят PhotonResult из photon_core.h) ────
 
     public static final int PHOTON_OK = 0;
