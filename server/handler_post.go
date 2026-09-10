@@ -89,13 +89,30 @@ func (h *PostHandler) createPost(userID string, raw json.RawMessage) Response {
 		// props строятся ЗДЕСЬ, из метаданных хранилища. Пространство имён
 		// photon_* — единственное, куда пишет Photon; чужие ключи не
 		// трогаются (ADR-048 §3).
-		post.AddProp("photon_media", refs)
+		value, err := mediaPropsValue(refs)
+		if err != nil {
+			h.plugin.API.LogError("[Photon][PostHandler] photon_media props encode",
+				"user_id", userID, "channel_id", p.ChannelID, "error", err.Error())
+			return Response{OK: false, Error: "internal: photon_media props"}
+		}
+		post.AddProp("photon_media", value)
 	}
 	created, appErr := h.plugin.API.CreatePost(post)
 	if appErr != nil {
 		h.plugin.API.LogError("[Photon][PostHandler] CreatePost API error",
 			"user_id", userID, "channel_id", p.ChannelID, "error", appErr.Error())
 		return Response{OK: false, Error: appErr.Error()}
+	}
+	// (nil, nil) — не «пост создан пустым», а НЕУДАВШИЙСЯ ВЫЗОВ.
+	// Сгенерированный клиент plugin API при отказе транспорта только пишет в
+	// лог и возвращает нули (client_rpc_generated.go: `if err := g.client.Call(
+	// ...); err != nil { log.Printf(...) }`), поэтому отсутствие *model.AppError
+	// не означает успеха. Без этой проверки дальше идёт created.Id — разыменование
+	// nil, паника в горутине стрима и ответ, которого клиент не дождётся.
+	if created == nil {
+		h.plugin.API.LogError("[Photon][PostHandler] CreatePost returned no post and no error",
+			"user_id", userID, "channel_id", p.ChannelID)
+		return Response{OK: false, Error: "internal: create post failed"}
 	}
 	// Прикрепление ПОСЛЕ создания: до него post_id не существует.
 	for _, r := range refs {
@@ -159,6 +176,33 @@ func (h *PostHandler) resolveMedia(userID, channelID string, want []MediaRef) ([
 		})
 	}
 	return out, nil
+}
+
+// mediaPropsValue переводит записи в JSON-КАНОНИЧЕСКИЙ вид: map[string]any,
+// []any, string, float64, bool, nil — и ничего больше.
+//
+// Причина не косметическая. Props (model.StringInterface = map[string]any)
+// уезжают в хост через plugin API, а тот сериализуется gob'ом поверх net/rpc.
+// gob кодирует значение, лежащее в интерфейсе, ПО ИМЕНИ типа, и имя обязано
+// быть известно ОБЕИМ сторонам; хост регистрирует ровно шесть типов
+// (plugin/client_rpc.go: []any, map[string]any, []*model.SlackAttachment,
+// *model.AppError, *pq.Error, …). Типа []main.MediaRef в хосте нет ни в одном
+// пакете, поэтому gob.Register на нашей стороне ничего не решает: он лишь
+// перенёс бы отказ с кодирования у нас на декодирование у хоста.
+//
+// Второй довод сильнее первого и не зависит от gob: props хранятся в БД как
+// JSON, и любой их читатель — webapp, наш же getFeed — получает именно эти
+// формы. Записывая структуру, мы записывали бы то, чего при чтении не бывает.
+func mediaPropsValue(refs []MediaRef) (any, error) {
+	raw, err := json.Marshal(refs)
+	if err != nil {
+		return nil, fmt.Errorf("photon_media marshal: %w", err)
+	}
+	var canonical []any
+	if err := json.Unmarshal(raw, &canonical); err != nil {
+		return nil, fmt.Errorf("photon_media canonicalize: %w", err)
+	}
+	return canonical, nil
 }
 
 // getFeed — Action 101.
