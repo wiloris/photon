@@ -28,3 +28,8 @@
 # project source. A future .claude/settings.json (without .local) would be
 # the shared, checked-in variant.
 .claude/settings.local.json
+
+# Photon Developer Tools — Gradle (ADR-051). Каталог сборки и кэш Gradle не
+# являются исходниками: native там пересобирается задачей buildJniLib.
+/photon-developer-tools/build/
+/photon-developer-tools/.gradle/

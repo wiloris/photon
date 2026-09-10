@@ -1,6 +1,12 @@
-# photon-bindings/android
+# photon-bindings/jvm
 
-JNI-мост к Photon C ABI v1 + Kotlin-обёртка.
+**Общий JVM-мост** к Photon C ABI v1 + Kotlin-обёртка: один и тот же
+`photon_jni.c`, один и тот же Java/Kotlin-код обслуживают и Desktop JVM, и
+будущий Android. Каталог назывался `android/` до ADR-051 — имя перестало
+соответствовать содержимому, когда мост собрался обычным `cc` и прошёл тесты
+на десктопной JVM. Дублирующего `desktop/`-моста нет и не заводится: маршалинг
+у платформ один, а различаются вещи вроде хранения ключа средствами ОС —
+для них подкаталог появится тогда, когда появится код (ADR-051, ADR-021).
 
 ## Граница ABI (жёсткое правило)
 
@@ -55,26 +61,26 @@ U Photon_StringData
 (cd photon-bindings/c && go build -buildmode=c-shared -o build/libphoton_core.so .)
 
 # 2. Сгенерировать JNI-заголовок
-(cd photon-bindings/android/java && javac -h ../jni -d /tmp/out dev/photon/core/PhotonNative.java)
+(cd photon-bindings/jvm/java && javac -h ../jni -d /tmp/out dev/photon/core/PhotonNative.java)
 
 # 3. Собрать JNI-мост
 #    -I../../c обязателен: photon_jni.c включает "photon_core.h" — ЗАМОРОЖЕННЫЙ
 #    контракт, а он лежит только там. Библиотека берётся из build/, заголовок —
 #    из исходников; это разные каталоги, и путать их нельзя
-(cd photon-bindings/android/jni && JAVA_INC=$JAVA_HOME/include && \
+(cd photon-bindings/jvm/jni && JAVA_INC=$JAVA_HOME/include && \
  gcc -shared -fPIC -I"$JAVA_INC" -I"$JAVA_INC/linux" -I. -I../../c \
      -o /tmp/libphoton_jni.so photon_jni.c \
      -L../../c/build -l:libphoton_core.so \
      -Wl,-rpath,"$PWD/../../c/build" -Wall -Wextra)
 
 # 4. Тесты
-javac -d /tmp/jnitest photon-bindings/android/java/PhotonJniTest.java \
-                      photon-bindings/android/java/dev/photon/core/PhotonNative.java
+javac -d /tmp/jnitest photon-bindings/jvm/java/PhotonJniTest.java \
+                      photon-bindings/jvm/java/dev/photon/core/PhotonNative.java
 java -cp /tmp/jnitest PhotonJniTest /tmp/libphoton_jni.so
 
-kotlinc photon-bindings/android/kotlin/Photon.kt \
-        photon-bindings/android/kotlin/PhotonKotlinTest.kt \
-        photon-bindings/android/java/dev/photon/core/PhotonNative.java \
+kotlinc photon-bindings/jvm/kotlin/Photon.kt \
+        photon-bindings/jvm/kotlin/PhotonKotlinTest.kt \
+        photon-bindings/jvm/java/dev/photon/core/PhotonNative.java \
         -include-runtime -d /tmp/kt.jar
 java -cp /tmp/kt.jar:/tmp/jnitest PhotonKotlinTestKt /tmp/libphoton_jni.so
 ```
