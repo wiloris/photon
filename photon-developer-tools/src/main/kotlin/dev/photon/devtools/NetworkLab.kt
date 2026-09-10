@@ -147,7 +147,7 @@ class NetworkLab(private val endpoint: String, private val token: String) {
     private fun serial(p: Photon, n: Int, name: String, note: String): Pair<ScenarioResult, List<Double>> {
         val results = ArrayList<CallResult>(n)
         val wall = System.nanoTime()
-        repeat(n) { results.add(call(p, 200, "{}")) }
+        repeat(n) { results.add(call(p, UsedActions.GET_ME, "{}")) }
         val ms = (System.nanoTime() - wall) / 1_000_000
         val r = ScenarioResult(name, note, ms, results)
         return r to results.filter { it.outcome != Outcome.CALL_ERROR }.map { it.millis }
@@ -163,7 +163,7 @@ class NetworkLab(private val endpoint: String, private val token: String) {
             Thread {
                 ready.countDown()
                 go.await()
-                repeat(perThread) { results.add(call(p, 200, "{}")) }
+                repeat(perThread) { results.add(call(p, UsedActions.GET_ME, "{}")) }
             }.apply { start() }
         }
         ready.await()
@@ -213,7 +213,7 @@ class NetworkLab(private val endpoint: String, private val token: String) {
                 val deadline = System.nanoTime() + soakSeconds * 1_000_000_000L
                 val wall = System.nanoTime()
                 while (System.nanoTime() < deadline) {
-                    val r = call(p, 200, "{}")
+                    val r = call(p, UsedActions.GET_ME, "{}")
                     results.add(r)
                     if (r.outcome != Outcome.CALL_ERROR) samples.add(r.millis)
                     Thread.sleep(50)

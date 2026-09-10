@@ -21,7 +21,20 @@ plugins {
 
 repositories { mavenCentral() }
 
-dependencies { testImplementation(kotlin("test")) }
+dependencies {
+    /*
+     * protobuf-java нужен ровно для одного: прочитать FileDescriptorSet,
+     * который выдаёт protoc. Кодогенерация Java НЕ используется — 154 файла
+     * и 3.2 МБ классов ради трёх enum'ов были бы платой ни за что.
+     *
+     * Версия привязана к версии protoc, которой сгенерирован photon.pb.go
+     * (v3.21.12): дескриптор и Go-код обязаны происходить из одного
+     * компилятора, иначе «канонический» каталог зависел бы от того, что
+     * стоит на машине.
+     */
+    implementation("com.google.protobuf:protobuf-java:3.21.12")
+    testImplementation(kotlin("test"))
+}
 
 tasks.test { useJUnitPlatform() }
 
@@ -38,6 +51,15 @@ val cAbiDir: File = File(repoRoot, "photon-bindings/c")
  * LD_LIBRARY_PATH не нужен ни при запуске, ни в инструкции.
  */
 val nativeDir: File = layout.buildDirectory.dir("native").get().asFile
+
+/*
+ * Канонический каталог протокола: FileDescriptorSet, который выдаёт сам
+ * protoc. Единственный источник истины — photon-core/protobuf/photon.proto;
+ * дескриптор из него ВЫВОДИТСЯ и потому в репозиторий не коммитится —
+ * иначе появилась бы вторая вещь, способная отстать.
+ */
+val protoFile: File = File(repoRoot, "photon-core/protobuf/photon.proto")
+val descriptorFile: File = layout.buildDirectory.file("descriptor/photon.desc").get().asFile
 
 /*
  * Исходники моста подключаются НАПРЯМУЮ из photon-bindings/jvm: публикуемого
@@ -118,7 +140,65 @@ val buildJniLib by tasks.registering(Exec::class) {
     outputs.file(File(nativeDir, "libphoton_jni.so"))
 }
 
+/*
+ * protoc — предусловие среды, как go и cc (ADR-051). Проверяется ЯВНО:
+ * иначе отсутствие компилятора вылезло бы невнятным стеком Exec-задачи, а
+ * не сообщением о том, чего не хватает.
+ */
+val checkProtoc by tasks.registering {
+    doFirst {
+        val found = try {
+            val p = ProcessBuilder("protoc", "--version").redirectErrorStream(true).start()
+            p.waitFor() == 0
+        } catch (e: Exception) {
+            false
+        }
+        if (!found) {
+            throw GradleException(
+                "protoc не найден в PATH.\n" +
+                "Protobuf Inspector читает FileDescriptorSet, который выдаёт protoc;\n" +
+                "своего парсера .proto у инструмента нет и не будет.\n" +
+                "protoc — предусловие среды, как go и cc (ADR-051).\n" +
+                "Ubuntu/Debian: sudo apt install protobuf-compiler\n" +
+                "Проверить: protoc --version   (ожидается 3.21.x)"
+            )
+        }
+    }
+}
+
+/*
+ * --include_source_info обязателен: без него в дескрипторе НЕТ комментариев
+ * схемы, а групповые заголовки диапазонов (── PostResource (100-114) ──) —
+ * единственное человекочитаемое описание, которое в photon.proto есть.
+ */
+val generateDescriptor by tasks.registering(Exec::class) {
+    dependsOn(checkProtoc)
+    doFirst { descriptorFile.parentFile.mkdirs() }
+    workingDir = File(repoRoot, "photon-core/protobuf")
+    commandLine(
+        "protoc",
+        "--descriptor_set_out=${descriptorFile.absolutePath}",
+        "--include_source_info",
+        "photon.proto"
+    )
+    inputs.file(protoFile)
+    outputs.file(descriptorFile)
+}
+
+tasks.register("descriptor") { dependsOn(generateDescriptor) }
+
 tasks.register("native") { dependsOn(buildJniLib) }
 
-tasks.named("run") { dependsOn(buildJniLib) }
+tasks.named("run") { dependsOn(buildJniLib, generateDescriptor) }
 tasks.named("classes") { dependsOn(buildJniLib) }
+
+// Путь к дескриптору не «где-то рядом», а передаётся явно: инструмент не
+// должен угадывать расположение сгенерированного артефакта.
+tasks.named<JavaExec>("run") {
+    systemProperty("photon.descriptor", descriptorFile.absolutePath)
+}
+tasks.test {
+    dependsOn(generateDescriptor)
+    systemProperty("photon.descriptor", descriptorFile.absolutePath)
+    systemProperty("photon.devtools.src", File(projectDir, "src/main/kotlin/dev/photon/devtools").absolutePath)
+}

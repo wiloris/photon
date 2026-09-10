@@ -117,6 +117,37 @@ fun main(args: Array<String>) {
         return
     }
 
+    if (args.isNotEmpty() && args[0] == "--protobuf-inspector") {
+        // Сети и native не требует вовсе: каталог читается из дескриптора.
+        Inspector.fromSystemProperty().printCatalog(
+            showMessages = args.contains("-messages") || args.contains("-all"),
+            messageLimit = if (args.contains("-all")) Int.MAX_VALUE else 8,
+        )
+        return
+    }
+
+    if (args.isNotEmpty() && args[0] == "--logging") {
+        if (args.size < 3) {
+            System.err.println("нужно: --logging <endpoint> <sessionId> [channelId]")
+            kotlin.system.exitProcess(2)
+        }
+        Photon.loadLibrary()
+        // Каталог нужен, чтобы показывать ИМЕНА действий, а не голые числа.
+        // Недоступен — поток всё равно работает, просто без имён.
+        val catalog = runCatching { Inspector.fromSystemProperty() }.getOrNull()
+        LoggingView(args[1], args[2], catalog).run(args.getOrNull(3))
+        return
+    }
+
+    if (args.isNotEmpty() && args[0] == "--performance") {
+        Photon.loadLibrary()
+        PerfLab(args.getOrNull(1), args.getOrNull(2)).run(
+            samples = args.getOrNull(3)?.toIntOrNull() ?: 200,
+            perThread = args.getOrNull(4)?.toIntOrNull() ?: 20,
+        )
+        return
+    }
+
     println("Photon Developer Tools — Dashboard (Phase 16)")
     println("путь: Kotlin → JNI → C ABI → Photon Core\n")
 
@@ -154,14 +185,14 @@ fun main(args: Array<String>) {
         })
         println("  слушатель установлен, подписка запущена")
 
-        dash.send(photon, 200, "{}")            // getMe — доказывает весь путь
-        dash.send(photon, 999999, "{}")         // неизвестный код — ошибка ВЫЗОВА
+        dash.send(photon, UsedActions.GET_ME, "{}")   // доказывает весь путь
+        dash.send(photon, UsedActions.DELIBERATELY_UNKNOWN, "{}")  // ошибка ВЫЗОВА
 
         if (online) {
             // Отказ СЕРВЕРА при состоявшемся вызове: payload без обязательного
             // поля. Именно эта строка показывает разницу между исходом вызова
             // и вердиктом операции — без неё различение видно наполовину.
-            dash.send(photon, 308, "{}")
+            dash.send(photon, UsedActions.GET_OR_CREATE_DIRECT_CHANNEL, "{}")
             Thread.sleep(6000)                  // окно, в котором приходит CONNECTED
         }
 
