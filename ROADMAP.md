@@ -1354,7 +1354,14 @@ UDP-ретранслятор, сквозной сценарий) и `photon-bind
 
 ---
 
-### Phase 16 — Photon Developer Tools 🔲
+### Phase 16 — Photon Developer Tools 🟡
+
+**Реализуемое закрыто; четыре пункта заблокированы архитектурно, а не не
+сделаны.** Закрыты: Dashboard, Network Lab, Protobuf Inspector, Performance и
+Logging в клиентской части. Остаются: Storage Lab, Crypto Lab, Plugin Lab и
+централизованный лог ядра — у каждого своя развилка, названная в своём
+разделе; ни одна не решается реализацией инструмента. Первый настоящий клиент
+Photon существует и работает через публичный путь.
 
 Первый **настоящий клиент** Photon — Linux Desktop, `Compose Desktop → JNI →
 C ABI → Photon Core`. Не вспомогательный Debug Client, а среда разработки и
