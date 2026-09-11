@@ -297,3 +297,53 @@ func (s *Store) Watermark(ctx context.Context, channelID string) (Position, bool
 	})
 	return pos, found, err
 }
+
+// countVanished — сколько локальных записей внутри диапазона блока в самом
+// блоке ОТСУТСТВУЕТ.
+//
+// Единственный способ увидеть удаление. Живой прогон четвёртого среза
+// показал: удалённая запись просто ИСЧЕЗАЕТ из ленты — надгробия нет,
+// delete_at в выдаче не приходит, и по самой записи узнать об удалении
+// нечем. Но сегмент утверждает полноту «на момент выборки»: значит запись,
+// попавшая в покрытый блоком диапазон и не пришедшая в нём, у источника
+// отсутствует.
+//
+// Функция СЧИТАЕТ и ничего не удаляет: политика удаления — отдельное
+// решение (feed-reconcile.md §8). Считать её здесь дешевле, чем где-либо
+// ещё: обход и так идёт по тому же префиксу и в той же транзакции.
+func countVanished(tx ports.ReadTx, channelID string, b Block) (int, error) {
+	if len(b.Records) == 0 {
+		return 0, nil
+	}
+
+	present := make(map[string]struct{}, len(b.Records))
+	lo := Position{OrderKey: b.Records[0].OrderKey, ID: b.Records[0].ID}
+	hi := lo
+	for _, r := range b.Records {
+		present[r.ID] = struct{}{}
+		p := Position{OrderKey: r.OrderKey, ID: r.ID}
+		lo = oldest(lo, p)
+		hi = newest(hi, p)
+	}
+
+	var n int
+	err := tx.ForEachPrefix(Namespace, prefix(channelID), func(_, v []byte) error {
+		r, err := decode(v)
+		if err != nil {
+			return err
+		}
+		p := Position{OrderKey: r.OrderKey, ID: r.ID}
+		// Строго внутри покрытого диапазона, включая границы.
+		if p.newerThan(hi) || lo.newerThan(p) {
+			return nil
+		}
+		if _, ok := present[r.ID]; !ok {
+			n++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}

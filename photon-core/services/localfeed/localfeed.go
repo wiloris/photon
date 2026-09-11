@@ -148,6 +148,34 @@ type IngestResult struct {
 	// Segments — сколько непрерывных участков у канала ПОСЛЕ слияния.
 	// Уменьшение означает закрытый пропуск; рост — новый.
 	Segments int
+	// Updated — записей, у которых пришла версия СТАРШЕ локальной; тело
+	// перезаписано.
+	Updated int
+
+	// Unchanged — версия совпала с локальной. Запись всё равно
+	// перезаписывается: тело при равной версии обязано совпадать, а если не
+	// совпало — источник нарушил собственный контракт, и локальная копия не
+	// авторитетнее пришедшей.
+	Unchanged int
+
+	// Stale — пришла версия МЛАДШЕ локальной. Такая запись НЕ применяется:
+	// доставка может переупорядочиться, и «откат» записи к прежнему телу был
+	// бы потерей уже известного обновления.
+	Stale int
+
+	// Vanished — записей, которые лежат локально внутри диапазона блока, но
+	// в самом блоке отсутствуют.
+	//
+	// Это ЕДИНСТВЕННЫЙ способ увидеть удаление: живой прогон показал, что
+	// удалённый пост просто исчезает из ленты — надгробия нет, delete_at в
+	// выдаче не приходит. Сегмент утверждает полноту «на момент выборки»,
+	// поэтому запись, попавшая в покрытый диапазон и не пришедшая, у
+	// источника отсутствует.
+	//
+	// Поле СЧИТАЕТ, но ничего не удаляет: политика удаления — отдельное
+	// решение, и принимать его этим срезом рано (feed-reconcile.md §8).
+	Vanished int
+
 	// GapsClosed — на сколько пропусков стало МЕНЬШЕ.
 	//
 	// ОТРИЦАТЕЛЬНОЕ значение законно и означает противоположное: блок не
@@ -187,15 +215,46 @@ func (s *Store) Ingest(ctx context.Context, channelID string, b Block) (IngestRe
 			return err
 		}
 
+		// Согласование по версии. До четвёртого среза Ingest клал вслепую:
+		// существующую запись не читал и версий не сравнивал, поэтому
+		// переупорядоченная доставка молча откатывала бы запись к прежнему
+		// телу. Version при этом уже существовал и уже заполнялся из
+		// update_at — не читался нигде.
+		var upd, same, stale int
 		for _, r := range b.Records {
+			k := key(channelID, r.OrderKey, r.ID)
+			prev, err := tx.Get(Namespace, k)
+			if err != nil && !errors.Is(err, ports.ErrNotFound) {
+				return err
+			}
+			if prev != nil {
+				old, derr := decode(prev)
+				if derr != nil {
+					return derr
+				}
+				switch {
+				case r.Version < old.Version:
+					stale++
+					continue // откат запрещён
+				case r.Version == old.Version:
+					same++
+				default:
+					upd++
+				}
+			}
 			v, err := encode(r)
 			if err != nil {
 				return err
 			}
-			if err := tx.Put(Namespace, key(channelID, r.OrderKey, r.ID), v); err != nil {
+			if err := tx.Put(Namespace, k, v); err != nil {
 				return err
 			}
 			s.stats.countWrite()
+		}
+
+		vanished, err := countVanished(tx, channelID, b)
+		if err != nil {
+			return err
 		}
 
 		enc, err := encodeSegments(after)
@@ -207,7 +266,11 @@ func (s *Store) Ingest(ctx context.Context, channelID string, b Block) (IngestRe
 		}
 
 		res = IngestResult{
-			Stored:     len(b.Records),
+			Stored:     len(b.Records) - stale,
+			Updated:    upd,
+			Unchanged:  same,
+			Stale:      stale,
+			Vanished:   vanished,
 			Segments:   len(after),
 			GapsClosed: gapCount(before) - gapCount(after),
 		}
