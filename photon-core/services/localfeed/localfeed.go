@@ -95,22 +95,63 @@ func (s *Store) Prepare(ctx context.Context) error {
 // Big-endian обязателен: только он сохраняет числовой порядок в байтовом
 // сравнении. Little-endian дал бы порядок, не имеющий отношения к времени.
 func key(channelID string, orderKey int64, id string) []byte {
-	inv := ^uint64(0) - uint64(orderKey)
 	b := make([]byte, 0, len(channelID)+1+8+len(id))
 	b = append(b, channelID...)
 	b = append(b, 0x00)
 	var ord [8]byte
-	binary.BigEndian.PutUint64(ord[:], inv)
+	binary.BigEndian.PutUint64(ord[:], invOrder(orderKey))
 	b = append(b, ord[:]...)
 	b = append(b, id...)
 	return b
 }
+
+// invOrder / orderFromInv — та самая инверсия и она же в обратную сторону.
+//
+// Вынесены из key() не ради красоты: с появлением обхода ПО ДИАПАЗОНУ формула
+// понадобилась в трёх местах (построить ключ, построить границу обхода,
+// прочитать позицию из ключа). Три копии `^uint64(0) - uint64(x)` разошлись бы
+// молча, а разошедшаяся инверсия — это порядок обхода, переставший совпадать с
+// порядком сравнения, то есть ровно то, о чём предупреждает Position.newerThan.
+func invOrder(orderKey int64) uint64 { return ^uint64(0) - uint64(orderKey) }
+
+func orderFromInv(inv uint64) int64 { return int64(^uint64(0) - inv) }
 
 func prefix(channelID string) []byte {
 	b := make([]byte, 0, len(channelID)+1)
 	b = append(b, channelID...)
 	b = append(b, 0x00)
 	return b
+}
+
+// orderBound — граница обхода: ключ префикса с одним лишь OrderKey, без ID.
+//
+// Любой настоящий ключ этого OrderKey длиннее на непустой ID, поэтому граница
+// лежит СТРОГО ПЕРЕД всеми записями с таким OrderKey и строго после всех, чей
+// OrderKey больше. Для ForEachPrefixFrom, где start исключается, это ровно то,
+// что нужно, чтобы самая свежая запись диапазона в обход ПОПАЛА: вычислять
+// «ключ, предшествующий данному» иначе пришлось бы декрементом байтов, а это
+// молчаливо ломается на границе ID.
+func orderBound(channelID string, orderKey int64) []byte {
+	b := prefix(channelID)
+	var ord [8]byte
+	binary.BigEndian.PutUint64(ord[:], invOrder(orderKey))
+	return append(b, ord[:]...)
+}
+
+// positionFromKey — позиция ИЗ КЛЮЧА, без чтения значения.
+//
+// OrderKey и ID лежат в ключе по построению (см. key выше), поэтому разбирать
+// ради них JSON значения незачем. Измерение четвёртого среза показало цену
+// такого разбора: 441 байт и 11 аллокаций на каждую просмотренную запись,
+// целиком на Body, который обходу не нужен (feed-reconcile.md §10.6).
+func positionFromKey(pfx, k []byte) (Position, error) {
+	if len(k) < len(pfx)+8 {
+		return Position{}, fmt.Errorf("localfeed: key %q is shorter than prefix+order", k)
+	}
+	return Position{
+		OrderKey: orderFromInv(binary.BigEndian.Uint64(k[len(pfx) : len(pfx)+8])),
+		ID:       string(k[len(pfx)+8:]),
+	}, nil
 }
 
 // Put сохраняет записи. Идемпотентен: ключ детерминирован, повторная запись
@@ -228,15 +269,19 @@ func (s *Store) Ingest(ctx context.Context, channelID string, b Block) (IngestRe
 				return err
 			}
 			if prev != nil {
-				old, derr := decode(prev)
+				// Читается ОДНО поле: сравнение версий телом не пользуется.
+				// Полный decode здесь копировал body дважды (см. codec.go,
+				// decodeVersion) — на согласование версий это не влияло
+				// никак, кроме цены.
+				oldVersion, derr := decodeVersion(prev)
 				if derr != nil {
 					return derr
 				}
 				switch {
-				case r.Version < old.Version:
+				case r.Version < oldVersion:
 					stale++
 					continue // откат запрещён
-				case r.Version == old.Version:
+				case r.Version == oldVersion:
 					same++
 				default:
 					upd++

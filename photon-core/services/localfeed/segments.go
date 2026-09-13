@@ -309,8 +309,26 @@ func (s *Store) Watermark(ctx context.Context, channelID string) (Position, bool
 // отсутствует.
 //
 // Функция СЧИТАЕТ и ничего не удаляет: политика удаления — отдельное
-// решение (feed-reconcile.md §8). Считать её здесь дешевле, чем где-либо
-// ещё: обход и так идёт по тому же префиксу и в той же транзакции.
+// решение (feed-reconcile.md §8, ADR-054).
+//
+// ОБХОД ИДЁТ ПО ДИАПАЗОНУ, А НЕ ПО ВСЕЙ ЛЕНТЕ. Прежняя редакция шла
+// ForEachPrefix от начала префикса и отбрасывала лишнее уже внутри callback.
+// Это было измерено (feed-reconcile.md §10): просмотр равнялся всей ленте
+// ВСЕГДА — 137 мс и 44 МБ мусора на заливку при 100 000 записей, 86 % времени
+// Ingest, — а поскольку лента читается страницами, полная догрузка выходила
+// квадратичной по её размеру.
+//
+// Здесь ничего не изобретается: порядок обхода ключей СОВПАДАЕТ с порядком
+// Position.newerThan (это инвариант раскладки ключа, см. localfeed.go), значит
+// покрытый диапазон — непрерывный участок обхода, и достаточно встать на его
+// верхнюю границу через ForEachPrefixFrom (ADR-047) и остановиться, миновав
+// нижнюю. Новых возможностей у ports.Storage не просят: ADR-047 заводился
+// ровно под «продолжить чтение с известной позиции».
+//
+// Семантика Vanished не меняется (ADR-053/054): диапазон по-прежнему задаётся
+// замороженным сравнением позиций, исчезнувшей считается локальная запись
+// внутри покрытого диапазона, которой нет в блоке, и функция по-прежнему
+// только считает.
 func countVanished(tx ports.ReadTx, channelID string, b Block) (int, error) {
 	if len(b.Records) == 0 {
 		return 0, nil
@@ -326,23 +344,35 @@ func countVanished(tx ports.ReadTx, channelID string, b Block) (int, error) {
 		hi = newest(hi, p)
 	}
 
+	// stopScan — не ошибка, а выход из обхода: контракт ForEachPrefix* иного
+	// способа прерваться не даёт. Тот же приём, что в Watermark.
+	stopScan := errors.New("stop")
+
+	pfx := prefix(channelID)
 	var n int
-	err := tx.ForEachPrefix(Namespace, prefix(channelID), func(_, v []byte) error {
-		r, err := decode(v)
-		if err != nil {
-			return err
+	err := tx.ForEachPrefixFrom(Namespace, pfx, orderBound(channelID, hi.OrderKey), func(k, _ []byte) error {
+		p, perr := positionFromKey(pfx, k)
+		if perr != nil {
+			return perr
 		}
-		p := Position{OrderKey: r.OrderKey, ID: r.ID}
-		// Строго внутри покрытого диапазона, включая границы.
-		if p.newerThan(hi) || lo.newerThan(p) {
+		if lo.newerThan(p) {
+			// Ниже нижней границы. Дальше по обходу только ещё старее —
+			// смотреть больше нечего.
+			return stopScan
+		}
+		if p.newerThan(hi) {
+			// Тот же OrderKey, что у hi, но ID меньше, то есть НОВЕЕ hi:
+			// граница по OrderKey грубее границы по позиции, и такие записи
+			// обход захватывает первыми. Их число ограничено числом записей
+			// одной миллисекунды, а не длиной ленты.
 			return nil
 		}
-		if _, ok := present[r.ID]; !ok {
+		if _, ok := present[p.ID]; !ok {
 			n++
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, stopScan) {
 		return 0, err
 	}
 	return n, nil

@@ -17,7 +17,7 @@ import (
 // Стоимость страницы линейна по её глубине, а суммарная стоимость обхода —
 // квадратична по числу страниц.
 
-func seedChannel(t *testing.T, s *Store, channel string, n int) {
+func seedChannel(t testing.TB, s *Store, channel string, n int) {
 	t.Helper()
 	ctx := context.Background()
 	const batch = 500

@@ -18,7 +18,7 @@ import (
 // вопрос среза — «достаточно ли существующего ForEachPrefix», и фиктивное
 // хранилище, обходящее ключи в удобном порядке, ответил бы на него ложно.
 
-func newStore(t *testing.T) (*Store, *Stats) {
+func newStore(t testing.TB) (*Store, *Stats) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := bboltadapter.New(filepath.Join(dir, "feed.db"), feedMigrations())
