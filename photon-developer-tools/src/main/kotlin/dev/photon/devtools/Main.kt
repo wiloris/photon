@@ -139,6 +139,21 @@ fun main(args: Array<String>) {
         return
     }
 
+    // Crypto Lab — наблюдение следов криптографии. Ключей у инструмента нет
+    // и не будет (ADR-021): он смотрит на исходы обычных действий.
+    if (args.isNotEmpty() && args[0] == "--crypto-lab") {
+        if (args.size < 3) {
+            System.err.println("нужно: --crypto-lab <endpoint> <sessionId> " +
+                "[тот же сервер по IP — для сверки имени в сертификате]")
+            kotlin.system.exitProcess(2)
+        }
+        // Каталог нужен стражу ADR-021: список действий берётся канонический,
+        // своей копии у инструмента нет.
+        val catalog = runCatching { Inspector.fromSystemProperty() }.getOrNull()
+        CryptoLab(args[1], args[2], catalog).run(args.getOrNull(3)?.takeIf { it.isNotBlank() })
+        return
+    }
+
     // Storage Lab — отдельный диагностический режим. Меряет ЧТЕНИЕ ЛЕНТЫ
     // через доменные действия; локального хранилища на публичном пути нет, и
     // режим это показывает, а не обходит.
