@@ -35,6 +35,7 @@ private const val MESSAGE_FIELD = 2
  */
 object UsedActions {
     const val CREATE_POST = 100
+    const val GET_FEED = 101
     const val DELETE_POST = 102
     const val GET_ME = 200
     const val GET_OR_CREATE_DIRECT_CHANNEL = 308
@@ -48,6 +49,8 @@ object UsedActions {
         "Network Lab: все сценарии" to GET_ME,
         "Logging: пост для проверки корреляции" to CREATE_POST,
         "Logging: уборка поста" to DELETE_POST,
+        "Storage Lab: чтение страницы ленты" to GET_FEED,
+        "Storage Lab: заготовка ленты и догрузка" to CREATE_POST,
     )
 }
 

@@ -139,6 +139,26 @@ fun main(args: Array<String>) {
         return
     }
 
+    // Storage Lab — отдельный диагностический режим. Меряет ЧТЕНИЕ ЛЕНТЫ
+    // через доменные действия; локального хранилища на публичном пути нет, и
+    // режим это показывает, а не обходит.
+    if (args.isNotEmpty() && args[0] == "--storage-lab") {
+        if (args.size < 3) {
+            System.err.println("нужно: --storage-lab <endpoint> <sessionId> " +
+                "[channelId] [seed] [limit] [страниц вглубь] [возвратов]")
+            kotlin.system.exitProcess(2)
+        }
+        Photon.loadLibrary()
+        StorageLab(args[1], args[2]).run(
+            channelArg = args.getOrNull(3)?.takeIf { it.isNotBlank() && it != "-" },
+            seed = args.getOrNull(4)?.toIntOrNull() ?: 0,
+            limit = args.getOrNull(5)?.toIntOrNull() ?: 20,
+            depthPages = args.getOrNull(6)?.toIntOrNull() ?: 10,
+            returns = args.getOrNull(7)?.toIntOrNull() ?: 5,
+        )
+        return
+    }
+
     if (args.isNotEmpty() && args[0] == "--performance") {
         Photon.loadLibrary()
         PerfLab(args.getOrNull(1), args.getOrNull(2)).run(
