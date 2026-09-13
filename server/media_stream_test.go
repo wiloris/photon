@@ -107,7 +107,7 @@ func mediaListenerWithLog(t *testing.T, uploaderID string) (string, *fakeMediaSt
 	d := NewDispatcher(p)
 	d.authz = newAuthz(api, store)
 	d.mediaService = svc
-	d.media = &MediaHandler{plugin: p, store: store}
+	d.media = &MediaHandler{plugin: p, media: d.mediaService}
 	ql := NewQuicListener(p, nil, d)
 
 	ln, err := quic.ListenAddr("127.0.0.1:0", selfSignedTLS(t), &quic.Config{KeepAlivePeriod: 15 * time.Second})

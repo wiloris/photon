@@ -32,7 +32,12 @@ func (d *Dispatcher) mediaSvc() *MediaService { return d.mediaService }
 
 func NewDispatcher(p *Plugin) *Dispatcher {
 	store := NewFSMediaStore(p.API.GetConfig)
-	mediaSvcInstance := NewMediaService(store)
+	// Оракул живости поста (ADR-056) подключается ЗДЕСЬ, в единственной точке
+	// сборки: и обычный путь, и медийный стрим держат один экземпляр сервиса,
+	// поэтому проверка не может оказаться включённой на одном входе и
+	// выключенной на другом.
+	mediaSvcInstance := NewMediaService(store).
+		WithLiveness(postLivenessOracle(p.API, p.API))
 	return &Dispatcher{
 		plugin:       p,
 		authz:        newAuthz(p.API, store),
@@ -42,7 +47,7 @@ func NewDispatcher(p *Plugin) *Dispatcher {
 		engram:       NewEngramHandler(p), // инициализируем через конструктор (rate limiter)
 		file:         &FileHandler{plugin: p},
 		wall:         &WallHandler{plugin: p},
-		media:        &MediaHandler{plugin: p, store: store},
+		media:        &MediaHandler{plugin: p, media: mediaSvcInstance},
 		mediaService: mediaSvcInstance,
 	}
 }

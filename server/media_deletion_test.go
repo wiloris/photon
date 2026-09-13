@@ -421,7 +421,7 @@ func TestMissedDeletionLeavesOrphanUntouchedInThisSlice(t *testing.T) {
 func TestGetInfoAnswersUnavailableAfterPostDeletion(t *testing.T) {
 	store := newFakeMediaStore()
 	svc := NewMediaService(store)
-	h := &MediaHandler{plugin: handlersFor(quietAPI()), store: store}
+	h := &MediaHandler{plugin: handlersFor(quietAPI()), media: svc}
 	attachedObject(store, "m1", "post1", []byte("body"))
 
 	// Живой объект отвечает нормально — иначе unavailable ниже ничего не

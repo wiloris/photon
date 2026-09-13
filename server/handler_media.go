@@ -20,7 +20,13 @@ import (
 // смысла.
 type MediaHandler struct {
 	plugin *Plugin
-	store  MediaStore
+	// media — ИСПОЛНИТЕЛЬ, а не хранилище. Прежде handler ходил в MediaStore
+	// напрямую и повторял у себя правило «байты доступны?». Пока условие
+	// сводилось к хранимому состоянию, две копии давали один ответ; с
+	// появлением живости поста (ADR-056) они разошлись бы молча: 702 отдавал
+	// бы метаданные объекта, чей пост мёртв, а 701 по тому же объекту —
+	// отказывал. Найдено тестом до живого прогона.
+	media *MediaService
 }
 
 func (h *MediaHandler) Handle(userID string, action int, raw json.RawMessage) Response {
@@ -50,20 +56,24 @@ func (h *MediaHandler) getInfo(userID string, raw json.RawMessage) Response {
 		return Response{OK: false, Error: "invalid: media_id is required"}
 	}
 
-	mo, err := h.store.Get(p.MediaID)
+	mo, err := h.media.Info(p.MediaID)
 	if err != nil || mo == nil {
-		// Сюда можно попасть только гонкой: authz уже разрешил объект. Ответ
-		// тот же, что при отсутствии права, — по той же причине, по которой
-		// он один и тот же в authz (ADR-039, media-transfer.md §5).
-		h.plugin.API.LogWarn("[Photon][MediaHandler] Media object vanished after authorization",
-			"user_id", userID, "media_id", p.MediaID)
-		return Response{OK: false, Error: errForbidden.Error()}
-	}
-	if !mo.HasBytes() {
-		// unavailable, а не forbidden: субъект уже имеет право видеть этот
-		// объект, и утечки существования здесь нет — он узнаёт только, что
-		// байтов больше нет (media-transfer.md §5).
-		return Response{OK: false, Error: "unavailable"}
+		// Различение задаёт mediaErrorText, и оно ровно то же, что на пути
+		// стрима: unavailable — объект известен субъекту, байтов больше нет
+		// (истёк, убран уборкой C или его пост мёртв); forbidden — объекта
+		// нет ЛИБО нет права, намеренно неразличимо (ADR-039,
+		// media-transfer.md §5).
+		//
+		// Отсутствие объекта здесь — гонка: authz его уже разрешил.
+		reason := "forbidden"
+		if err != nil {
+			reason = mediaErrorText(err)
+		}
+		if reason == errForbidden.Error() {
+			h.plugin.API.LogWarn("[Photon][MediaHandler] Media object vanished after authorization",
+				"user_id", userID, "media_id", p.MediaID)
+		}
+		return Response{OK: false, Error: reason}
 	}
 
 	h.plugin.API.LogInfo("[Photon][MediaHandler] Media info fetched",

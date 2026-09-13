@@ -231,7 +231,7 @@ func mediaHandler(t *testing.T) (*MediaHandler, *fakeMediaStore) {
 	t.Helper()
 	api := quietAPI()
 	store := newFakeMediaStore()
-	return &MediaHandler{plugin: handlersFor(api), store: store}, store
+	return &MediaHandler{plugin: handlersFor(api), media: NewMediaService(store)}, store
 }
 
 func TestMediaGetInfoReturnsMetadata(t *testing.T) {

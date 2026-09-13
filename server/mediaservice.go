@@ -43,6 +43,37 @@ type MediaService struct {
 	// вернулся клиенту, можно было бы только косвенно.
 	now   func() time.Time
 	newID func() string
+	// liveness — оракул живости поста (ADR-056). Параметром, а не импортом
+	// Plugin API: сервис о транспорте и о хосте не знает, и знать не должен
+	// (тот же приём, что CallerInfo в ADR-036).
+	//
+	// nil означает «оракула нет» и даёт PostUnknown, то есть объект
+	// отдаётся. Это не заглушка на будущее: сервис обязан оставаться
+	// работоспособным там, где спрашивать некого.
+	liveness func(postID string) PostLiveness
+}
+
+// WithLiveness подключает оракул живости поста. Возвращает тот же сервис —
+// удобство сборки, а не построитель.
+func (s *MediaService) WithLiveness(oracle func(postID string) PostLiveness) *MediaService {
+	s.liveness = oracle
+	return s
+}
+
+// postGone — мёртв ли пост, которому принадлежит объект.
+//
+// Спрашивается ТОЛЬКО про прикреплённый объект: у неприкреплённого (STORED)
+// post_id пуст, спрашивать не о чем, и такой объект обязан оставаться
+// читаемым — иначе брошенную загрузку нельзя будет ни скачать, ни найти
+// (media-transfer.md §11, проверка N5 живого прогона).
+//
+// Единственный исход, гасящий объект, — PostGone. PostUnknown отдаёт объект:
+// отсутствие ответа не является доказательством отсутствия поста.
+func (s *MediaService) postGone(obj *MediaObject) bool {
+	if s.liveness == nil || obj == nil || obj.PostID == "" {
+		return false
+	}
+	return s.liveness(obj.PostID) == PostGone
 }
 
 // DefaultMediaTTL — срок по умолчанию. Значение развёртывания, не константа
@@ -198,6 +229,12 @@ func (s *MediaService) Info(mediaID string) (*MediaObject, error) {
 	if !obj.HasBytes() {
 		return obj, ErrMediaUnavailable
 	}
+	// Живость спрашивается ПОСЛЕ HasBytes: у объекта, уже переведённого
+	// уборкой C в DELETED, ответ тот же, а вызов через plugin API стоит
+	// денег. Порядок здесь — про цену, не про смысл.
+	if s.postGone(obj) {
+		return obj, ErrMediaUnavailable
+	}
 	return obj, nil
 }
 
@@ -214,6 +251,11 @@ func (s *MediaService) Download(mediaID string, sink io.Writer) (*MediaObject, e
 		return nil, err
 	}
 	if !obj.HasBytes() {
+		return obj, ErrMediaUnavailable
+	}
+	// До открытия блоба: отдать байты и лишь потом спохватиться было бы
+	// хуже, чем не начинать.
+	if s.postGone(obj) {
 		return obj, ErrMediaUnavailable
 	}
 
