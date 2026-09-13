@@ -139,6 +139,20 @@ fun main(args: Array<String>) {
         return
     }
 
+    // Plugin Lab — собственный экземпляр runtime (ADR-057). Native-путь
+    // Photon здесь не задействован вовсе: это отдельный дочерний процесс.
+    if (args.isNotEmpty() && args[0] == "--plugin-lab") {
+        val rt = System.getProperty("photon.lab.runtime")
+        val fx = System.getProperty("photon.lab.fixture")
+        if (rt == null || fx == null) {
+            System.err.println("не заданы photon.lab.runtime и photon.lab.fixture — " +
+                "запускать через `gradle run --args=\"--plugin-lab\"`")
+            kotlin.system.exitProcess(2)
+        }
+        PluginLab(java.io.File(rt), java.io.File(fx)).run()
+        return
+    }
+
     // Crypto Lab — наблюдение следов криптографии. Ключей у инструмента нет
     // и не будет (ADR-021): он смотрит на исходы обычных действий.
     if (args.isNotEmpty() && args[0] == "--crypto-lab") {

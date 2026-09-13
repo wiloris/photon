@@ -187,15 +187,51 @@ val generateDescriptor by tasks.registering(Exec::class) {
 
 tasks.register("descriptor") { dependsOn(generateDescriptor) }
 
+/*
+ * Plugin Lab (ADR-057): собственный экземпляр runtime и его фикстура.
+ *
+ * Два отдельных бинаря, а не один: runtime — то, чем инструмент управляет,
+ * фикстура — плагин, которым управляет уже runtime. Собираются из
+ * photon-plugin-runtime, потому что там они и живут; Developer Tools их
+ * только запускает.
+ *
+ * Это НЕ production daemon и не часть релиза инструмента — артефакты
+ * лаборатории, лежащие рядом с нативными библиотеками.
+ */
+val runtimeModuleDir: File = File(repoRoot, "photon-plugin-runtime")
+
+val buildLabRuntime by tasks.registering(Exec::class) {
+    workingDir = runtimeModuleDir
+    doFirst { nativeDir.mkdirs() }
+    commandLine("go", "build", "-o",
+        File(nativeDir, "photon-devtools-runtime").absolutePath, "./cmd/devtools-runtime")
+    inputs.dir(File(runtimeModuleDir, "cmd/devtools-runtime"))
+    outputs.file(File(nativeDir, "photon-devtools-runtime"))
+}
+
+val buildLabFixture by tasks.registering(Exec::class) {
+    workingDir = runtimeModuleDir
+    doFirst { nativeDir.mkdirs() }
+    commandLine("go", "build", "-o",
+        File(nativeDir, "photon-lab-fixture-plugin").absolutePath, "./tests/plugins/hello")
+    inputs.dir(File(runtimeModuleDir, "tests/plugins/hello"))
+    outputs.file(File(nativeDir, "photon-lab-fixture-plugin"))
+}
+
+tasks.register("pluginLabNative") { dependsOn(buildLabRuntime, buildLabFixture) }
+
 tasks.register("native") { dependsOn(buildJniLib) }
 
-tasks.named("run") { dependsOn(buildJniLib, generateDescriptor) }
+tasks.named("run") { dependsOn(buildJniLib, generateDescriptor, buildLabRuntime, buildLabFixture) }
 tasks.named("classes") { dependsOn(buildJniLib) }
 
 // Путь к дескриптору не «где-то рядом», а передаётся явно: инструмент не
 // должен угадывать расположение сгенерированного артефакта.
 tasks.named<JavaExec>("run") {
     systemProperty("photon.descriptor", descriptorFile.absolutePath)
+    // Пути артефактов лаборатории — тоже явно, по той же причине.
+    systemProperty("photon.lab.runtime", File(nativeDir, "photon-devtools-runtime").absolutePath)
+    systemProperty("photon.lab.fixture", File(nativeDir, "photon-lab-fixture-plugin").absolutePath)
 }
 tasks.test {
     dependsOn(generateDescriptor)
