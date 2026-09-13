@@ -45,6 +45,16 @@ type fakeBridge struct {
 	wrongInfo       bool // 702 сообщает не те размер и хеш
 	attachedOnly    bool // неприкреплённый объект (STORED) не отдаётся
 
+	// keepMediaAfterDelete — сервер БЕЗ уборки C: удаление поста не трогает
+	// media. Ровно то поведение, что было до ADR-055, и ровно то, ради чего
+	// заведены N6 и N7.
+	keepMediaAfterDelete bool
+	// deletedLooksForbidden — сервер, удаливший метаданные вместе с байтами:
+	// удалённый объект становится неотличим от никогда не существовавшего.
+	// Мутация против ослабленного oracle — проверка «пришла какая-то ошибка»
+	// зеленела бы на ней.
+	deletedLooksForbidden bool
+
 	// mediaDenyReason подменяет ПРИЧИНУ отказа в медийных путях. Мутация
 	// против ослабленного oracle: сервер отвергает, но не по существу
 	// запроса, а как непосвящённого — ровно то, что делал Bridge с умершим
@@ -72,6 +82,10 @@ type fakeObject struct {
 	size                  int64
 	postID                string
 	body                  []byte
+	// deleted — состояние DELETED: метаданные есть, байтов нет (ADR-055).
+	// Именно надгробие, а не исчезновение объекта: иначе ответ был бы
+	// forbidden, и N6 измеряла бы не то.
+	deleted bool
 }
 
 type fakePost struct {
@@ -118,6 +132,16 @@ func (f *fakeBridge) mediaDeny() string {
 		return f.mediaDenyReason
 	}
 	return "forbidden"
+}
+
+// goneReason — причина отказа по объекту, чьи байты убраны. Контрактная —
+// unavailable; deletedLooksForbidden подменяет её на forbidden, то есть
+// моделирует сервер, снёсший метаданные вместе с байтами.
+func (f *fakeBridge) goneReason() string {
+	if f.deletedLooksForbidden {
+		return "forbidden"
+	}
+	return "unavailable"
 }
 
 // visible — право субъекта на объект. В самопереписке владельца объект
@@ -179,7 +203,25 @@ func (a *fakeActor) Do(ctx context.Context, action int32, payload []byte) (sessi
 			PostID string `json:"post_id"`
 		}
 		_ = json.Unmarshal(payload, &p)
+		post, existed := f.posts[p.PostID]
 		delete(f.posts, p.PostID)
+		for i, id := range f.order {
+			if id == p.PostID {
+				f.order = append(f.order[:i], f.order[i+1:]...)
+				break
+			}
+		}
+		// Уборка C: media удалённого поста становится недоступной (ADR-055).
+		// Надгробие остаётся — объект по-прежнему в f.objects, исчезают
+		// только байты.
+		if existed && !f.keepMediaAfterDelete {
+			for _, ref := range post.media {
+				if o, ok := f.objects[ref.MediaID]; ok && o.postID == p.PostID {
+					o.deleted = true
+					o.body = nil
+				}
+			}
+		}
 		return okResp(map[string]bool{"ok": true}), nil
 
 	case photonpb.Action_ACTION_MEDIA_GET_INFO:
@@ -196,6 +238,9 @@ func (a *fakeActor) Do(ctx context.Context, action int32, payload []byte) (sessi
 		}
 		if !f.visible(o, a.user) {
 			return denyResp(f.mediaDeny()), nil
+		}
+		if o.deleted {
+			return denyResp(f.goneReason()), nil
 		}
 		info := feedMedia{MediaID: o.id, SHA256: o.sum, Size: o.size, Mime: o.mime, Name: o.name}
 		if f.wrongInfo {
@@ -348,8 +393,10 @@ func (a *fakeActor) download(payload []byte, sink io.Writer) (session.Response, 
 	o, ok := f.objects[p.MediaID]
 	corrupt, relabel, ghost, visible := f.corruptDownload, f.relabelDownload, f.ghostAllowed, false
 	attachedOnly := f.attachedOnly
+	gone, goneReason := false, f.goneReason()
 	if ok {
 		visible = f.visible(o, a.user)
+		gone = o.deleted
 	}
 	f.mu.Unlock()
 
@@ -373,6 +420,11 @@ func (a *fakeActor) download(payload []byte, sink io.Writer) (session.Response, 
 	}
 	if !visible {
 		return denyResp(f.mediaDeny()), nil
+	}
+	if gone {
+		// Байтов нет, метаданные есть: отказ приходит ДО кадра ответа,
+		// поэтому клиент получает причину, а не оборванное тело.
+		return denyResp(goneReason), nil
 	}
 	// Мутация: сервер отдаёт только ПРИКРЕПЛЁННОЕ, то есть STORED
 	// недостижим до attach. Это нарушение §11: STORED означает «байты

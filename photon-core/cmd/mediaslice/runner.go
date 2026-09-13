@@ -504,11 +504,95 @@ func (r *Runner) negative(ctx context.Context) {
 		r.unattached(ctx)
 	}
 
-	// N6. Недоступный объект (EXPIRED/DELETED). Перевести объект в это
-	// состояние можно только вмешательством на сервере, а серверные изменения
-	// этим прогоном не выполняются.
-	r.rep.skip("N6", "недоступный объект отвергается как unavailable",
-		"стимул требует изменения состояния объекта на сервере; выполняется структурным тестом Bridge, живьём не измерялось")
+	// N6, N7. Недоступный объект (DELETED). Стимул появился вместе с уборкой
+	// C: удаление поста переводит его media в DELETED (ADR-055). До неё
+	// проверка объявлялась НЕ ВЫПОЛНЕННОЙ — состояние не присваивалось нигде.
+	r.deletedMedia(ctx)
+}
+
+// deletedMedia — N6 и N7: media удалённого поста отвергается как unavailable.
+//
+// Объект и пост здесь СВОИ, а не основные. Основной media_id нужен живым
+// проверкам A, D, N1 и N2, и удаление его поста разрушило бы их — причём
+// молча, потому что порядок секций прогона не является частью контракта.
+//
+// Измеряется РОВНО различение unavailable и forbidden (media-transfer.md §5):
+// первое означает «объект известен субъекту, байтов больше нет», второе —
+// «нет права ЛИБО объекта не существует». Сервер, снёсший метаданные вместе
+// с байтами, ответил бы forbidden, и проверка «пришла какая-то ошибка»
+// приняла бы это за успех.
+func (r *Runner) deletedMedia(ctx context.Context) {
+	if r.channelID == "" {
+		r.rep.skip("N6", "media удалённого поста отвергается как unavailable", "канал не получен")
+		r.rep.skip("N7", "701 по media удалённого поста отвергается как unavailable", "канал не получен")
+		return
+	}
+
+	const wantGone = "unavailable"
+	skipBoth := func(format string, a ...any) {
+		why := fmt.Sprintf(format, a...)
+		r.rep.skip("N6", "media удалённого поста отвергается как unavailable", why)
+		r.rep.skip("N7", "701 по media удалённого поста отвергается как unavailable", why)
+	}
+
+	body := bytes.Repeat([]byte("to-be-deleted-"), 300) // 4200 байт
+	sum := sha256.Sum256(body)
+	hexSum := hex.EncodeToString(sum[:])
+
+	cctx, cancel := context.WithTimeout(ctx, r.opts.CallTimeout)
+	ref, err := media.New(r.a).Upload(cctx, media.UploadRequest{
+		ChannelID: r.channelID, Name: "doomed.bin", Mime: "application/octet-stream",
+		SHA256: hexSum, Size: int64(len(body)),
+	}, bytes.NewReader(body))
+	cancel()
+	if err != nil {
+		skipBoth("загрузка объекта под удаление не прошла: %v", err)
+		return
+	}
+
+	payload := []byte(fmt.Sprintf(
+		`{"channel_id":%q,"message":"mediaslice doomed","photon_media":[{"media_id":%q}]}`,
+		r.channelID, ref.MediaID))
+	var post postEnvelope
+	if err := r.actionJSON(ctx, r.a, photonpb.Action_ACTION_CREATE_POST, payload, &post); err != nil {
+		skipBoth("пост с объектом под удаление не создан: %v", err)
+		return
+	}
+	if post.ID == "" {
+		skipBoth("createPost вернул пост без id")
+		return
+	}
+
+	// Свидетель ЖИВОСТИ: до удаления объект обязан отвечать положительно.
+	// Без него unavailable ниже ничего не измеряет — сервер, отвергающий
+	// вообще всё, прошёл бы обе проверки.
+	if _, err := r.mediaInfo(ctx, r.a, ref.MediaID); err != nil {
+		r.created = append(r.created, post.ID)
+		skipBoth("объект недоступен ЕЩЁ ДО удаления поста: %v", err)
+		return
+	}
+
+	del := []byte(fmt.Sprintf(`{"post_id":%q}`, post.ID))
+	resp, err := r.action(ctx, r.a, photonpb.Action_ACTION_DELETE_POST, del)
+	switch {
+	case err != nil:
+		r.created = append(r.created, post.ID)
+		skipBoth("удалить пост не удалось: %v", err)
+		return
+	case !resp.OK:
+		r.created = append(r.created, post.ID)
+		skipBoth("сервер отказал в удалении поста: %q", resp.Error)
+		return
+	}
+	// В список на уборку пост НЕ добавляется: он уже удалён этой проверкой.
+
+	_, err = r.mediaInfo(ctx, r.a, ref.MediaID)
+	r.expectDenied("N6", "702 по media удалённого поста", wantGone, err)
+
+	cctx, cancel = context.WithTimeout(ctx, r.opts.CallTimeout)
+	_, err = media.New(r.a).Download(cctx, ref.MediaID, io.Discard)
+	cancel()
+	r.expectDenied("N7", "701 по media удалённого поста", wantGone, err)
 }
 
 func (r *Runner) unattached(ctx context.Context) {
@@ -799,7 +883,12 @@ func (r *Runner) cleanup(ctx context.Context) {
 		fmt.Printf("  🧹 пост %s удалён\n", id)
 	}
 	if r.mediaID != "" {
-		fmt.Println("  ℹ️  медийные объекты остаются на сервере: операции удаления в модели нет (ADR-048)")
+		// Уборка C (ADR-055) снимает доступность объектов вместе с их постами:
+		// удалённые выше посты уводят свою media в DELETED. Остаются
+		// НАДГРОБИЯ — метаданные без байтов — и объекты, поста не имевшие:
+		// брошенная загрузка N5 остаётся в STORED, потому что это уборка A, и
+		// она в срез не входила.
+		fmt.Println("  ℹ️  media удалённых постов переведена в DELETED (уборка C); надгробия и брошенные загрузки остаются — уборки A и B вне среза")
 	}
 }
 

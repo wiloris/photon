@@ -81,13 +81,17 @@ func TestRunnerPassesAgainstCorrectBridge(t *testing.T) {
 	if err := r.Run(context.Background()); err != nil {
 		t.Fatalf("исправный сервер дал красный прогон: %v; отчёт: %v", err, allIDs(r))
 	}
-	for _, id := range []string{"P1", "P4", "U1", "I3", "I4", "A4", "A6", "D2", "D3", "N1", "N3", "S1", "C1", "E1"} {
+	for _, id := range []string{"P1", "P4", "U1", "I3", "I4", "A4", "A6", "D2", "D3", "N1", "N3", "N6", "N7", "S1", "C1", "E1"} {
 		if got := statusOf(t, r, id); got != statusPass {
 			t.Errorf("%s: статус %s, ожидался PASS", id, got)
 		}
 	}
 	// Невыполнимое обязано быть объявлено невыполненным, а не зелёным.
-	for _, id := range []string{"N6", "E2", "E3"} {
+	//
+	// N6 отсюда УШЛА: до уборки C (ADR-055) стимула не существовало —
+	// DELETED не присваивался нигде, — и проверка честно объявлялась
+	// невыполненной. Теперь стимул есть, и вместе с N6 появилась N7.
+	for _, id := range []string{"E2", "E3"} {
 		if got := statusOf(t, r, id); got != statusSkip {
 			t.Errorf("%s: статус %s, ожидался NOT EXECUTED", id, got)
 		}
@@ -146,6 +150,26 @@ func TestRunnerCatchesReattachAccepted(t *testing.T) {
 	f.allowReattach = true
 	r := newRunner(t, f, false, "prep", "upload", "attach")
 	requireFailed(t, r, r.Run(context.Background()), "A6")
+}
+
+// Сервер БЕЗ уборки C: удаление поста не трогает media. Ровно то поведение,
+// что было до ADR-055, и ровно то, ради чего N6 и N7 заведены.
+func TestRunnerCatchesMediaSurvivingItsPost(t *testing.T) {
+	f := newFakeBridge()
+	f.keepMediaAfterDelete = true
+	r := newRunner(t, f, false, "prep", "upload", "attach", "negative")
+	requireFailed(t, r, r.Run(context.Background()), "N6", "N7")
+}
+
+// Сервер, снёсший метаданные вместе с байтами: удалённый объект отвечает
+// forbidden, то есть становится неотличим от никогда не существовавшего.
+// Отказ приходит — и проверка «пришла какая-то ошибка» зеленела бы. Ловит
+// это только сравнение ТОЧНОЙ причины (media-transfer.md §5).
+func TestRunnerCatchesDeletedMediaReportedAsForbidden(t *testing.T) {
+	f := newFakeBridge()
+	f.deletedLooksForbidden = true
+	r := newRunner(t, f, false, "prep", "upload", "attach", "negative")
+	requireFailed(t, r, r.Run(context.Background()), "N6", "N7")
 }
 
 func TestRunnerCatchesWrongInfoMetadata(t *testing.T) {
