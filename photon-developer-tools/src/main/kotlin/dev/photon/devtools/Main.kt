@@ -117,6 +117,19 @@ fun main(args: Array<String>) {
         return
     }
 
+    // Обрыв и восстановление — через локальный UDP-ретранслятор отдельным
+    // процессом (методика Phase 15.5). Искусственный разрыв пути, не смена
+    // интерфейса и не убитый сервер: границы печатаются в отчёте.
+    if (args.isNotEmpty() && args[0] == "--reconnect-lab") {
+        if (args.size < 3) {
+            System.err.println("нужно: --reconnect-lab <endpoint host:port> <sessionId> [циклов]")
+            kotlin.system.exitProcess(2)
+        }
+        Photon.loadLibrary()
+        ReconnectLab(args[1], args[2]).run(cycles = args.getOrNull(3)?.toIntOrNull() ?: 2)
+        return
+    }
+
     if (args.isNotEmpty() && args[0] == "--protobuf-inspector") {
         // Сети и native не требует вовсе: каталог читается из дескриптора.
         Inspector.fromSystemProperty().printCatalog(

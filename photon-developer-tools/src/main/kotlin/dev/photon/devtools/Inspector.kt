@@ -47,6 +47,7 @@ object UsedActions {
         "Dashboard: состояние субъекта" to GET_ME,
         "Dashboard: демонстрация вердикта ok:false" to GET_OR_CREATE_DIRECT_CHANNEL,
         "Network Lab: все сценарии" to GET_ME,
+        "Reconnect Lab: действия до, во время и после обрыва" to GET_ME,
         "Logging: пост для проверки корреляции" to CREATE_POST,
         "Logging: уборка поста" to DELETE_POST,
         "Storage Lab: чтение страницы ленты" to GET_FEED,
