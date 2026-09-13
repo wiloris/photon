@@ -2,12 +2,9 @@ package dev.photon.devtools
 
 import dev.photon.core.Photon
 import dev.photon.core.PhotonEventListener
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
-import java.util.concurrent.ConcurrentLinkedQueue
 
 /*
- * Photon Developer Tools — Dashboard, объём Phase 16.
+ * Photon Developer Tools — точка входа и Dashboard, объём Phase 16.
  *
  * Первый настоящий клиент Photon: он ходит ТЕМ ЖЕ публичным путём, которым
  * пойдут приложения — Kotlin → JNI → C ABI → Photon Core. Прямых импортов
@@ -16,87 +13,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *
  * Сознательно НЕ содержит Compose и UI-архитектуры: на этом шаге нужен
  * технический потребитель, а не продукт. Что показывает — определено
- * ROADMAP.md, Phase 16, раздел Dashboard, и ничего сверх.
+ * ROADMAP.md, Phase 16, раздел Dashboard, и ничего сверх. Логика Dashboard —
+ * в Dashboard.kt; здесь только выбор режима и порядок шагов.
  *
  * Адрес Bridge и Session ID — аргументы. В коде их нет и не будет.
  */
-
-private val clock = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
-
-private fun stamp(): String = LocalTime.now().format(clock)
-
-/** Строка журнала действий: код, payload, исход, задержка. */
-private data class ActionRecord(
-    val at: String,
-    val action: Int,
-    val payload: String,
-    val outcome: String,
-    val millis: Long,
-)
-
-/**
- * Журнал действий и событий.
- *
- * События приходят СИНХРОННО на потоке доставки ядра (jni-events.md, D1),
- * поэтому очередь здесь — не буфер доставки, а хранилище для показа.
- */
-private class Dashboard {
-    private val actions = ConcurrentLinkedQueue<ActionRecord>()
-    private val events = ConcurrentLinkedQueue<String>()
-
-    @Volatile var subscription: String = "нет подписки"
-        private set
-
-    fun onEvent(json: String) {
-        val type = Regex("\"type\"\\s*:\\s*\"([A-Z_]+)\"").find(json)?.groupValues?.get(1) ?: "?"
-        // CONNECTED и NETWORK_CHANGED описывают ТОЛЬКО подписное соединение:
-        // action-соединение подключается лениво и своего фонового жизненного
-        // цикла не имеет (photon_core.h).
-        when (type) {
-            "CONNECTED" -> subscription = "CONNECTED (с ${stamp()})"
-            "NETWORK_CHANGED" -> subscription = "NETWORK_CHANGED — связь потеряна (${stamp()})"
-        }
-        events.add("${stamp()}  $type  ${json.take(160)}")
-        println("  ⚡ ${stamp()}  $type")
-    }
-
-    /**
-     * Выполняет действие и записывает исход.
-     *
-     * Различение двух разных вещей — суть пункта Dashboard (ADR-038):
-     *  - PhotonException  — ИСХОД ВЫЗОВА: до сервера не дошло или дошло, но
-     *                       C ABI вернул не PHOTON_OK;
-     *  - ok:false в ответе — ВЕРДИКТ ОПЕРАЦИИ: вызов состоялся, сервер отказал.
-     * Смешивать их значит терять различие между «связь сломана» и «сервер
-     * сказал нет».
-     */
-    fun send(p: Photon, action: Int, payload: String): String? {
-        // Классификация живёт в Outcome.kt и только там: Network Lab
-        // пользуется той же, и две копии разошлись бы.
-        val r = call(p, action, payload)
-        actions.add(ActionRecord(stamp(), action, payload, r.detail, r.millis.toLong()))
-        return r.response
-    }
-
-    fun printActions() {
-        println("\n── журнал действий ───────────────────────────────")
-        if (actions.isEmpty()) println("  (пусто)")
-        actions.forEach {
-            println("  ${it.at}  action=${it.action}  ${it.millis} мс")
-            println("      payload: ${it.payload.take(90)}")
-            println("      исход:   ${it.outcome}")
-        }
-    }
-
-    fun printEvents() {
-        println("\n── события ───────────────────────────────────────")
-        if (events.isEmpty()) println("  (ни одного)")
-        events.forEach { println("  $it") }
-    }
-}
-
-private fun config(endpoint: String, token: String) =
-    """{"bridge":{"endpoint":"$endpoint","session_token":"$token","connect_timeout_ms":15000,"call_timeout_ms":20000}}"""
 
 fun main(args: Array<String>) {
     // Network Lab — отдельный диагностический режим, а не часть Dashboard:
@@ -219,15 +140,13 @@ fun main(args: Array<String>) {
     Photon.loadLibrary()
 
     println("── ядро ──────────────────────────────────────────")
-    val abi = Photon.abiVersion()
-    val major = abi shr 16
-    val minor = abi and 0xFFFF
-    println("  версия ABI:      $major.$minor")
+    val abi = abiInfo(Photon.abiVersion(), Photon.EXPECTED_ABI_MAJOR)
+    println("  версия ABI:      ${abi.major}.${abi.minor}")
     println("  ожидается MAJOR: ${Photon.EXPECTED_ABI_MAJOR}")
-    println("  совместимость:   ${if (major == Photon.EXPECTED_ABI_MAJOR) "да" else "НЕТ — клиент собран под другой MAJOR"}")
+    println("  совместимость:   ${if (abi.compatible) "да" else "НЕТ — клиент собран под другой MAJOR"}")
 
     val online = args.size >= 2
-    val cfg = if (online) config(args[0], args[1]) else "{}"
+    val cfg = if (online) dashboardConfig(args[0], args[1]) else "{}"
     if (!online) {
         println("\n  режим: БЕЗ Bridge (адрес и Session ID не переданы).")
         println("  запуск с ними:  ./gradlew run --args=\"<endpoint> <sessionId>\"")
