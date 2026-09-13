@@ -120,10 +120,12 @@
 (в `services/localfeed` их стало 53) → 396 с уборкой C: две мутационные
 проверки прогона в `cmd/mediaslice`, ADR-055 → 399 с уборкой C-2: N8, N9 и
 их мутации, ADR-056),
-`photon-plugin-runtime` **229** (было 223 → 229 с `cmd/devtools-runtime`: 6
-тестов Plugin Lab настоящими процессами, ADR-057; из них 11 — E2E
-`tests/integration` против настоящего runtime, и 26 — Phase 11, настоящие процессы через
-`tests/lifecycle`; обе группы входят в те же 229, не считаются дважды),
+`photon-plugin-runtime` **236** (было 223 → 229 с `cmd/devtools-runtime`: 6
+тестов Plugin Lab настоящими процессами, ADR-057 → 236 со сквозными
+сценариями на настоящем `coreops`, B4a; из них 11 — E2E
+`tests/integration` против настоящего runtime, и 33 — настоящие процессы через
+`tests/lifecycle`: 26 Phase 11 и 7 `sdkscenario`; обе группы входят в те же
+236, не считаются дважды),
 `photon-plugin-sdk` **4** (`TestADR031_NoForbiddenImports`,
 `TestADR031_NoModuleDependencies`, `TestOperationCatalogCoverage`,
 `TestReentrantCall_HandlerBlockingCallReturnsErrInsteadOfHanging` — добавлен
@@ -635,7 +637,7 @@ struct` пуст. Это предусловие **только** Phase 13.5; р�
 | Модуль | Состояние |
 |---|---|
 | `photon-core` | Зависимостей на другие модули дерева нет. `go test ./...` — 399 |
-| `photon-plugin-runtime` | `replace` на `../photon-core` и `../photon-plugin-sdk` **закоммичены**. `go test -timeout 300s ./...` — 229 |
+| `photon-plugin-runtime` | `replace` на `../photon-core` и `../photon-plugin-sdk` **закоммичены**. `go test -timeout 300s ./...` — 236 |
 | `photon-plugin-sdk` | `require` нет ни одного — структурная гарантия ADR-031. 4 теста |
 | `photon-bindings/c` | `replace` на `../../photon-core` закоммичен (после Phase 13.5). `go test .` — 44 |
 
