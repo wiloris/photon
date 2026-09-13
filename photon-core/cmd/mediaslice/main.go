@@ -19,7 +19,8 @@
 //	I1-I4  702 info: размер и sha256 совпадают с независимо посчитанными
 //	A1-A6  createPost с photon_media; props АВТОРИТЕТНЫ; getFeed; повтор отвергнут
 //	D1-D4  701 download в файл; независимая сверка размера и sha256
-//	N1-N7  отказы: чужой, несуществующий, неприкреплённый, недоступный
+//	N1-N9  отказы: чужой, несуществующий, неприкреплённый, недоступный,
+//	       каскадно удалённый ответ, давно осиротевший объект
 //	S1     дедлайн зависшего стрима
 //	C1     кредит MAX_STREAMS не деградирует после ста стримов
 //	E1-E3  байты мимо JSON и отсутствие буферизации
@@ -69,7 +70,9 @@ var (
 
 	workDir = flag.String("workdir", "", "каталог для файлов прогона; пусто — временный")
 	keep    = flag.Bool("keep", false, "не удалять созданные посты")
-	only    = flag.String("only", "",
+	orphan  = flag.String("orphan-media", "",
+		"media_id объекта, осиротевшего ДО появления проверки живости (N9)")
+	only = flag.String("only", "",
 		"выполнить только перечисленные секции: prep,upload,info,attach,download,negative,deadline,streams,evidence")
 )
 
@@ -126,6 +129,7 @@ func main() {
 			CallTimeout:   *callTimeout,
 			WorkDir:       wd,
 			Keep:          *keep,
+			OrphanMedia:   *orphan,
 			Only:          parseOnly(*only),
 		},
 		rep: &report{},

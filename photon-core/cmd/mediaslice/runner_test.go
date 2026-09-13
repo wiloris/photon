@@ -81,7 +81,7 @@ func TestRunnerPassesAgainstCorrectBridge(t *testing.T) {
 	if err := r.Run(context.Background()); err != nil {
 		t.Fatalf("исправный сервер дал красный прогон: %v; отчёт: %v", err, allIDs(r))
 	}
-	for _, id := range []string{"P1", "P4", "U1", "I3", "I4", "A4", "A6", "D2", "D3", "N1", "N3", "N6", "N7", "S1", "C1", "E1"} {
+	for _, id := range []string{"P1", "P4", "U1", "I3", "I4", "A4", "A6", "D2", "D3", "N1", "N3", "N6", "N7", "N8", "S1", "C1", "E1"} {
 		if got := statusOf(t, r, id); got != statusPass {
 			t.Errorf("%s: статус %s, ожидался PASS", id, got)
 		}
@@ -91,7 +91,9 @@ func TestRunnerPassesAgainstCorrectBridge(t *testing.T) {
 	// N6 отсюда УШЛА: до уборки C (ADR-055) стимула не существовало —
 	// DELETED не присваивался нигде, — и проверка честно объявлялась
 	// невыполненной. Теперь стимул есть, и вместе с N6 появилась N7.
-	for _, id := range []string{"E2", "E3"} {
+	// N9 без -orphan-media невыполнима: объект, осиротевший ДО появления
+	// проверки, поддельный сервер предъявить не может — он создаётся прогоном.
+	for _, id := range []string{"E2", "E3", "N9"} {
 		if got := statusOf(t, r, id); got != statusSkip {
 			t.Errorf("%s: статус %s, ожидался NOT EXECUTED", id, got)
 		}
@@ -170,6 +172,48 @@ func TestRunnerCatchesDeletedMediaReportedAsForbidden(t *testing.T) {
 	f.deletedLooksForbidden = true
 	r := newRunner(t, f, false, "prep", "upload", "attach", "negative")
 	requireFailed(t, r, r.Run(context.Background()), "N6", "N7")
+}
+
+// Сервер С уборкой C, но БЕЗ проверки живости (поведение до ADR-056):
+// media каскадно удалённых ответов остаётся читаемой. Различающая мутация —
+// N6 и N7 при ней ЗЕЛЕНЫ, падает только N8. Если бы падали все три, проверка
+// не отличала бы уборку по событию от проверки при чтении.
+func TestRunnerCatchesCascadeRepliesLeftReadable(t *testing.T) {
+	f := newFakeBridge()
+	f.cascadeRepliesReadable = true
+	r := newRunner(t, f, false, "prep", "upload", "attach", "negative")
+	requireFailed(t, r, r.Run(context.Background()), "N8")
+	for _, id := range []string{"N6", "N7"} {
+		if got := statusOf(t, r, id); got != statusPass {
+			t.Fatalf("%s: статус %s — уборка C этой мутацией не затронута, иначе N8 ловит не то", id, got)
+		}
+	}
+}
+
+// N9 с заданным объектом: сервер, отдающий давно осиротевший объект, обязан
+// уронить проверку. Объект-сирота готовится прямо здесь — создаётся пост,
+// удаляется, и его media предъявляется прогону как «давняя».
+func TestRunnerCatchesKnownOrphanStillServed(t *testing.T) {
+	f := newFakeBridge()
+	f.keepMediaAfterDelete = true // сервер вообще не гасит media мёртвых постов
+	orphan := f.seedOrphan("legacy-orphan")
+
+	r := newRunner(t, f, false, "prep", "upload", "attach", "negative")
+	r.opts.OrphanMedia = orphan
+	requireFailed(t, r, r.Run(context.Background()), "N9")
+}
+
+// Без -orphan-media проверка обязана быть объявлена НЕ ВЫПОЛНЕННОЙ, а не
+// зелёной: отсутствие объекта — не доказательство.
+func TestRunnerMarksKnownOrphanNotExecutedWithoutFlag(t *testing.T) {
+	f := newFakeBridge()
+	r := newRunner(t, f, false, "prep", "upload", "attach", "negative")
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("прогон без -orphan-media должен быть зелёным: %v; отчёт: %v", err, allIDs(r))
+	}
+	if got := statusOf(t, r, "N9"); got != statusSkip {
+		t.Fatalf("N9 без -orphan-media: статус %s, ожидался NOT EXECUTED", got)
+	}
 }
 
 func TestRunnerCatchesWrongInfoMetadata(t *testing.T) {

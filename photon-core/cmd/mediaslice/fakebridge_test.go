@@ -54,6 +54,11 @@ type fakeBridge struct {
 	// Мутация против ослабленного oracle — проверка «пришла какая-то ошибка»
 	// зеленела бы на ней.
 	deletedLooksForbidden bool
+	// cascadeRepliesReadable — сервер С уборкой C, но БЕЗ проверки живости
+	// (ADR-056): корень убирается по событию, а media каскадно удалённых
+	// ответов остаётся читаемой. Ровно то поведение, что измерено живым
+	// прогоном уборки C, и ровно то, ради чего заведены N8 и N9.
+	cascadeRepliesReadable bool
 
 	// mediaDenyReason подменяет ПРИЧИНУ отказа в медийных путях. Мутация
 	// против ослабленного oracle: сервер отвергает, но не по существу
@@ -86,10 +91,15 @@ type fakeObject struct {
 	// Именно надгробие, а не исчезновение объекта: иначе ответ был бы
 	// forbidden, и N6 измеряла бы не то.
 	deleted bool
+	// inReply — объект прикреплён к ОТВЕТУ треда. Нужен ровно одной мутации:
+	// сервер, у которого работает уборка C и не работает проверка живости,
+	// теряет именно ответы.
+	inReply bool
 }
 
 type fakePost struct {
 	id, channel, message string
+	rootID               string
 	media                []feedMedia
 }
 
@@ -106,6 +116,26 @@ func newFakeBridge() *fakeBridge {
 }
 
 func (f *fakeBridge) actor(user string) *fakeActor { return &fakeActor{f: f, user: user} }
+
+// seedOrphan — объект, чей пост УЖЕ мёртв: тот самый случай, который на стенде
+// возник до появления проверки живости. Готовится напрямую, а не прогоном,
+// потому что прогон такого объекта создать не может по определению — он
+// создаёт свои, новые.
+func (f *fakeBridge) seedOrphan(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body := []byte(name)
+	o := &fakeObject{
+		id: f.nextID("media"), channel: f.channel, uploader: "user-A",
+		name: name + ".bin", mime: "application/octet-stream",
+		sum:  hex.EncodeToString(func() []byte { h := sha256.Sum256(body); return h[:] }()),
+		size: int64(len(body)), body: body,
+		// Пост, которого в f.posts нет: он «умер» до начала прогона.
+		postID: "post-long-gone",
+	}
+	f.objects[o.id] = o
+	return o.id
+}
 
 func (f *fakeBridge) nextID(prefix string) string {
 	f.seq++
@@ -132,6 +162,28 @@ func (f *fakeBridge) mediaDeny() string {
 		return f.mediaDenyReason
 	}
 	return "forbidden"
+}
+
+// mediaGone — отдаётся ли объект. Два основания, и они РАЗНЫЕ:
+//
+//   - deleted: уборка C убрала байты по событию удаления (ADR-055);
+//   - пост объекта мёртв: проверка живости на чтении (ADR-056) — она и
+//     закрывает каскадно удалённые ответы, до которых событие не дошло.
+//
+// Неприкреплённый объект (пустой postID) не гасится никогда: это брошенная
+// загрузка, уборка A, и N5 требует, чтобы он читался.
+func (f *fakeBridge) mediaGone(o *fakeObject) bool {
+	if o.deleted {
+		return true
+	}
+	if o.postID == "" || f.keepMediaAfterDelete {
+		return false
+	}
+	if _, alive := f.posts[o.postID]; alive {
+		return false
+	}
+	// Мутация: сервер с уборкой C, но без проверки живости.
+	return !(f.cascadeRepliesReadable && o.inReply)
 }
 
 // goneReason — причина отказа по объекту, чьи байты убраны. Контрактная —
@@ -204,17 +256,35 @@ func (a *fakeActor) Do(ctx context.Context, action int32, payload []byte) (sessi
 		}
 		_ = json.Unmarshal(payload, &p)
 		post, existed := f.posts[p.PostID]
-		delete(f.posts, p.PostID)
-		for i, id := range f.order {
-			if id == p.PostID {
-				f.order = append(f.order[:i], f.order[i+1:]...)
-				break
+		if !existed {
+			// Пост уже мёртв: сервер отвергает — authz не резолвит удалённый
+			// пост. Измерено на живом Bridge.
+			return denyResp("forbidden"), nil
+		}
+		// КАСКАД: удаление корня уносит ответы. Это поведение сервера
+		// Mattermost, а не наше: измерено — у всех постов треда один
+		// delete_at, и хук приходит ТОЛЬКО по корню.
+		dead := []*fakePost{post}
+		if post.rootID == "" {
+			for _, other := range f.posts {
+				if other.rootID == p.PostID {
+					dead = append(dead, other)
+				}
 			}
 		}
-		// Уборка C: media удалённого поста становится недоступной (ADR-055).
-		// Надгробие остаётся — объект по-прежнему в f.objects, исчезают
-		// только байты.
-		if existed && !f.keepMediaAfterDelete {
+		for _, d := range dead {
+			delete(f.posts, d.id)
+			for i, id := range f.order {
+				if id == d.id {
+					f.order = append(f.order[:i], f.order[i+1:]...)
+					break
+				}
+			}
+		}
+		// Уборка C (ADR-055) — ПО СОБЫТИЮ, то есть только по названному посту.
+		// Ответы события не получают, и их объекты остаются нетронутыми: их
+		// гасит не уборка, а проверка живости на чтении (ADR-056, mediaGone).
+		if !f.keepMediaAfterDelete {
 			for _, ref := range post.media {
 				if o, ok := f.objects[ref.MediaID]; ok && o.postID == p.PostID {
 					o.deleted = true
@@ -239,7 +309,7 @@ func (a *fakeActor) Do(ctx context.Context, action int32, payload []byte) (sessi
 		if !f.visible(o, a.user) {
 			return denyResp(f.mediaDeny()), nil
 		}
-		if o.deleted {
+		if f.mediaGone(o) {
 			return denyResp(f.goneReason()), nil
 		}
 		info := feedMedia{MediaID: o.id, SHA256: o.sum, Size: o.size, Mime: o.mime, Name: o.name}
@@ -258,6 +328,7 @@ func (f *fakeBridge) createPost(user string, payload []byte) session.Response {
 	var p struct {
 		ChannelID string      `json:"channel_id"`
 		Message   string      `json:"message"`
+		RootID    string      `json:"root_id"`
 		Media     []feedMedia `json:"photon_media"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -290,12 +361,14 @@ func (f *fakeBridge) createPost(user string, payload []byte) session.Response {
 		})
 	}
 
-	post := &fakePost{id: f.nextID("post"), channel: p.ChannelID, message: p.Message, media: refs}
+	post := &fakePost{id: f.nextID("post"), channel: p.ChannelID, message: p.Message,
+		rootID: p.RootID, media: refs}
 	f.posts[post.id] = post
 	f.order = append([]string{post.id}, f.order...)
 	for _, ref := range refs {
 		if o, ok := f.objects[ref.MediaID]; ok {
 			o.postID = post.id
+			o.inReply = p.RootID != ""
 		}
 	}
 
@@ -396,7 +469,7 @@ func (a *fakeActor) download(payload []byte, sink io.Writer) (session.Response, 
 	gone, goneReason := false, f.goneReason()
 	if ok {
 		visible = f.visible(o, a.user)
-		gone = o.deleted
+		gone = f.mediaGone(o)
 	}
 	f.mu.Unlock()
 

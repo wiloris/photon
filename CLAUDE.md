@@ -36,6 +36,9 @@
   реализации» в §7 и §11 — то, что разбор кода опроверг
 - `photon-core/docs/media-deletion.md` — уборка C (ADR-055): удаление поста
   делает связанную media недоступной; почему надгробие обязательно
+- `photon-core/docs/media-liveness.md` — уборка C-2 (ADR-056): media мёртвого
+  поста не отдаётся; замеры D1–D3 и правило fail-open. Спецификация написана
+  **после** кода — отмечено в ней самой
 - `photon-core/docs/plugin-threat-model.md`, `plugin-lifecycle.md`,
   `plugin-manifest.md`, `plugin-ipc.md`
 - `photon-plugin-runtime/docs/` — те же документы плюс `sandbox.md`,
@@ -115,7 +118,8 @@
 382 с четвёртым срезом Phase 12 → 387 с замером и исправлением
 `countVanished` → 394 с замером и сужением разбора при согласовании версий
 (в `services/localfeed` их стало 53) → 396 с уборкой C: две мутационные
-проверки прогона в `cmd/mediaslice`, ADR-055),
+проверки прогона в `cmd/mediaslice`, ADR-055 → 399 с уборкой C-2: N8, N9 и
+их мутации, ADR-056),
 `photon-plugin-runtime` **223** (из них 11 — E2E `tests/integration`
 против настоящего runtime, и 26 — Phase 11, настоящие процессы через
 `tests/lifecycle`; обе группы входят в те же 223, не считаются дважды),
@@ -128,10 +132,10 @@
 инструмент): `photon-bindings/jvm` — **32** Java + **14** Kotlin + **23**
 события против живого Bridge; `photon-developer-tools` — **30** (`gradle
 test`: Network Lab 8, Inspector 8, Logging 7, Performance 7).
-`photon-quic-bridge` — **141** (было 118 перед уборкой C, +23 в
-`server/media_deletion_test.go`, ADR-055). Прежняя редакция называла **116**;
-измерение перед правкой дало 118, то есть цифра отставала на два теста ещё до
-этой работы — расхождение мелкое, но записано, а не подогнано.
+`photon-quic-bridge` — **152** (118 перед уборкой C → 141 с ней, ADR-055 →
+152 с уборкой C-2, ADR-056: 11 тестов живости поста). Редакция до уборки C
+называла **116**; измерение тогда дало 118, то есть цифра отставала на два
+теста ещё до той работы — расхождение мелкое, но записано, а не подогнано.
 
 ---
 
@@ -625,7 +629,7 @@ struct` пуст. Это предусловие **только** Phase 13.5; р�
 
 | Модуль | Состояние |
 |---|---|
-| `photon-core` | Зависимостей на другие модули дерева нет. `go test ./...` — 396 |
+| `photon-core` | Зависимостей на другие модули дерева нет. `go test ./...` — 399 |
 | `photon-plugin-runtime` | `replace` на `../photon-core` и `../photon-plugin-sdk` **закоммичены**. `go test -timeout 300s ./...` — 223 |
 | `photon-plugin-sdk` | `require` нет ни одного — структурная гарантия ADR-031. 4 теста |
 | `photon-bindings/c` | `replace` на `../../photon-core` закоммичен (после Phase 13.5). `go test .` — 44 |

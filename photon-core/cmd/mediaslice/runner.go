@@ -47,6 +47,11 @@ type Options struct {
 	WorkDir       string
 	Keep          bool            // не удалять созданные посты
 	Only          map[string]bool // пустая карта — выполнять всё
+	// OrphanMedia — media_id объекта, осиротевшего ДО появления проверки
+	// живости (N9). Флагом, а не константой: идентификатор принадлежит
+	// конкретному стенду, и зашивать его в прогон значило бы сделать
+	// проверку непереносимой.
+	OrphanMedia string
 }
 
 // Runner — сценарий сквозного среза.
@@ -593,6 +598,132 @@ func (r *Runner) deletedMedia(ctx context.Context) {
 	_, err = media.New(r.a).Download(cctx, ref.MediaID, io.Discard)
 	cancel()
 	r.expectDenied("N7", "701 по media удалённого поста", wantGone, err)
+
+	r.cascadeMedia(ctx)
+	r.knownOrphan(ctx)
+}
+
+// cascadeMedia — N8: media ответа, удалённого КАСКАДОМ вместе с корнем.
+//
+// Заведена находкой живого прогона уборки C: MessageHasBeenDeleted приходит
+// только по корню, ответам событий нет вовсе, и до ADR-056 их media
+// оставалась читаемой. Догнать её нечем — пред-хука на удаление в API нет, а
+// перечислить удалённые посты невозможно. Гасит её не уборка, а проверка
+// живости поста на чтении.
+//
+// Отличие от N6/N7 существенно: там пост удаляют НАПРЯМУЮ и событие приходит,
+// здесь пост умирает МОЛЧА. Сервер с работающей уборкой C и без живости
+// проходит N6 и N7 и падает здесь.
+func (r *Runner) cascadeMedia(ctx context.Context) {
+	const wantGone = "unavailable"
+	skip := func(format string, a ...any) {
+		r.rep.skip("N8", "media каскадно удалённого ответа отвергается как unavailable",
+			fmt.Sprintf(format, a...))
+	}
+	if r.channelID == "" {
+		skip("канал не получен")
+		return
+	}
+
+	rootMedia := r.uploadSmall(ctx, "cascade-root", 2600)
+	replyMedia := r.uploadSmall(ctx, "cascade-reply", 2700)
+	if rootMedia == "" || replyMedia == "" {
+		skip("загрузка объектов треда не прошла")
+		return
+	}
+
+	root := r.createPostWithMedia(ctx, "", "mediaslice cascade root", rootMedia)
+	if root == "" {
+		skip("корневой пост не создан")
+		return
+	}
+	reply := r.createPostWithMedia(ctx, root, "mediaslice cascade reply", replyMedia)
+	if reply == "" {
+		r.created = append(r.created, root)
+		skip("ответ не создан")
+		return
+	}
+
+	// Свидетель: до удаления media ОТВЕТА обязана отдаваться. Без него
+	// проверка прошла бы и на сервере, отвергающем всё подряд.
+	if _, err := r.mediaInfo(ctx, r.a, replyMedia); err != nil {
+		r.created = append(r.created, root)
+		skip("media ответа недоступна ЕЩЁ ДО удаления: %v", err)
+		return
+	}
+
+	// Удаляется ТОЛЬКО корень. Ответ уносит каскад сервера, и события по нему
+	// не будет — в этом весь смысл проверки.
+	resp, err := r.action(ctx, r.a, photonpb.Action_ACTION_DELETE_POST,
+		[]byte(fmt.Sprintf(`{"post_id":%q}`, root)))
+	switch {
+	case err != nil:
+		r.created = append(r.created, root)
+		skip("удалить корень не удалось: %v", err)
+		return
+	case !resp.OK:
+		r.created = append(r.created, root)
+		skip("сервер отказал в удалении корня: %q", resp.Error)
+		return
+	}
+
+	_, err = r.mediaInfo(ctx, r.a, replyMedia)
+	r.expectDenied("N8", "702 по media каскадно удалённого ответа", wantGone, err)
+}
+
+// knownOrphan — N9: объект, осиротевший ДО появления проверки живости.
+//
+// Идентификатор приходит флагом, а не зашит: прогон обязан оставаться
+// переносимым между стендами. Без флага проверка объявляется невыполненной —
+// молча пропустить её значило бы потерять её из отчёта.
+//
+// Смысл отдельно от N8: N8 создаёт сироту сама и проверяет механизм, N9 берёт
+// УЖЕ ЛЕЖАЩУЮ на сервере и доказывает, что закрыт класс, а не путь. Ни уборка
+// C, ни что-либо иное этих объектов не касалось — их посты умерли до того,
+// как появился код.
+func (r *Runner) knownOrphan(ctx context.Context) {
+	const wantGone = "unavailable"
+	const what = "давно осиротевший объект отвергается как unavailable"
+	if r.opts.OrphanMedia == "" {
+		r.rep.skip("N9", what,
+			"не задан -orphan-media: проверка требует объекта, осиротевшего ДО появления проверки живости")
+		return
+	}
+	if err := r.witness(ctx, r.a); err != nil {
+		r.rep.skip("N9", what, fmt.Sprintf("субъект A не отвечает на положительный вызов: %v", err))
+		return
+	}
+	_, err := r.mediaInfo(ctx, r.a, r.opts.OrphanMedia)
+	r.expectDenied("N9", "702 по давно осиротевшему объекту "+r.opts.OrphanMedia, wantGone, err)
+}
+
+// uploadSmall — вспомогательная загрузка. Пустая строка при неудаче:
+// вызывающий решает, чем это считать.
+func (r *Runner) uploadSmall(ctx context.Context, name string, n int) string {
+	body := bytes.Repeat([]byte(name+"-"), n/len(name+"-")+1)[:n]
+	sum := sha256.Sum256(body)
+	cctx, cancel := context.WithTimeout(ctx, r.opts.CallTimeout)
+	defer cancel()
+	ref, err := media.New(r.a).Upload(cctx, media.UploadRequest{
+		ChannelID: r.channelID, Name: name + ".bin", Mime: "application/octet-stream",
+		SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body)),
+	}, bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	return ref.MediaID
+}
+
+// createPostWithMedia — пост с одним вложением. Пустая строка при неудаче.
+func (r *Runner) createPostWithMedia(ctx context.Context, rootID, message, mediaID string) string {
+	payload := []byte(fmt.Sprintf(
+		`{"channel_id":%q,"message":%q,"root_id":%q,"photon_media":[{"media_id":%q}]}`,
+		r.channelID, message, rootID, mediaID))
+	var post postEnvelope
+	if err := r.actionJSON(ctx, r.a, photonpb.Action_ACTION_CREATE_POST, payload, &post); err != nil {
+		return ""
+	}
+	return post.ID
 }
 
 func (r *Runner) unattached(ctx context.Context) {
