@@ -218,5 +218,5 @@ proxy.go`), а публичный конфиг уже несёт `server_name`. 
 Дескриптор протокола генерируется в `build/` и **не коммитится**: он
 выводится из схемы и потому не может от неё отстать.
 
-**30 тестов** (`gradle test`): Network Lab 8, Inspector 8, Logging 7,
-Performance 7.
+**85 тестов** (`gradle test`): Network Lab 8, Inspector 8, Logging 7,
+Performance 7, Storage Lab 14, Crypto Lab 12, Plugin Lab 10, Reconnect Lab 19.

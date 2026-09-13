@@ -101,7 +101,7 @@
 | 15 | 🟡 | **P2P Layer** — `adapters/pion` поверх замороженного `ports/p2p.go`: ICE + DTLS + SCTP без WebRTC-стека. ADR-041 (`Peer()` — только подтверждённый ключ), ADR-042 (signaling вне порта), ADR-043 (путь B+), ADR-044 (жизненный цикл; устранил находку контракта — два разных контракта в одном предложении комментария `AcceptOffer`, найденную **до единой строки кода**). **25 тестов**, race чист, порт не менялся — восьмой компонент подряд. Закрыта одна из трёх дыр Phase 1. **Acceptance на настоящей сети выполнен** для direct и relay: две физические машины, внешний coturn на VPS, подтверждение журналом самого TURN-сервера. Открыт **сценарий симметричного NAT** — выполненные прогоны им не являются |
 | 15.5 | ✅ | **Event Delivery** — `services/dispatcher` + `photon-bindings/c`. ADR-045, спецификация `docs/event-delivery.md` до кода. Подписное соединение отдельно от action, насос с синхронной последовательной доставкой, reconnect с отменяемым backoff, три типа событий (`CONNECTED`/`MESSAGE`/`NETWORK_CHANGED`), единственный барьер времени жизни — `d.inflight`, реентерабельный `Photon_Destroy` как явное исключение, определение потока через `LockOSThread` + `pthread_equal`. **51 тест** в диспетчере (было 28), **44** в bindings (было 35), **12 мутаций** — все падают. **Live acceptance: 9 проверок выполнено**; сквозной P2P E2E под двумя разными аккаунтами Mattermost. Открытое закрыто после фазы (2026-09-07): **буфер 64 измерен — 165 событий** (`100` лимит uni-стримов + `64` буфер сервера + `1` в полёте), теряется хвост; **malformed push — инвариант клиента PASS** на собственном QUIC-сервере, против настоящего Bridge остаётся NOT EXECUTED (стимул недостижим). **В конверте push нет номера и версии** — пропуск нельзя обнаружить по потоку, только сверкой с сервером; отсюда ADR-046. Доставка событий lossless не заявляется |
 
-| 16 | 🟡 | **Photon Developer Tools** — первый настоящий клиент Photon: Linux Desktop, `Compose Desktop → JNI → C ABI → Photon Core`. ADR-051 (где живёт клиент и общий JVM-мост, как собираются native), спецификация `photon-bindings/docs/jni-events.md` до кода. Закрыты: **мост событий** (`SetEventCallback` в JNI не был выведен вовсе — найдено разведкой до кода), **Dashboard**, **Network Lab**, **Protobuf Inspector** (каталог из `FileDescriptorSet`, своей копии нет), **Performance**, **Logging** в клиентской части. Заблокированы развилками: Storage Lab, Crypto Lab, Plugin Lab, лог ядра. **C ABI не менялся ни разу за фазу**: `PHOTON_ABI_MAJOR/MINOR` = 1/0, новых действий нет. Измерено: локальный путь `Desktop → JNI → C ABI → Core` — **9 мкс, 0.011% полного вызова** |
+| 16 | 🟡 | **Photon Developer Tools** — первый настоящий клиент Photon: Linux Desktop, `Compose Desktop → JNI → C ABI → Photon Core`. ADR-051 (где живёт клиент и общий JVM-мост, как собираются native), спецификация `photon-bindings/docs/jni-events.md` до кода. Закрыты: **мост событий** (`SetEventCallback` в JNI не был выведен вовсе — найдено разведкой до кода), **Dashboard**, **Network Lab**, **Protobuf Inspector** (каталог из `FileDescriptorSet`, своей копии нет), **Performance**, **Logging** в клиентской части, **Storage Lab** и **Crypto Lab** в выполнимой части, **Plugin Lab** первым срезом (ADR-057), реальный disconnect/reconnect (Reconnect Lab). Открыты: лог ядра, прямая инспекция хранилища и прямая криптографическая поверхность (требуют архитектурного решения), сценарии Plugin SDK (вариант C ADR-057), тесты Dashboard. **C ABI не менялся ни разу за фазу**: `PHOTON_ABI_MAJOR/MINOR` = 1/0, новых действий нет. Измерено: локальный путь `Desktop → JNI → C ABI → Core` — **9 мкс, 0.011% полного вызова** |
 
 **Методика подсчёта тестов** (принята, чтобы расхождение между документами и
 реальным прогоном не всплывало при каждом аудите): `go test -v ./... 2>&1 | grep
@@ -120,9 +120,10 @@
 (в `services/localfeed` их стало 53) → 396 с уборкой C: две мутационные
 проверки прогона в `cmd/mediaslice`, ADR-055 → 399 с уборкой C-2: N8, N9 и
 их мутации, ADR-056),
-`photon-plugin-runtime` **223** (из них 11 — E2E `tests/integration`
-против настоящего runtime, и 26 — Phase 11, настоящие процессы через
-`tests/lifecycle`; обе группы входят в те же 223, не считаются дважды),
+`photon-plugin-runtime` **229** (было 223 → 229 с `cmd/devtools-runtime`: 6
+тестов Plugin Lab настоящими процессами, ADR-057; из них 11 — E2E
+`tests/integration` против настоящего runtime, и 26 — Phase 11, настоящие процессы через
+`tests/lifecycle`; обе группы входят в те же 229, не считаются дважды),
 `photon-plugin-sdk` **4** (`TestADR031_NoForbiddenImports`,
 `TestADR031_NoModuleDependencies`, `TestOperationCatalogCoverage`,
 `TestReentrantCall_HandlerBlockingCallReturnsErrInsteadOfHanging` — добавлен
@@ -130,8 +131,9 @@
 
 **JVM-сторона считается своими прогонами, а не этим методом** (у неё другой
 инструмент): `photon-bindings/jvm` — **32** Java + **14** Kotlin + **23**
-события против живого Bridge; `photon-developer-tools` — **30** (`gradle
-test`: Network Lab 8, Inspector 8, Logging 7, Performance 7).
+события против живого Bridge; `photon-developer-tools` — **85** (`gradle
+test`: Network Lab 8, Inspector 8, Logging 7, Performance 7, Storage Lab 14,
+Crypto Lab 12, Plugin Lab 10, Reconnect Lab 19; было 30 до Storage/Crypto/Plugin Lab).
 `photon-quic-bridge` — **152** (118 перед уборкой C → 141 с ней, ADR-055 →
 152 с уборкой C-2, ADR-056: 11 тестов живости поста). Редакция до уборки C
 называла **116**; измерение тогда дало 118, то есть цифра отставала на два
@@ -441,7 +443,7 @@ ABI. Так и было записано в `README.md` до Phase 13.5.
 | Phase 13.5 ✅ | закрыта | Прогон против живого Bridge выполнен, включая сквозной через `.so`. Открытое, что он оставил, — за рамками фазы: аварийный обрыв и поведение настоящего клиента при `ok:false` (первого клиента нет до Phase 18) |
 | Phase 14 ✅ | закрыта **по основной authorization boundary** | Живая верификация на развёрнутой 0.4.1 выполнена. **14 `NOT_TESTED_MUTATION` закрыты отдельным прогоном** 2026-09-06 (`541b55a`) — подробности и таблица в `ROADMAP.md`, Phase 14. Открытыми остаются два пункта, с закрытой авторизацией не смешиваются: **F6** (сессия проверяется один раз за соединение, `GetSessionById` не смотрит ни на истечение, ни на idle-timeout — ADR-039 §11) и **ADR-040 A vs C** (реализован вариант A; выбор не сделан до замера на 10 и 100 подписчиках) |
 | Phase 15 🟡 | «недоделана» | Слой реализован и закрыт тестами, включая проверку мутациями. **Acceptance на настоящей сети выполнен**: direct между двумя хостами и relay через внешний coturn на VPS `144.31.228.5`. Открыт **сценарий симметричного NAT** — и только он; выполненные прогоны им не являются и называться так не могут. Ловушка контракта записана явно: `p2p-session.md` §6.1 |
-| Phase 16 🟡 | «недоделана» | **Реализуемое закрыто** (`fcce2e1`): Dashboard, Network Lab, Protobuf Inspector, Performance, клиентская часть Logging. Четыре пункта заблокированы **развилками, а не отсутствием работы**: Storage Lab и Crypto Lab (публичного пути к хранилищу и примитивам нет), Plugin Lab (ядро не знает о плагинах — ADR-030), лог ядра (логгера в `photon-core` нет вовсе — писать нечем). Брать их без решения нельзя |
+| Phase 16 🟡 | «недоделана» | **Реализуемое закрыто**: Dashboard, Network Lab, Protobuf Inspector, Performance, клиентская часть Logging (`fcce2e1`); Storage Lab и Crypto Lab в выполнимой части; Plugin Lab первым срезом по ADR-057 (`f2b0a1f`); реальный disconnect/reconnect (`96dd6e1`). Три пункта заблокированы **развилками, а не отсутствием работы**: лог ядра (логгера в `photon-core` нет вовсе — писать нечем), прямая инспекция хранилища и прямая криптографическая поверхность (нужен новый публичный API и решение; выдача ключа запрещена ADR-021). Брать их без решения нельзя. Без архитектуры открыты сценарии Plugin SDK (вариант C ADR-057) и тесты Dashboard |
 | Phase 15.5 ✅ | закрыта | Доставка событий доказана вживую: 9 проверок против развёрнутого Bridge. Оба открытых пункта закрыты после фазы (2026-09-07): буфер 64 **измерен — 165 событий с потерей хвоста**, malformed push — **инвариант клиента PASS**, поведение Bridge остаётся непроверяемым. Статусы на момент закрытия фазы в `ROADMAP.md` оставлены как были |
 
 **Блок старых задолженностей закрыт целиком.** Account C и 14
@@ -632,7 +634,7 @@ struct` пуст. Это предусловие **только** Phase 13.5; р�
 | Модуль | Состояние |
 |---|---|
 | `photon-core` | Зависимостей на другие модули дерева нет. `go test ./...` — 399 |
-| `photon-plugin-runtime` | `replace` на `../photon-core` и `../photon-plugin-sdk` **закоммичены**. `go test -timeout 300s ./...` — 223 |
+| `photon-plugin-runtime` | `replace` на `../photon-core` и `../photon-plugin-sdk` **закоммичены**. `go test -timeout 300s ./...` — 229 |
 | `photon-plugin-sdk` | `require` нет ни одного — структурная гарантия ADR-031. 4 теста |
 | `photon-bindings/c` | `replace` на `../../photon-core` закоммичен (после Phase 13.5). `go test .` — 44 |
 
