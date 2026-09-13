@@ -205,6 +205,53 @@ func mediaPropsValue(refs []MediaRef) (any, error) {
 	return canonical, nil
 }
 
+// mediaIDsFromPost — читатель того, что записал mediaPropsValue.
+//
+// Стоит рядом с писателем намеренно: разойдясь, они не сломают ни сборку, ни
+// один существующий тест — хук просто перестанет находить вложения, и уборка
+// C станет молча пустой. Обратный разбор проверяется тестом от writer'а к
+// reader'у, а не двумя независимыми представлениями о форме.
+//
+// Разбор идёт через JSON, а не утверждением типа: значение приходит либо из
+// БД ([]any из map[string]any), либо, в том же процессе, тем самым []any,
+// который построил mediaPropsValue. Обе формы кодируются одинаково, и
+// json.Marshal избавляет от перебора вариантов.
+//
+// Из записи берётся ТОЛЬКО media_id. Всё остальное в props — проекция, а
+// авторитет принадлежит MediaStore (ADR-048 §7); читать оттуда размер или
+// хеш значило бы верить проекции.
+func mediaIDsFromPost(post *model.Post) []string {
+	if post == nil {
+		return nil
+	}
+	value, ok := post.Props["photon_media"]
+	if !ok || value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var refs []struct {
+		MediaID string `json:"media_id"`
+	}
+	if err := json.Unmarshal(raw, &refs); err != nil {
+		// Props пришли не той формы. Молчать здесь правильно: пост уже удалён,
+		// и уборка не должна становиться источником отказов.
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		if r.MediaID != "" {
+			out = append(out, r.MediaID)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // getFeed — Action 101.
 func (h *PostHandler) getFeed(userID string, raw json.RawMessage) Response {
 	var p GetFeedPayload

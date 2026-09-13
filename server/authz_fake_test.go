@@ -100,6 +100,25 @@ type fakeMediaStore struct {
 	mu    sync.Mutex
 	objs  map[string]*MediaObject
 	blobs map[string][]byte
+	// counts — счётчики обращений. Нужны уборке C (ADR-055): «состояние не
+	// переписывается повторно» и «пост без media не трогает хранилище» —
+	// утверждения о ВЫЗОВАХ, и по конечному состоянию они неразличимы.
+	counts storeCalls
+}
+
+// storeCalls — сколько раз хранилище звали. Сравнивается целиком, поэтому
+// новый метод, о котором тест не знает, тоже попадёт в сравнение.
+type storeCalls struct {
+	get        int
+	putMeta    int
+	deleteBlob int
+	discard    int
+}
+
+func (s *fakeMediaStore) calls() storeCalls {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts
 }
 
 func newFakeMediaStore() *fakeMediaStore {
@@ -142,16 +161,26 @@ func (s *fakeMediaStore) dropBlob(id string) {
 func (s *fakeMediaStore) Get(mediaID string) (*MediaObject, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.counts.get++
 	m, ok := s.objs[mediaID]
 	if !ok {
 		return nil, ErrMediaNotFound
 	}
-	return m, nil
+	// Копия, а не ссылка, — по той же причине, по которой копирует PutMeta,
+	// и симметрично ей. Настоящий fsMediaStore декодирует meta.json заново на
+	// каждый Get, поэтому правка объекта в памяти НЕ видна хранилищу, пока
+	// PutMeta не прошёл. Двойник, отдающий указатель, скрывал бы ровно это:
+	// сервис мутирует объект перед записью (Attach, OnPostDeleted), и при
+	// отказе записи состояние выглядело бы применённым. Найдено тестом
+	// TestFailedStateWriteLeavesBytesAlone.
+	c := *m
+	return &c, nil
 }
 
 func (s *fakeMediaStore) PutMeta(m *MediaObject) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.counts.putMeta++
 	// Копия, а не ссылка: сервис мутирует объект между записями (Attach), и
 	// хранилище, отдающее ту же структуру, скрыло бы пропущенный PutMeta.
 	c := *m
@@ -208,7 +237,18 @@ func (s *fakeMediaStore) OpenBlob(mediaID string) (io.ReadCloser, error) {
 func (s *fakeMediaStore) DiscardObject(mediaID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.counts.discard++
 	delete(s.objs, mediaID)
+	delete(s.blobs, mediaID)
+	return nil
+}
+
+// DeleteBlob убирает ТОЛЬКО байты. Метаданные остаются надгробием — на этом
+// держится различение unavailable и forbidden (ADR-055).
+func (s *fakeMediaStore) DeleteBlob(mediaID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts.deleteBlob++
 	delete(s.blobs, mediaID)
 	return nil
 }
