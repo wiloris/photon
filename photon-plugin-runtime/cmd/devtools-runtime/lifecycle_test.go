@@ -123,17 +123,39 @@ func (l *lab) call(t *testing.T, cmd string) ctlResponse {
 // существование: единственный способ спросить это у ОС, не убивая.
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 
-// pluginPIDs — процессы фикстуры, живые в системе. Ищутся по имени бинаря:
-// после смерти родителя спросить у runtime уже некого.
+// pluginPIDs — процессы фикстуры, живые в системе. После смерти родителя
+// спросить у runtime уже некого, поэтому ищем в /proc.
+//
+// Сверка идёт по ИСПОЛНЯЕМОМУ ФАЙЛУ (/proc/PID/exe), а не по командной строке.
+// Первая редакция звала `pgrep -f <имя бинаря>` и давала ЛОЖНЫЕ СРАБАТЫВАНИЯ:
+// под шаблон попадает любой процесс, в чьей cmdline встретилась строка, — в
+// первую очередь сам `go build -o .../fixture-plugin`, а заодно и оболочка,
+// запустившая прогон. Изолированно тест был зелёным, а в общем `go test ./...`
+// сборки соседних пакетов идут параллельно, живут дольше и попадают в окно
+// опроса: тест сообщал о сиротах, которых нет. Найдено обязательным
+// послекоммитным прогоном; та же ошибка ранее встретилась в живой проверке и
+// была там исправлена этим же способом.
 func pluginPIDs(t *testing.T, binary string) []int {
 	t.Helper()
-	out, err := exec.Command("pgrep", "-f", filepath.Base(binary)).Output()
+	want, err := filepath.EvalSymlinks(binary)
 	if err != nil {
-		return nil // pgrep возвращает 1, когда не нашёл — это не сбой
+		want = binary
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatalf("чтение /proc: %v", err)
 	}
 	var pids []int
-	for _, line := range strings.Fields(string(out)) {
-		if pid, err := strconv.Atoi(line); err == nil {
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		exe, err := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
+		if err != nil {
+			continue // чужой процесс либо уже умер — и то и другое не наше дело
+		}
+		if exe == want {
 			pids = append(pids, pid)
 		}
 	}
