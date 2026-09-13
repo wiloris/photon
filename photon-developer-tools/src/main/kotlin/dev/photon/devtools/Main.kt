@@ -77,13 +77,16 @@ fun main(args: Array<String>) {
     // Photon здесь не задействован вовсе: это отдельный дочерний процесс.
     if (args.isNotEmpty() && args[0] == "--plugin-lab") {
         val rt = System.getProperty("photon.lab.runtime")
-        val fx = System.getProperty("photon.lab.fixture")
-        if (rt == null || fx == null) {
-            System.err.println("не заданы photon.lab.runtime и photon.lab.fixture — " +
-                "запускать через `gradle run --args=\"--plugin-lab\"`")
+        val hello = System.getProperty("photon.lab.fixture.hello")
+        val sdk = System.getProperty("photon.lab.fixture.sdkscenario")
+        if (rt == null || hello == null || sdk == null) {
+            System.err.println("не заданы photon.lab.runtime и photon.lab.fixture.* — " +
+                "запускать через `gradle run --args=\"--plugin-lab [сценарий]\"`")
             kotlin.system.exitProcess(2)
         }
-        PluginLab(java.io.File(rt), java.io.File(fx)).run()
+        // Сценарий — id из каталога runtime; без него runtime запускает свой
+        // сценарий по умолчанию. Своего списка у инструмента нет.
+        PluginLab(java.io.File(rt), java.io.File(hello), java.io.File(sdk)).run(args.getOrNull(1))
         return
     }
 

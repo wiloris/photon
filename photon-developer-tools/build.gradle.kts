@@ -209,20 +209,34 @@ val buildLabRuntime by tasks.registering(Exec::class) {
     outputs.file(File(nativeDir, "photon-devtools-runtime"))
 }
 
-val buildLabFixture by tasks.registering(Exec::class) {
+/*
+ * Закрытый набор фикстур (ADR-058 п. 6): hello и sdkscenario. Какой сценарий
+ * запускать, решает каталог devtools-runtime; Gradle только собирает бинари и
+ * передаёт пути — из управляющего канала путь не выбирается.
+ */
+val buildLabFixtureHello by tasks.registering(Exec::class) {
     workingDir = runtimeModuleDir
     doFirst { nativeDir.mkdirs() }
     commandLine("go", "build", "-o",
-        File(nativeDir, "photon-lab-fixture-plugin").absolutePath, "./tests/plugins/hello")
+        File(nativeDir, "photon-lab-fixture-hello").absolutePath, "./tests/plugins/hello")
     inputs.dir(File(runtimeModuleDir, "tests/plugins/hello"))
-    outputs.file(File(nativeDir, "photon-lab-fixture-plugin"))
+    outputs.file(File(nativeDir, "photon-lab-fixture-hello"))
 }
 
-tasks.register("pluginLabNative") { dependsOn(buildLabRuntime, buildLabFixture) }
+val buildLabFixtureSDKScenario by tasks.registering(Exec::class) {
+    workingDir = runtimeModuleDir
+    doFirst { nativeDir.mkdirs() }
+    commandLine("go", "build", "-o",
+        File(nativeDir, "photon-lab-fixture-sdkscenario").absolutePath, "./tests/plugins/sdkscenario")
+    inputs.dir(File(runtimeModuleDir, "tests/plugins/sdkscenario"))
+    outputs.file(File(nativeDir, "photon-lab-fixture-sdkscenario"))
+}
+
+tasks.register("pluginLabNative") { dependsOn(buildLabRuntime, buildLabFixtureHello, buildLabFixtureSDKScenario) }
 
 tasks.register("native") { dependsOn(buildJniLib) }
 
-tasks.named("run") { dependsOn(buildJniLib, generateDescriptor, buildLabRuntime, buildLabFixture) }
+tasks.named("run") { dependsOn(buildJniLib, generateDescriptor, buildLabRuntime, buildLabFixtureHello, buildLabFixtureSDKScenario) }
 tasks.named("classes") { dependsOn(buildJniLib) }
 
 // Путь к дескриптору не «где-то рядом», а передаётся явно: инструмент не
@@ -231,7 +245,8 @@ tasks.named<JavaExec>("run") {
     systemProperty("photon.descriptor", descriptorFile.absolutePath)
     // Пути артефактов лаборатории — тоже явно, по той же причине.
     systemProperty("photon.lab.runtime", File(nativeDir, "photon-devtools-runtime").absolutePath)
-    systemProperty("photon.lab.fixture", File(nativeDir, "photon-lab-fixture-plugin").absolutePath)
+    systemProperty("photon.lab.fixture.hello", File(nativeDir, "photon-lab-fixture-hello").absolutePath)
+    systemProperty("photon.lab.fixture.sdkscenario", File(nativeDir, "photon-lab-fixture-sdkscenario").absolutePath)
 }
 tasks.test {
     dependsOn(generateDescriptor)

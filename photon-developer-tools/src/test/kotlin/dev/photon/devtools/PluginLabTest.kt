@@ -76,6 +76,66 @@ class PluginLabTest {
         assertTrue(r.granted.isEmpty() && r.operations.isEmpty())
     }
 
+    // ── B4b: каталог, результаты, граница лаборатории (plugin-lab.md §11.2) ──
+
+    /** K1 — каталог, результаты и граница лаборатории разбираются из канала. */
+    @Test
+    fun `K1 разбор каталога, результатов и границы лаборатории`() {
+        val catalog = parseControlReply(
+            """{"id":1,"ok":true,"cmd":"scenarios","scenarios":[""" +
+                """{"id":"s1","fixture":"f1","plugin_id":"p.one","granted":["storage.read"],"namespace":"lab.f1","description":"первый"},""" +
+                """{"id":"s2","fixture":"f2","plugin_id":"p.two","granted":["storage.read","identity.read"],"namespace":"lab.f2","description":"второй"}]}""")
+        assertEquals(listOf("s1", "s2"), catalog.scenarios.map { it.id })
+        assertEquals(listOf("storage.read", "identity.read"), catalog.scenarios[1].granted)
+        assertEquals("lab.f2", catalog.scenarios[1].namespace)
+        assertEquals(null, catalog.pluginId, "plugin_id строки каталога не должен стать plugin_id ответа")
+
+        val diag = parseControlReply(
+            """{"id":2,"ok":true,"cmd":"diagnose","scenario":"s2","plugin_id":"p.two","plugin_state":"running",""" +
+                """"results":{"pub":"QUJD","sig":"len=64 b64=QUJD…","verify_raw":"false","done":"sign"},""" +
+                """"lab":{"key_material":"ephemeral","storage":"temporary","storage_dir":"/tmp/photon-plugin-lab-1","production_composition":false}}""")
+        assertEquals("s2", diag.scenario)
+        assertEquals(mapOf("pub" to "QUJD", "sig" to "len=64 b64=QUJD…", "verify_raw" to "false", "done" to "sign"), diag.results)
+        assertEquals(LabInfo("ephemeral", "temporary", "/tmp/photon-plugin-lab-1", false), diag.lab)
+    }
+
+    /** K2 — все четыре строки границы лаборатории в отчёте (§9.2). */
+    @Test
+    fun `K2 отчёт печатает все четыре строки границы лаборатории`() {
+        val lines = labBoundaryLines(LabInfo("ephemeral", "temporary", "/tmp/photon-plugin-lab-7", false))
+        assertEquals(4, lines.size)
+        assertTrue(lines[0].contains("одноразовые") && lines[0].contains("на диск не пишутся"), lines[0])
+        assertTrue(lines[1].contains("/tmp/photon-plugin-lab-7") && lines[1].contains("kill -9 может остаться"), lines[1])
+        assertTrue(lines[2].contains("не продакшн-композиция") && lines[2].contains("cmd/photon-core-server"), lines[2])
+        assertTrue(lines[3].contains("B4a") && lines[3].contains("tests/lifecycle/sdkscenario_test.go"), lines[3])
+        val src = java.io.File(System.getProperty("photon.devtools.src"), "PluginLab.kt").readText()
+        assertTrue(src.contains("labBoundaryLines(lab).forEach"), "отчёт обязан печатать границу, а не только уметь её построить")
+    }
+
+    /** K3 — своей копии каталога нет: ни id сценариев, ни идентичностей. */
+    @Test
+    fun `K3 в Plugin Lab нет литералов сценариев и идентичностей`() {
+        val src = java.io.File(System.getProperty("photon.devtools.src"), "PluginLab.kt").readText()
+        listOf("com.engram.test", "\"hello\"", "\"sdk-storage-roundtrip\"", "\"sdk-sign\"", "\"sdk-sign-forbidden\"")
+            .forEach { assertTrue(!src.contains(it), "$it в PluginLab.kt — вторая копия каталога runtime") }
+        assertTrue(src.contains("call(\"scenarios\")"), "каталог обязан запрашиваться у runtime")
+    }
+
+    /** K4 — лаборатория не показывает verify_domain и не утверждает доказательств. */
+    @Test
+    fun `K4 в Plugin Lab нет verify_domain и утверждений о доказательстве`() {
+        val src = java.io.File(System.getProperty("photon.devtools.src"), "PluginLab.kt").readText()
+        listOf("verify_domain", "ADR-037 доказан", "изоляция доказана", "приватный ключ не выходит")
+            .forEach { assertTrue(!src.contains(it), "«$it» — утверждение, которое лаборатория делать не вправе") }
+        assertEquals("наблюдение, не доказательство; см. TestSDKScenario_SignIsDomainSeparated", resultCaption("verify_raw"))
+    }
+
+    @Test
+    fun `кадр load экранирует id и без него не шлёт scenario`() {
+        assertEquals("""{"id":3,"cmd":"load"}""", loadFrame(3, null))
+        assertEquals("""{"id":4,"cmd":"load","scenario":"a\"b"}""", loadFrame(4, "a\"b"))
+    }
+
     // ── структурные границы ADR-057 ──────────────────────────────────────────
 
     /**
