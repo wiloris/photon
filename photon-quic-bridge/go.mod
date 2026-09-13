@@ -70,13 +70,17 @@ require (
 // несуществующий v0.0.0, а resolve делает replace ниже.
 require github.com/wiloris/photon-core v0.0.0
 
-// ВНИМАНИЕ: путь относительный. Bridge собирается ТОЛЬКО когда photon и
-// photon-quic-bridge лежат соседями в одном каталоге:
+// ВНИМАНИЕ: путь относительный. Bridge собирается ТОЛЬКО изнутри дерева
+// photon, где он лежит соседом photon-core:
 //
-//     <корень>/photon/photon-core/
-//     <корень>/photon-quic-bridge/
+//     photon/photon-core/
+//     photon/photon-quic-bridge/
+//
+// Прежде bridge жил ОТДЕЛЬНЫМ каталогом рядом с photon, и путь был
+// ../photon/photon-core. После переноса внутрь дерева (2026-09-13, история
+// импортирована git subtree) соседний каталог стал ../photon-core.
 //
 // При отдельном клоне одного этого репозитория сборка упадёт на резолве
 // photon-core. Альтернативы нет, пока photon-core не опубликован; когда
 // появится тег — replace убирается, require получает настоящую версию.
-replace github.com/wiloris/photon-core => ../photon/photon-core
+replace github.com/wiloris/photon-core => ../photon-core

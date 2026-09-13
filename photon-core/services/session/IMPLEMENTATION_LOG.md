@@ -333,7 +333,8 @@ Phase 9–10 скрыли три бага, найденных Phase 11 на на
    `tests/livecheck` против развёрнутого сервера, через
    `ports.Transport`/`adapters/quic`, а не только тест-клиентом Bridge. Полный
    репозиторий Bridge, которого не было в этом дереве, теперь лежит рядом
-   (`~/projects/photon-quic-bridge/`).
+   (`photon-quic-bridge/`; на момент записи — отдельный репозиторий
+   `~/projects/photon-quic-bridge/`, перенесён внутрь дерева 2026-09-13).
 2. ~~Использует ли сервер `HandshakeResponse.status` и `PhotonResponse.code`~~ —
    **закрыто разбором кода сервера**, прогон не потребовался: `status`
    отправляется внутри `data`, `code` не отправляется никогда (см. выше).
