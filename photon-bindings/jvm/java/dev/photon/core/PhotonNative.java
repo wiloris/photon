@@ -57,8 +57,10 @@ public final class PhotonNative {
     public static native int lastCreateResult();
 
     /**
-     * Уничтожает инстанс. Безопасно вызывать с handle == 0 и повторно
-     * на уже уничтоженном handle — C ABI гарантирует no-op (ADR-028).
+     * Уничтожает инстанс. Безопасно вызывать с handle == 0 (ADR-028).
+     * Повторный вызов на уже уничтоженном handle — undefined behavior
+     * (ADR-059 п. 2): адрес handle к этому моменту может принадлежать
+     * другому инстансу.
      */
     public static native void destroy(long handle);
 

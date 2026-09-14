@@ -125,11 +125,11 @@ such file or directory`), но команда в README была нерабоч�
 | Соответствие JNI-сигнатур | ✅ Заголовок сгенерирован `javac -h`, не написан вручную |
 | Compile-time соответствие кодов `PhotonResult` Java↔C | ✅ **11** static assert'ов в `photon_jni.c` (в таблице было 10 — пересчитано) |
 | Граница ABI не нарушена | ✅ `nm -D`: 0 обращений к Go-символам |
-| **Java E2E на JVM** | ✅ **32/32 PASS** |
+| **Java E2E на JVM** | ✅ **32/32 PASS** (с ADR-059 — **26/26**: три строки ниже, помеченные ADR-059, удалены) |
 | **Kotlin E2E на JVM** | ✅ **14/14 PASS** |
-| Ownership: `destroy` ×3 на одном handle | ✅ без падения (проверка double-free guard) |
+| ~~Ownership: `destroy` ×3 на одном handle~~ | удалено ADR-059: повторный `destroy` — UB |
 | Ownership: `destroy(0)`, `create→destroy→create` | ✅ |
-| Ownership: `sendAction`/`getLastError` на уничтоженном handle | ✅ `INVALID_ARGUMENT`, без падения |
+| ~~Ownership: `sendAction`/`getLastError` на уничтоженном handle~~ | удалено ADR-059: вызов за окном — UB |
 | Изоляция: уничтожение одного handle не влияет на другие | ✅ |
 | Конкурентность (Java): 8 потоков × 500 циклов | ✅ без падений |
 | Конкурентность (Kotlin): 8 потоков × 200 циклов | ✅ без падений |

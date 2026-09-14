@@ -141,11 +141,67 @@ func TestEvents_CallbackMayCallGetLastError(t *testing.T) {
 	}
 }
 
-// Реентерабельный Photon_Destroy обязан вернуться НЕМЕДЛЕННО.
+// ── Время жизни и конкурентный Destroy (ADR-059) ────────────────────────
 //
-// Прямая реализация дала бы дедлок: Destroy → Close → inflight.Wait ждёт
-// насос, который стоит внутри колбэка, вызвавшего Destroy. Тот же дефект, что
-// Phase 11 нашла в SDK (OnEvent/OnStop), и он считается дефектом API.
+// Окно времени жизни PhotonHandle* h — до возврата первого НЕ-реентерабельного
+// Photon_Destroy(h). Тесты ниже:
+//   - обращаются к h только внутри окна;
+//   - завершение уничтожения наблюдают через Go-объект *core, полученный,
+//     пока h заведомо жив, — а не через handle;
+//   - перекрытие вызовов создают удержанием Close подписного соединения
+//     (fakeTransport.holdClose), а не таймингом планировщика.
+//
+// «Ровно один раз» держится двумя гарантиями, которые повторный teardown
+// нарушил бы громко: close уже закрытого teardownDone — паника, повторный
+// C.free ячейки — аварийное завершение процесса.
+
+// coreOf — *core для h. Вызывать ТОЛЬКО внутри окна времени жизни h.
+func coreOf(t *testing.T, h unsafe.Pointer) *core {
+	t.Helper()
+	v, ok := tsLookup(h)
+	if !ok {
+		t.Fatal("handle не резолвится внутри окна времени жизни")
+	}
+	c, ok := v.(*core)
+	if !ok {
+		t.Fatalf("за handle не *core: %T", v)
+	}
+	return c
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+func newHeldTransport() *fakeTransport {
+	return &fakeTransport{
+		holdClose:    make(chan struct{}),
+		closeEntered: make(chan struct{}, 1),
+	}
+}
+
+func waitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("не дождались: %s", what)
+	}
+}
+
+// Удержание перекрытия: за это время запущенный вызов гарантированно дошёл
+// до ожидания. Вывод теста от длины не зависит — проверяется только, что
+// ожидающий вызов НЕ вернулся, пока уничтожение удержано.
+const overlapHold = 300 * time.Millisecond
+
+// Реентерабельный Photon_Destroy возвращается немедленно, а уничтожение
+// завершается после выхода из колбэка (ADR-045 §7.1). После возврата handle
+// больше не трогается: завершение видно по teardownDone.
 func TestEvents_ReentrantDestroyDoesNotDeadlock(t *testing.T) {
 	tr := &fakeTransport{}
 	h, err := tsNewCoreWithFakeDispatcher(dispatcher.Config{
@@ -156,8 +212,9 @@ func TestEvents_ReentrantDestroyDoesNotDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("создание инстанса: %v", err)
 	}
+	c := coreOf(t, h) // внутри окна: ни одного Destroy ещё не было
 	tsEventReset(h)
-	tsSetEventCallbackKind(h, 3) // зовёт Photon_Destroy
+	tsSetEventCallbackKind(h, 3) // колбэк зовёт Photon_Destroy(h)
 
 	done := make(chan struct{})
 	go func() {
@@ -172,21 +229,17 @@ func TestEvents_ReentrantDestroyDoesNotDeadlock(t *testing.T) {
 		t.Fatal("дедлок: реентерабельный Photon_Destroy не вернулся")
 	}
 
-	// Уничтожение завершается само, после выхода из колбэка: handle перестаёт
-	// резолвиться.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if !tsCoreIsValid(h) {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("отложенное уничтожение не выполнилось после возврата из колбэка")
+	// С этого момента h не используется: окно закроется, когда насос выполнит
+	// отложенное уничтожение, и снаружи это не наблюдаемо иначе, чем по
+	// teardownDone.
+	waitSignal(t, c.teardownDone, "отложенное уничтожение после возврата из колбэка")
 }
 
-// Конкурентные Destroy: уничтожение ровно один раз, и ни один вызов не падает.
+// Два конкурентных Destroy, начатых внутри окна: уничтожение одно, второй
+// вызов из чужого потока возвращается не раньше его завершения
+// (ADR-045 §7.3, event-delivery.md §14.4 п. 3, ADR-059 п. 1).
 func TestEvents_ConcurrentDestroyRunsTeardownOnce(t *testing.T) {
-	tr := &fakeTransport{}
+	tr := newHeldTransport()
 	h, err := tsNewCoreWithFakeDispatcher(dispatcher.Config{
 		Endpoint: "fake://bridge", SessionToken: "tok", Transport: tr,
 		ConnectTimeout: time.Second, CallTimeout: time.Second,
@@ -194,25 +247,138 @@ func TestEvents_ConcurrentDestroyRunsTeardownOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("создание инстанса: %v", err)
 	}
+	c := coreOf(t, h)
 	tsEventReset(h)
 	tsSetEventCallbackKind(h, 0)
 	waitCalls(t, 1)
+	tr.waitSub(t)
 
-	const n = 8
-	done := make(chan struct{}, n)
-	for i := 0; i < n; i++ {
-		go func() { tsDestroy(h); done <- struct{}{} }()
+	first := make(chan struct{})
+	go func() { tsDestroy(h); close(first) }()
+	// Первый Destroy вошёл в уничтожение и стоит в удержанном Close: handle
+	// ещё не освобождён, окно открыто.
+	waitSignal(t, tr.closeEntered, "первый Destroy вошёл в уничтожение")
+
+	second := make(chan struct{})
+	go func() { tsDestroy(h); close(second) }()
+
+	time.Sleep(overlapHold)
+	if isClosed(first) || isClosed(second) {
+		t.Fatal("Destroy вернулся, пока уничтожение удержано")
 	}
-	for i := 0; i < n; i++ {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("конкурентный Destroy завис")
+	if isClosed(c.teardownDone) {
+		t.Fatal("teardownDone закрыт до завершения уничтожения")
+	}
+	calls := tsEventCalls()
+
+	close(tr.holdClose)
+	waitSignal(t, first, "возврат первого Destroy")
+	waitSignal(t, second, "возврат второго Destroy")
+
+	// Оба вернулись — окно закрыто, h больше не трогается.
+	if !isClosed(c.teardownDone) {
+		t.Fatal("оба Destroy вернулись, а уничтожение не завершено")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if tsEventCalls() != calls {
+		t.Fatalf("колбэк вызван после возврата Destroy: было %d, стало %d", calls, tsEventCalls())
+	}
+}
+
+// Реентерабельный Destroy окно не закрывает: Destroy из чужого потока,
+// начатый после его возврата, но до завершения отложенного уничтожения, ждёт
+// это уничтожение (ADR-045 §7.3, строка «последующий, из чужого потока»;
+// ADR-059 п. 1).
+func TestEvents_DestroyFromOtherThreadWaitsForDeferredTeardown(t *testing.T) {
+	tr := newHeldTransport()
+	h, err := tsNewCoreWithFakeDispatcher(dispatcher.Config{
+		Endpoint: "fake://bridge", SessionToken: "tok", Transport: tr,
+		ConnectTimeout: time.Second, CallTimeout: time.Second,
+		EventBackoffMin: 20 * time.Millisecond, EventBackoffMax: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("создание инстанса: %v", err)
+	}
+	c := coreOf(t, h)
+	tsEventReset(h)
+	tsSetEventCallbackKind(h, 3) // колбэк зовёт Photon_Destroy(h) реентерабельно
+
+	// Реентерабельный вызов вернулся, насос вышел из колбэка и стоит в
+	// удержанном Close: отложенное уничтожение ещё не началось.
+	waitSignal(t, tr.closeEntered, "насос закрывает подписку после реентерабельного Destroy")
+	if !tsDestroyReturned() {
+		t.Fatal("реентерабельный Destroy не вернулся до закрытия подписки")
+	}
+
+	other := make(chan struct{})
+	go func() { tsDestroy(h); close(other) }() // первый НЕ-реентерабельный: окно открыто
+
+	time.Sleep(overlapHold)
+	if isClosed(other) {
+		t.Fatal("Destroy из чужого потока вернулся до завершения отложенного уничтожения")
+	}
+	if isClosed(c.teardownDone) {
+		t.Fatal("teardownDone закрыт до завершения уничтожения")
+	}
+
+	close(tr.holdClose)
+	waitSignal(t, other, "возврат Destroy из чужого потока")
+	if !isClosed(c.teardownDone) {
+		t.Fatal("Destroy вернулся, а уничтожение не завершено")
+	}
+}
+
+// Отложенное уничтожение снимает handle на насосе, вне экспортируемого вызова.
+// Если после него не будет ни одного вызова Photon_*, ячейка всё равно
+// освобождается — проходом освобождения при снятии (ADR-059 п. 5, редакция 3).
+// Без него ячейка висела бы в retired до вызова, которого может не быть.
+//
+// Наблюдение — состояние реестра, а не handle: к h после реентерабельного
+// Destroy тест не обращается.
+func TestEvents_DeferredTeardownReclaimsCellWithoutFurtherCalls(t *testing.T) {
+	tr := &fakeTransport{}
+	h, err := tsNewCoreWithFakeDispatcher(dispatcher.Config{
+		Endpoint: "fake://bridge", SessionToken: "tok", Transport: tr,
+		ConnectTimeout: time.Second, CallTimeout: time.Second,
+		EventBackoffMin: 20 * time.Millisecond, EventBackoffMax: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("создание инстанса: %v", err)
+	}
+	c := coreOf(t, h)
+	tsEventReset(h)
+	tsSetEventCallbackKind(h, 3) // колбэк зовёт Photon_Destroy(h) реентерабельно
+
+	waitSignal(t, c.teardownDone, "отложенное уничтожение после возврата из колбэка")
+
+	// Снятие стоит после close(teardownDone) — дождаться его, не вызывая Photon_*.
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		registered, retired := registryHolds(h)
+		if !registered && !retired {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("после отложенного уничтожения без последующих вызовов: "+
+				"registered=%v retired=%v — ячейка не освобождена", registered, retired)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// registryHolds — есть ли адрес в реестре живым или ожидающим освобождения.
+// Читает состояние под мьютексом реестра; экспортируемым вызовом не является и
+// эпоху не занимает.
+func registryHolds(p unsafe.Pointer) (registered, retired bool) {
+	handles.mu.Lock()
+	defer handles.mu.Unlock()
+	_, registered = handles.entries[p]
+	for _, rc := range handles.retired {
+		if rc.key == p {
+			retired = true
 		}
 	}
-	if tsCoreIsValid(h) {
-		t.Fatal("инстанс пережил Destroy")
-	}
+	return registered, retired
 }
 
 // После завершения уничтожения колбэк не вызывается больше ни разу.

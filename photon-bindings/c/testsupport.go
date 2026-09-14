@@ -97,7 +97,6 @@ static PhotonEventCallback photon_cb_of(int kind) {
 import "C"
 
 import (
-	"runtime/cgo"
 	"unsafe"
 
 	"github.com/wiloris/photon-core/services/dispatcher"
@@ -213,8 +212,18 @@ func tsBytesLen(p unsafe.Pointer) int {
 func tsFreeBytes(p unsafe.Pointer) { Photon_FreeBytes((*C.PhotonBytes)(p)) }
 
 func tsCoreIsValid(handle unsafe.Pointer) bool {
-	_, ok := coreFromHandle((*C.PhotonHandle)(handle))
+	_, epoch, ok := enterCore((*C.PhotonHandle)(handle))
+	handles.exit(epoch)
 	return ok
+}
+
+// tsLookup — объект за handle, найденный парой вход/выход реестра, как в
+// экспортируемой функции. Вызывать только внутри окна времени жизни handle:
+// за окном найденный объект ничего не значит (ADR-059 п. 2, п. 5.1).
+func tsLookup(handle unsafe.Pointer) (interface{}, bool) {
+	v, epoch, ok := handles.enter(handle)
+	handles.exit(epoch)
+	return v, ok
 }
 
 // ── Обёртки для тестов доставки событий (Phase 15.5) ─────────────────────
@@ -249,9 +258,5 @@ func tsNewCoreWithFakeDispatcher(cfg dispatcher.Config) (unsafe.Pointer, error) 
 	if err != nil {
 		return nil, err
 	}
-	c := &core{disp: disp, teardownDone: make(chan struct{})}
-	mem := newOpaqueHandle(c)
-	c.handleMem = mem
-	c.handleRef = cgo.Handle(uintptr(*(*C.uintptr_t)(mem)))
-	return mem, nil
+	return registerCore(disp), nil
 }

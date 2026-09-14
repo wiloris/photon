@@ -137,10 +137,10 @@ JNIEXPORT jint JNICALL Java_dev_photon_core_PhotonNative_lastCreateResult
 JNIEXPORT void JNICALL Java_dev_photon_core_PhotonNative_destroy
   (JNIEnv* env, jclass clazz, jlong handle) {
     (void)env; (void)clazz;
-    /* Photon_Destroy(NULL) — безопасный no-op (ADR-028), повторный
-       вызов на уже уничтоженном handle — тоже. Мост не добавляет
-       собственных проверок: это ответственность C ABI, и она покрыта
-       его тестами. */
+    /* Photon_Destroy(NULL) — безопасный no-op (ADR-028). Повторный вызов
+       на уже уничтоженном handle — undefined behavior (ADR-059 п. 2).
+       Мост не добавляет собственных проверок: однократность destroy —
+       обязанность вызывающего (Kotlin-обёртка держит флаг closed). */
     Photon_Destroy(handle_from_jlong(handle));
 }
 

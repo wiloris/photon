@@ -33,7 +33,6 @@ public class PhotonJniTest {
         testAbiVersion();
         testCreateDestroy();
         testCreateFailures();
-        testDestroyIdempotent();
         testSendAction();
         testGetLastError();
         testMultipleHandles();
@@ -87,27 +86,14 @@ public class PhotonJniTest {
         check("destroy(0) after failed create: no crash", true, "");
     }
 
-    private static void testDestroyIdempotent() {
-        long h = PhotonNative.create("{}");
-        check("create for idempotency test", h != 0, "got handle=" + h);
-        PhotonNative.destroy(h);
-        PhotonNative.destroy(h);   // именно этот сценарий поймал double free в C ABI
-        PhotonNative.destroy(h);
-        check("destroy x3 on same handle: no crash (double-free guard works)", true, "");
-
-        PhotonNative.destroy(0);
-        PhotonNative.destroy(0);
-        check("destroy(0) x2: no crash", true, "");
-    }
-
     private static void testCreateDestroyCreate() {
         long h1 = PhotonNative.create("{}");
         PhotonNative.destroy(h1);
         long h2 = PhotonNative.create("{}");
         check("create -> destroy -> create: second create succeeds",
               h2 != 0, "got handle=" + h2);
-        check("create -> destroy -> create: handles differ",
-              h1 != h2, "h1=" + h1 + " h2=" + h2);
+        // Совпадение h2 с h1 допустимо: адрес освобождённого handle может
+        // достаться новому (ADR-059 п. 5.1), различие контрактом не является.
         PhotonNative.destroy(h2);
     }
 
@@ -161,13 +147,8 @@ public class PhotonJniTest {
               PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_INVALID_ARGUMENT,
               "got rc=" + PhotonNative.lastSendActionResult());
 
+        // После destroy h не используется: вызов за окном — UB (ADR-059 п. 2).
         PhotonNative.destroy(h);
-
-        // Вызов на уничтоженном handle -> INVALID_ARGUMENT, без падения
-        PhotonNative.sendAction(h, 100, "{}");
-        check("sendAction on destroyed handle: INVALID_ARGUMENT, no crash",
-              PhotonNative.lastSendActionResult() == PhotonNative.PHOTON_ERR_INVALID_ARGUMENT,
-              "got rc=" + PhotonNative.lastSendActionResult());
 
         // Вызов с handle == 0
         PhotonNative.sendAction(0, 100, "{}");
@@ -189,10 +170,8 @@ public class PhotonJniTest {
         check("getLastError after failure: non-empty",
               err != null && !err.isEmpty(), "got: " + err);
         System.out.println("       (message: \"" + err + "\")");
+        // После destroy h не используется: вызов за окном — UB (ADR-059 п. 2).
         PhotonNative.destroy(h);
-
-        check("getLastError on destroyed handle: null, no crash",
-              PhotonNative.getLastError(h) == null, "expected null");
     }
 
     // ── Несколько независимых handle ─────────────────────────────────
@@ -244,8 +223,10 @@ public class PhotonJniTest {
                         if (h == 0) return;
                         PhotonNative.sendAction(h, 100, "{}");
                         PhotonNative.getLastError(h);
+                        // Ровно один destroy: повторный — вызов за окном
+                        // (ADR-059 п. 2), а адрес h к этому моменту может уже
+                        // принадлежать handle соседнего потока.
                         PhotonNative.destroy(h);
-                        PhotonNative.destroy(h); // повторный, должен быть no-op
                     }
                     ok[idx] = true;
                 } catch (Throwable e) {

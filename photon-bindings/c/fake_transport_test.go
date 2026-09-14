@@ -27,13 +27,28 @@ import (
 type fakeTransport struct {
 	mu    sync.Mutex
 	conns []*fakeSubConn
+
+	// holdClose, если задан до Connect, удерживает первый Close соединения,
+	// пока тест его не закроет; closeEntered получает сигнал, когда Close
+	// вошёл в удержание.
+	//
+	// Нужен ради контролируемого перекрытия Destroy (ADR-059): насос закрывает
+	// подписную сессию ДО выхода из d.inflight, поэтому удержанный Close
+	// держит и обычный Destroy (Dispatcher.Close ждёт inflight), и отложенное
+	// уничтожение (finishDeferredTeardown идёт после выхода насоса) — оба ДО
+	// освобождения handle. Второй Destroy, запущенный в это время, заведомо
+	// начат внутри окна времени жизни. Рабочий код для этого не меняется.
+	holdClose    chan struct{}
+	closeEntered chan struct{}
 }
 
 func (f *fakeTransport) Connect(ctx context.Context, ep ports.Endpoint) (ports.Connection, error) {
 	c := &fakeSubConn{
-		closeCh:   make(chan struct{}),
-		push:      make(chan []byte, 32),
-		pushBreak: make(chan struct{}),
+		closeCh:      make(chan struct{}),
+		push:         make(chan []byte, 32),
+		pushBreak:    make(chan struct{}),
+		holdClose:    f.holdClose,
+		closeEntered: f.closeEntered,
 	}
 	f.mu.Lock()
 	f.conns = append(f.conns, c)
@@ -76,6 +91,9 @@ type fakeSubConn struct {
 	subscribe bool
 	pipes     []io.Closer
 	breakOnce sync.Once
+
+	holdClose    chan struct{}
+	closeEntered chan struct{}
 }
 
 var _ ports.Connection = (*fakeSubConn)(nil)
@@ -159,6 +177,15 @@ func (c *fakeSubConn) Close() error {
 	}
 	for _, p := range pipes {
 		p.Close()
+	}
+	if first && c.holdClose != nil {
+		if c.closeEntered != nil {
+			select {
+			case c.closeEntered <- struct{}{}:
+			default:
+			}
+		}
+		<-c.holdClose
 	}
 	return nil
 }

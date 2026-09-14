@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -102,16 +103,6 @@ func TestDestroy_AfterFailedCreate_RepeatedIsSafe(t *testing.T) {
 		t.Fatal("handle must be NULL after failed Create")
 	}
 	tsDestroy(h)
-	tsDestroy(h)
-}
-
-func TestDestroy_IdempotentOnValidHandle(t *testing.T) {
-	h, rc := tsCreate(cstr(t, `{}`), false)
-	if rc != tsOK {
-		t.Fatalf("Create: rc = %d", rc)
-	}
-	tsDestroy(h)
-	tsDestroy(h) // повторный — не должен падать / double-free
 	tsDestroy(h)
 }
 
@@ -250,16 +241,38 @@ func TestDestroy_CancelsInflightSendAction(t *testing.T) {
 
 	cfg := fmt.Sprintf(`{"bridge":{"endpoint":%q,"session_token":"t",
 		"connect_timeout_ms":600000,"call_timeout_ms":600000}}`, pc.LocalAddr().String())
-	h := mustCreate(t, cfg)
+
+	// Не mustCreate: его t.Cleanup уничтожил бы handle второй раз, уже после
+	// окна времени жизни (ADR-059). Страховка на случай раннего провала теста
+	// срабатывает, только если Destroy так и не был вызван.
+	h, rc := tsCreate(cstr(t, cfg), false)
+	if rc != tsOK || h == nil {
+		t.Fatalf("Create: rc = %d", rc)
+	}
+	var destroyCalled atomic.Bool
+	t.Cleanup(func() {
+		if !destroyCalled.Load() {
+			tsDestroy(h)
+		}
+	})
 
 	callDone := make(chan int, 1)
 	go func() {
 		rc, _ := tsSendAction(h, 100, cstr(t, `{}`), true)
 		callDone <- rc
 	}()
-	time.Sleep(300 * time.Millisecond) // дать вызову уйти в подключение
+
+	// Вызов ушёл в подключение: первый пакет долетел до заглушки. Значит,
+	// SendAction вошёл в Photon_SendAction и разрешил handle ДО Destroy —
+	// внутри окна, а не после него.
+	_ = pc.SetReadDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 2048)
+	if _, _, err := pc.ReadFrom(buf); err != nil {
+		t.Fatalf("вызов не ушёл в подключение: %v", err)
+	}
 
 	destroyed := make(chan struct{})
+	destroyCalled.Store(true)
 	go func() { tsDestroy(h); close(destroyed) }()
 
 	select {
@@ -268,6 +281,7 @@ func TestDestroy_CancelsInflightSendAction(t *testing.T) {
 		t.Fatal("Photon_Destroy не вернулся — ожидание без отмены")
 	}
 
+	// После возврата Destroy h не используется.
 	select {
 	case rc := <-callDone:
 		if rc == tsOK {
@@ -303,19 +317,6 @@ func TestSendAction_NilPayload(t *testing.T) {
 	rc, _ := tsSendAction(h, 100, nil, true)
 	if rc != tsErrInvalidArgument {
 		t.Fatalf("rc = %d, want PHOTON_ERR_INVALID_ARGUMENT for nil payload", rc)
-	}
-}
-
-func TestSendAction_OnDestroyedHandle(t *testing.T) {
-	h, rc := tsCreate(cstr(t, `{}`), false)
-	if rc != tsOK {
-		t.Fatalf("Create: rc = %d", rc)
-	}
-	tsDestroy(h)
-
-	rc2, _ := tsSendAction(h, 100, cstr(t, `{}`), true)
-	if rc2 != tsErrInvalidArgument {
-		t.Fatalf("rc = %d, want PHOTON_ERR_INVALID_ARGUMENT on destroyed handle", rc2)
 	}
 }
 
@@ -368,17 +369,6 @@ func TestPhotonString_FreeNilIsNoOp(t *testing.T) {
 	tsFreeString(nil)
 }
 
-func TestPhotonString_DataAfterFreeReturnsNil(t *testing.T) {
-	ps := tsNewString("gone")
-	tsFreeString(ps)
-	if tsStringData(ps) != nil {
-		t.Fatal("StringData on a freed handle must return nil, not a dangling pointer")
-	}
-	if tsStringLen(ps) != 0 {
-		t.Fatal("StringLen on a freed handle must return 0")
-	}
-}
-
 // ── PhotonBytes ownership ────────────────────────────────────────────────
 
 func TestPhotonBytes_DataAndFree(t *testing.T) {
@@ -415,17 +405,6 @@ func TestPhotonBytes_FreeNilIsNoOp(t *testing.T) {
 	tsFreeBytes(nil)
 }
 
-func TestPhotonBytes_DataAfterFreeReturnsNil(t *testing.T) {
-	pb := tsNewBytes([]byte{9, 9, 9})
-	tsFreeBytes(pb)
-	if tsBytesData(pb) != nil {
-		t.Fatal("BytesData on a freed handle must return nil")
-	}
-	if tsBytesLen(pb) != 0 {
-		t.Fatal("BytesLen on a freed handle must return 0")
-	}
-}
-
 // ── ABI Versioning ────────────────────────────────────────────────────────
 
 func TestGetABIVersion_PackedCorrectly(t *testing.T) {
@@ -446,14 +425,5 @@ func TestSetEventCallback_NilHandleDoesNotPanic(t *testing.T) {
 
 func TestSetEventCallback_OnValidHandle(t *testing.T) {
 	h := mustCreate(t, `{}`)
-	tsSetEventCallback(h)
-}
-
-func TestSetEventCallback_OnDestroyedHandleDoesNotPanic(t *testing.T) {
-	h, rc := tsCreate(cstr(t, `{}`), false)
-	if rc != tsOK {
-		t.Fatalf("Create: rc = %d", rc)
-	}
-	tsDestroy(h)
 	tsSetEventCallback(h)
 }

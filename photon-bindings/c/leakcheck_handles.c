@@ -30,7 +30,8 @@ static void cycle(int n) {
         PhotonString *resp = NULL;
         Photon_SendAction(h, 999999, "{}", &resp);
         Photon_GetLastError(h);
-        Photon_Destroy(h);
+        /* Ровно один Destroy: повторный, начатый после возврата первого, —
+           вызов за окном времени жизни handle, UB (ADR-059 п. 2). */
         Photon_Destroy(h);
     }
 }

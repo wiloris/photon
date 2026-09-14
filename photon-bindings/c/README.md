@@ -10,9 +10,13 @@
 | `photon_core.h` | **Публичный ABI.** Замороженный контракт, единственное, что видят потребители `.so` |
 | `photon.go` | Реализация всех 12 экспортируемых функций |
 | `internal_cgo_types.h` | Непубличный. Объявления для cgo без `const` — см. комментарий в файле |
+| `handle_registry.go` | Реестр живых handle: эпохи и отложенное освобождение ячеек (ADR-059). Без cgo |
 | `testsupport.go` | Go-обёртки над C-типами (Go не поддерживает cgo в `_test.go`) |
-| `photon_test.go` | 35 тестов контракта: lifecycle, ownership, action-коды, ABI version |
-| `leakcheck_handles.c` | Leak-check: 400k циклов create/destroy, различает арены Go от утечки |
+| `photon_test.go` | Тесты контракта: lifecycle, ownership, action-коды, ABI version |
+| `events_test.go`, `fake_transport_test.go` | Доставка событий, реентерабельный и конкурентный `Destroy` |
+| `handle_registry_test.go` | Модульные тесты реестра с контролируемым аллокатором (ADR-059) |
+| `IMPLEMENTATION_LOG.md` | Почему решения приняты так; с ADR-059 |
+| `leakcheck_handles.c` | Leak-check: 400k циклов `Create → SendAction → GetLastError → Destroy` (один `Destroy` на handle), различает арены Go от утечки |
 | `leakcheck_strings.c` | Leak-check: 550k перезаписей `lastError` |
 | `livecheck_bridge.c` | **Ручной** сквозной прогон через `.so` против живого Bridge — см. ниже |
 | `go.mod` | `replace` на `../../photon-core`, путь относительный. Закоммичен: тесты идут из репозитория |
@@ -38,8 +42,9 @@ cgo заголовком. Сборка при этом завершается у
 ## Тесты
 
 ```sh
-go test .          # 35 тестов контракта
+go test .          # 48 тестов
 go test -race .    # race detector
+go test -asan .    # AddressSanitizer (LeakSanitizer здесь не срабатывает — IMPLEMENTATION_LOG.md)
 
 # leak-check (после сборки .so)
 gcc -o build/leakcheck_handles leakcheck_handles.c -Lbuild -l:photon_core.so -Wl,-rpath,'$ORIGIN' && ./build/leakcheck_handles
@@ -77,6 +82,10 @@ Go, границу C он не пересекает. Здесь проверяе
 
 ## Результаты проверки (Go 1.22.2, linux/amd64)
 
+> Исторический прогон, до ADR-059. Актуальные числа после ADR-059
+> (2026-09-14): `go test .` — 48/48, `-race` чисто, `go test -asan` — 48/48,
+> оба leak-check без тренда — `IMPLEMENTATION_LOG.md`.
+
 - `go build -buildmode=c-shared` — OK, 12 символов `Photon_*` экспортированы
 - `go test .` — **35/35 PASS** (было 32; +3 в Phase 13.5)
 - `go test -race .` — PASS
@@ -100,6 +109,13 @@ Go, границу C он не пересекает. Здесь проверяе
 
 ## Найденный и исправленный баг
 
+> **Механизм ниже заменён ADR-059.** Повторный `Photon_Destroy` на уже
+> уничтоженном handle больше не поддерживаемый сценарий, а UB: handle валиден
+> до снятия с учёта, наблюдаемая граница — возврат первого не-реентерабельного
+> `Destroy`. Метка `0` в ячейке читалась из освобождённой памяти (нашёл ASan);
+> вместо неё — реестр живых handle, `handle_registry.go`. Раздел оставлен как
+> история находки; подробности — `IMPLEMENTATION_LOG.md`.
+
 Первый прогон тестов поймал **double free** в `Photon_Destroy` при повторном
 вызове на уже уничтоженном handle. Причина: `cgo.Handle` переиспользует
 освобождённые слоты, поэтому повторный `resolveOpaqueHandle` мог зарезолвить
@@ -110,6 +126,10 @@ Go, границу C он не пересекает. Здесь проверяе
 (`cgo.Handle` нумеруется с 1, поэтому 0 безопасен как маркер).
 
 ## Ограничение: Valgrind
+
+> С ADR-059 пакет прогнан под ASan (`go test -asan .` — 48/48). LeakSanitizer
+> при этом **не** срабатывает на завершении Go-процесса, поэтому утечки
+> по-прежнему проверяются только RSS — см. `IMPLEMENTATION_LOG.md`.
 
 Valgrind в среде разработки недоступен, поэтому leak-check выполнен через
 измерение RSS на большом числе итераций с разделением одноразового роста

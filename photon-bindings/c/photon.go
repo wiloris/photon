@@ -1,13 +1,17 @@
 // Package main — реализация photon_core.h через cgo, -buildmode=c-shared.
 //
-// Opaque handles (PhotonHandle*, PhotonString*, PhotonBytes*) реализованы
-// через runtime/cgo.Handle, но НЕ напрямую как unsafe.Pointer(handle) —
-// документация runtime/cgo прямо предупреждает: "It is not safe to
-// coerce a cgo.Handle (an integer) to a Go unsafe.Pointer". Вместо
-// этого для каждого handle выделяется небольшой блок реальной C-памяти
-// (C.malloc), хранящий значение cgo.Handle как uintptr_t; наружу
-// отдаётся указатель на эту память — настоящий валидный указатель на
-// C-кучу, а не Go-значение, притворяющееся указателем.
+// Opaque handles (PhotonHandle*, PhotonString*, PhotonBytes*) — адреса
+// небольших блоков реальной C-памяти (C.malloc): наружу уходит настоящий
+// указатель на C-кучу, а не Go-значение, притворяющееся указателем
+// (документация runtime/cgo прямо запрещает приводить cgo.Handle к
+// unsafe.Pointer).
+//
+// Содержимое ячейки не читается никогда. Объект удерживает реестр живых
+// handle (handle_registry.go) по адресу ячейки; каждая экспортируемая
+// функция, принимающая handle, входит в эпоху реестра первым действием и
+// выходит последним (ADR-059 п. 5). Прежняя схема хранила в ячейке
+// cgo.Handle и метку 0 «уже освобождён» — метку можно было прочитать только
+// из освобождённой памяти, что и нашёл ASan.
 package main
 
 /*
@@ -30,7 +34,6 @@ static void photon_invoke_callback(PhotonEventCallback cb, const char* json, voi
 import "C"
 
 import (
-	"runtime/cgo"
 	"sync"
 	"unsafe"
 
@@ -42,46 +45,44 @@ func main() {}
 
 // ── Opaque handle helpers ────────────────────────────────────────────────
 
-// newOpaqueHandle оборачивает v в cgo.Handle и выделяет реальную
-// C-память для хранения его значения.
+// cCells — аллокатор ячеек рабочего кода. Ячейка служит только источником
+// уникального адреса; её содержимое не пишется и не читается.
+type cCells struct{}
+
+func (cCells) alloc() unsafe.Pointer {
+	return C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
+}
+
+func (cCells) free(p unsafe.Pointer) { C.free(p) }
+
+// handles — единственный реестр всех непрозрачных handle библиотеки.
+var handles = newHandleRegistry[unsafe.Pointer](cCells{})
+
+// newOpaqueHandle выделяет ячейку и регистрирует за её адресом v.
 func newOpaqueHandle(v interface{}) unsafe.Pointer {
-	h := cgo.NewHandle(v)
-	mem := C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
-	*(*C.uintptr_t)(mem) = C.uintptr_t(h)
-	return mem
+	return handles.register(v)
 }
 
-// safeHandleValue вызывает h.Value(), перехватывая панику cgo.Handle на
-// невалидном/уже удалённом хендле — превращает её в (nil, false) вместо
-// падения процесса через границу C.
-func safeHandleValue(h cgo.Handle) (v interface{}, ok bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			v, ok = nil, false
-		}
-	}()
-	return h.Value(), true
-}
-
-// resolveOpaqueHandle читает значение cgo.Handle из C-памяти и резолвит
-// его в исходное Go-значение.
-func resolveOpaqueHandle(p unsafe.Pointer) (v interface{}, h cgo.Handle, ok bool) {
-	if p == nil {
-		return nil, 0, false
+// enterCore — вход экспортируемой функции, работающей с инстансом. Эпоху
+// вызывающий отдаёт в handles.exit ПРИ ЛЮБОМ исходе, последним действием
+// вызова (defer сразу после входа). ok=false — handle не живой, не *core или
+// инстанс уже уничтожается.
+func enterCore(handle *C.PhotonHandle) (c *core, epoch uint64, ok bool) {
+	v, epoch, found := handles.enter(unsafe.Pointer(handle))
+	if !found {
+		return nil, epoch, false
 	}
-	raw := *(*C.uintptr_t)(p)
-	// 0 — sentinel "уже освобождён" (freeOpaqueHandle зануляет ячейку
-	// перед C.free). Без этой проверки повторный Destroy/Free на том же
-	// указателе прочитал бы старое значение Handle, которое cgo мог уже
-	// переиспользовать под ЧУЖОЙ объект — и мы освободили бы чужую
-	// память (double free). cgo.Handle никогда не выдаёт 0 (нумерация
-	// начинается с 1), поэтому 0 безопасен как маркер.
-	if raw == 0 {
-		return nil, 0, false
+	c, ok = v.(*core)
+	if !ok {
+		return nil, epoch, false
 	}
-	h = cgo.Handle(uintptr(raw))
-	v, ok = safeHandleValue(h)
-	return v, h, ok
+	c.mu.Lock()
+	destroyed := c.destroyed
+	c.mu.Unlock()
+	if destroyed {
+		return nil, epoch, false
+	}
+	return c, epoch, true
 }
 
 // ── core: состояние одного PhotonHandle ──────────────────────────────────
@@ -114,10 +115,11 @@ type core struct {
 	// заголовка для себя (event-delivery.md §10.4).
 	teardownDone chan struct{}
 
-	// handleMem/handleRef сохраняются для отложенного пути: освобождает их
-	// тот же, кто выполняет уничтожение.
+	// handleMem — собственный адрес handle. Нужен отложенному пути: снимает
+	// handle с учёта тот же, кто выполняет уничтожение, — насос, которому
+	// неоткуда взять указатель иначе. Забирается (обнуляется) ровно один раз
+	// под mu тем, кто получил право на уничтожение.
 	handleMem unsafe.Pointer
-	handleRef cgo.Handle
 
 	// pendingDisp — диспетчер, снятый с c.disp вызовом Destroy и ещё не
 	// закрытый. При отложенном пути его закрывает насос.
@@ -148,41 +150,6 @@ func (c *core) setError(msg string) {
 		C.free(unsafe.Pointer(c.lastError))
 	}
 	c.lastError = C.CString(msg)
-}
-
-// releaseOpaqueHandle зануляет ячейку C-памяти (делая повторные вызовы
-// безопасными no-op), удаляет cgo.Handle и освобождает саму память.
-// Порядок важен: зануление ДО C.free, иначе между ними остаётся окно,
-// в котором другой поток прочитал бы валидное на вид значение.
-func releaseOpaqueHandle(p unsafe.Pointer, h cgo.Handle, handleValid bool) {
-	if p == nil {
-		return
-	}
-	*(*C.uintptr_t)(p) = 0
-	if handleValid {
-		h.Delete()
-	}
-	C.free(p)
-}
-
-// coreFromHandle резолвит *C.PhotonHandle обратно в *core. ok=false
-// значит handle невалиден (nil, уже уничтожен, или битый указатель).
-func coreFromHandle(handle *C.PhotonHandle) (*core, bool) {
-	v, _, ok := resolveOpaqueHandle(unsafe.Pointer(handle))
-	if !ok {
-		return nil, false
-	}
-	c, ok := v.(*core)
-	if !ok {
-		return nil, false
-	}
-	c.mu.Lock()
-	destroyed := c.destroyed
-	c.mu.Unlock()
-	if destroyed {
-		return nil, false
-	}
-	return c, true
 }
 
 // ── ABI Versioning ──────────────────────────────────────────────────────
@@ -223,16 +190,23 @@ func Photon_Create(configJSON *C.char, handle **C.PhotonHandle) C.PhotonResult {
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
 
-	c := &core{disp: disp, teardownDone: make(chan struct{})}
-	// Инстанс запоминает СВОЙ handle: при отложенном уничтожении (§10.2)
-	// освобождает память не тот, кто вызвал Destroy, а насос, и ему неоткуда
-	// взять указатель иначе.
-	mem := newOpaqueHandle(c)
-	c.handleMem = mem
-	c.handleRef = cgo.Handle(uintptr(*(*C.uintptr_t)(mem)))
-
-	*handle = (*C.PhotonHandle)(mem)
+	*handle = (*C.PhotonHandle)(registerCore(disp))
 	return C.PHOTON_OK
+}
+
+// registerCore создаёт инстанс поверх disp и регистрирует его handle.
+//
+// Инстанс запоминает СВОЙ handle: при отложенном уничтожении (§10.2) снимает
+// его с учёта не тот, кто вызвал Destroy, а насос, и ему неоткуда взять
+// указатель иначе. Поле пишется после регистрации, но до того, как адрес
+// уходит вызывающему, — законно обратиться к инстансу раньше некому.
+func registerCore(disp *dispatcher.Dispatcher) unsafe.Pointer {
+	c := &core{disp: disp, teardownDone: make(chan struct{})}
+	mem := newOpaqueHandle(c)
+	c.mu.Lock()
+	c.handleMem = mem
+	c.mu.Unlock()
+	return mem
 }
 
 //export Photon_Destroy
@@ -242,16 +216,22 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 		return
 	}
 
-	v, h, ok := resolveOpaqueHandle(unsafe.Pointer(handle))
+	// Эпоха удерживается весь вызов, включая ожидание teardownDone и снятие с
+	// учёта: пока вызов активен, ячейка не освобождается и её адрес не
+	// достанется новому объекту (ADR-059 п. 5, И5).
+	v, epoch, ok := handles.enter(unsafe.Pointer(handle))
+	defer handles.exit(epoch)
 	if !ok {
-		// Уже освобождён (ячейка занулена) или мусорный указатель —
-		// ничего не делаем: освобождать эту память второй раз нельзя,
-		// первый Destroy уже сделал C.free.
+		// Промах внутри окна возможен только после снятия с учёта, а оно
+		// стоит после close(teardownDone): уничтожение уже завершено. Вне
+		// окна — UB (ADR-059 п. 2); ячейка при этом не читается.
 		return
 	}
 	c, ok := v.(*core)
 	if !ok {
-		releaseOpaqueHandle(unsafe.Pointer(handle), h, true)
+		// Объект другого типа — прежнее поведение (снятие с учёта), отдельная
+		// задача ADR-059 «нерешённое».
+		handles.retire(unsafe.Pointer(handle))
 		return
 	}
 
@@ -310,7 +290,7 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 		return
 	}
 
-	mem, ref := c.handleMem, c.handleRef
+	mem := c.handleMem
 	c.handleMem = nil
 	c.mu.Unlock()
 
@@ -326,14 +306,15 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 	// вернётся, пока насос не выполнил Done, а если в этот момент колбэк
 	// исполнялся, Wait дождётся его возврата. Признак destroyed барьером НЕ
 	// является и в этой роли не используется (event-delivery.md §10.1).
-	c.teardown(disp, mem, ref)
+	c.teardown(disp, mem)
 }
 
 // ── Event Callback ──────────────────────────────────────────────────────
 
 //export Photon_SetEventCallback
 func Photon_SetEventCallback(handle *C.PhotonHandle, callback C.PhotonEventCallback, userData unsafe.Pointer) {
-	c, ok := coreFromHandle(handle)
+	c, epoch, ok := enterCore(handle)
+	defer handles.exit(epoch)
 	if !ok {
 		return
 	}
@@ -412,29 +393,38 @@ func (c *core) finishDeferredTeardown() {
 	c.deferred = false
 	disp := c.pendingDisp
 	c.pendingDisp = nil
-	mem, ref := c.handleMem, c.handleRef
+	mem := c.handleMem
 	c.handleMem = nil
 	c.mu.Unlock()
 
-	c.teardown(disp, mem, ref)
+	c.teardown(disp, mem)
 }
 
 // teardown — фактическое уничтожение. Выполняется РОВНО ОДИН РАЗ: право на
 // него получает тот, кто первым перевёл инстанс в destroyed
 // (event-delivery.md §10.4).
-func (c *core) teardown(disp *dispatcher.Dispatcher, mem unsafe.Pointer, ref cgo.Handle) {
+//
+// Порядок — ADR-059 п. 5: close(teardownDone) строго ДО снятия с учёта (И3).
+// Иначе конкурентный Destroy, промахнувшийся после снятия, вернулся бы, пока
+// уничтожение ещё идёт. Ячейку снятие не освобождает: её освобождает проход
+// освобождения — сразу при снятии, если активных вызовов старых эпох нет
+// (отложенный путь на насосе), иначе на выходе последнего из них.
+func (c *core) teardown(disp *dispatcher.Dispatcher, mem unsafe.Pointer) {
 	if disp != nil {
 		disp.Close()
 	}
-	releaseOpaqueHandle(mem, ref, mem != nil)
 	close(c.teardownDone)
+	if mem != nil {
+		handles.retire(mem)
+	}
 }
 
 // ── Диагностика ─────────────────────────────────────────────────────────
 
 //export Photon_GetLastError
 func Photon_GetLastError(handle *C.PhotonHandle) *C.char {
-	c, ok := coreFromHandle(handle)
+	c, epoch, ok := enterCore(handle)
+	defer handles.exit(epoch)
 	if !ok {
 		return nil
 	}
@@ -447,7 +437,8 @@ func Photon_GetLastError(handle *C.PhotonHandle) *C.char {
 
 //export Photon_SendAction
 func Photon_SendAction(handle *C.PhotonHandle, actionCode C.int32_t, payloadJSON *C.char, responseOut **C.PhotonString) C.PhotonResult {
-	c, ok := coreFromHandle(handle)
+	c, epoch, ok := enterCore(handle)
+	defer handles.exit(epoch)
 	if !ok {
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
@@ -544,7 +535,8 @@ func newPhotonString(s string) *C.PhotonString {
 
 //export Photon_StringData
 func Photon_StringData(s *C.PhotonString) *C.char {
-	v, _, ok := resolveOpaqueHandle(unsafe.Pointer(s))
+	v, epoch, ok := handles.enter(unsafe.Pointer(s))
+	defer handles.exit(epoch)
 	if !ok {
 		return nil
 	}
@@ -560,7 +552,8 @@ func Photon_StringData(s *C.PhotonString) *C.char {
 
 //export Photon_StringLen
 func Photon_StringLen(s *C.PhotonString) C.size_t {
-	v, _, ok := resolveOpaqueHandle(unsafe.Pointer(s))
+	v, epoch, ok := handles.enter(unsafe.Pointer(s))
+	defer handles.exit(epoch)
 	if !ok {
 		return 0
 	}
@@ -576,15 +569,18 @@ func Photon_FreeString(s *C.PhotonString) {
 	if s == nil {
 		return
 	}
-	v, h, ok := resolveOpaqueHandle(unsafe.Pointer(s))
+	v, epoch, ok := handles.enter(unsafe.Pointer(s))
+	defer handles.exit(epoch)
 	if !ok {
-		return // уже освобождён
+		// Повторный Free — UB (photon_core.h, ADR-059 п. 2); промах лишь не
+		// читает ячейку и ничего не обещает.
+		return
 	}
 	if ps, ok := v.(*photonString); ok && ps.cachedCStr != nil {
 		C.free(unsafe.Pointer(ps.cachedCStr))
 		ps.cachedCStr = nil
 	}
-	releaseOpaqueHandle(unsafe.Pointer(s), h, true)
+	handles.retire(unsafe.Pointer(s))
 }
 
 // ── PhotonBytes ─────────────────────────────────────────────────────────
@@ -600,7 +596,8 @@ func newPhotonBytes(b []byte) *C.PhotonBytes {
 
 //export Photon_BytesData
 func Photon_BytesData(b *C.PhotonBytes) *C.uint8_t {
-	v, _, ok := resolveOpaqueHandle(unsafe.Pointer(b))
+	v, epoch, ok := handles.enter(unsafe.Pointer(b))
+	defer handles.exit(epoch)
 	if !ok {
 		return nil
 	}
@@ -616,7 +613,8 @@ func Photon_BytesData(b *C.PhotonBytes) *C.uint8_t {
 
 //export Photon_BytesLen
 func Photon_BytesLen(b *C.PhotonBytes) C.size_t {
-	v, _, ok := resolveOpaqueHandle(unsafe.Pointer(b))
+	v, epoch, ok := handles.enter(unsafe.Pointer(b))
+	defer handles.exit(epoch)
 	if !ok {
 		return 0
 	}
@@ -632,13 +630,16 @@ func Photon_FreeBytes(b *C.PhotonBytes) {
 	if b == nil {
 		return
 	}
-	v, h, ok := resolveOpaqueHandle(unsafe.Pointer(b))
+	v, epoch, ok := handles.enter(unsafe.Pointer(b))
+	defer handles.exit(epoch)
 	if !ok {
-		return // уже освобождён
+		// Повторный Free — UB (photon_core.h, ADR-059 п. 2); промах лишь не
+		// читает ячейку и ничего не обещает.
+		return
 	}
 	if pb, ok := v.(*photonBytes); ok && pb.cachedCData != nil {
 		C.free(pb.cachedCData)
 		pb.cachedCData = nil
 	}
-	releaseOpaqueHandle(unsafe.Pointer(b), h, true)
+	handles.retire(unsafe.Pointer(b))
 }

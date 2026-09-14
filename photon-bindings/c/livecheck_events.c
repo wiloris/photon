@@ -197,8 +197,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* ── 6. Destroy в ожидании push и повторный Destroy ─────────────── */
-    printf("\n-- Destroy в ожидании push, затем повторный --\n");
+    /* ── 6. Destroy в ожидании push ──────────────────────────────────── */
+    /* Ровно один Destroy на handle: повторный, начатый после возврата
+       первого, — вызов за окном времени жизни, UB (ADR-059 п. 2). */
+    printf("\n-- Destroy в ожидании push --\n");
     reset();
     g_handle = make(config);
     if (!g_handle) return 1;
@@ -210,8 +212,6 @@ int main(int argc, char **argv) {
         g_destroy_called = 1;
         Photon_Destroy(g_handle);
         ok("Destroy в ожидании push вернулся");
-        Photon_Destroy(g_handle);   /* повторный — обязан быть безопасным */
-        ok("повторный Photon_Destroy безопасен");
         sleep(3);
         if (g_events_after_destroy != 0)
             bad("после Destroy пришло %d событий", g_events_after_destroy);

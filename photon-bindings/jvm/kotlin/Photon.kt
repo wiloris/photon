@@ -79,11 +79,11 @@ class Photon private constructor(private var handle: Long) : java.io.Closeable {
     }
 
     /**
-     * Освобождает инстанс. Идемпотентен: повторный вызов безопасен —
-     * как из-за флага [closed] здесь, так и из-за гарантии C ABI
-     * (Photon_Destroy на уже уничтоженном handle — no-op, ADR-028).
-     * Двойная защита сознательна: Kotlin-флаг документирует намерение,
-     * гарантия C ABI страхует от гонок между потоками.
+     * Освобождает инстанс. Идемпотентен: повторный вызов безопасен
+     * благодаря флагу [closed] под монитором (@Synchronized) — native
+     * destroy выполняется ровно один раз. На C ABI опираться здесь нельзя:
+     * Photon_Destroy на уже уничтоженном handle — undefined behavior
+     * (ADR-059 п. 2); ADR-028 гарантирует безопасность только для NULL.
      */
     @Synchronized
     override fun close() {
