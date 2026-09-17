@@ -229,9 +229,10 @@ func Photon_Destroy(handle *C.PhotonHandle) {
 	}
 	c, ok := v.(*core)
 	if !ok {
-		// Объект другого типа — прежнее поведение (снятие с учёта), отдельная
-		// задача ADR-059 «нерешённое».
-		handles.retire(unsafe.Pointer(handle))
+		// Не инстанс — no-op, и handle остаётся действительным (ADR-061 п. 1).
+		// Снимать чужой объект с учёта нельзя: строка или байты исчезли бы из
+		// реестра, а их собственный Photon_Free* потом не нашёл бы их и не
+		// освободил ни cachedCStr, ни саму запись.
 		return
 	}
 
@@ -576,7 +577,16 @@ func Photon_FreeString(s *C.PhotonString) {
 		// читает ячейку и ничего не обещает.
 		return
 	}
-	if ps, ok := v.(*photonString); ok && ps.cachedCStr != nil {
+	// Проверка типа СТРОГО до retire (ADR-061 п. 2): иначе чужой объект — в
+	// худшем случае живой инстанс — исчезал бы из реестра без уничтожения, с
+	// работающим насосом и незакрытым teardownDone.
+	ps, ok := v.(*photonString)
+	if !ok {
+		// Не строка — no-op; объект остаётся действительным и освобождается
+		// своей функцией (ADR-061 п. 1). Его данные здесь не трогаются.
+		return
+	}
+	if ps.cachedCStr != nil {
 		C.free(unsafe.Pointer(ps.cachedCStr))
 		ps.cachedCStr = nil
 	}
@@ -637,7 +647,13 @@ func Photon_FreeBytes(b *C.PhotonBytes) {
 		// читает ячейку и ничего не обещает.
 		return
 	}
-	if pb, ok := v.(*photonBytes); ok && pb.cachedCData != nil {
+	// Проверка типа СТРОГО до retire — см. Photon_FreeString (ADR-061 п. 2).
+	pb, ok := v.(*photonBytes)
+	if !ok {
+		// Не байты — no-op; объект остаётся действительным (ADR-061 п. 1).
+		return
+	}
+	if pb.cachedCData != nil {
 		C.free(pb.cachedCData)
 		pb.cachedCData = nil
 	}
