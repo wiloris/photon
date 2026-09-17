@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -382,9 +383,7 @@ func (ql *QuicListener) handleConnection(conn *quic.Conn) {
 	userID, appErr := authorizeSession(ql.plugin.API, sessionID)
 	if appErr != nil {
 		ql.plugin.API.LogWarn("[Photon] Auth failed", "remote", remoteAddr)
-		writeError(stream, "unauthorized")
-		stream.Close()
-		conn.CloseWithError(0, "unauthorized")
+		rejectUnauthorized(conn, stream)
 		return
 	}
 	ql.plugin.API.LogInfo("[Photon] Authenticated", "remote", remoteAddr, "user_id", userID)
@@ -489,6 +488,62 @@ func (ql *QuicListener) handleStream(stream *quic.Stream, sessionID string, remo
 
 	resp := ql.dispatcher.Dispatch(userID, header, payload)
 	writeResponse(stream, resp)
+}
+
+// unauthorizedLingerNanos — предел, в течение которого сервер ждёт, пока
+// отвергнутый клиент сам закроет соединение.
+//
+// Ждать приходится потому, что CloseWithError отправляет CONNECTION_CLOSE
+// НЕМЕДЛЕННО, не дожидаясь доставки уже записанных данных стрима
+// (quic-go v0.59, connection.go: closeLocal и выход по c.ctx). Прежний
+// порядок — writeError, stream.Close, сразу CloseWithError — из-за этого
+// отдавал клиенту ошибку соединения вместо кадра {"ok":false}: измерено
+// против развёрнутого Bridge настоящим клиентом photon-core, 50 попыток из
+// 50. Успешный путь handshake этой проблемы не имеет ровно потому, что
+// соединение там не закрывается (см. ветки subscribe и action ниже).
+//
+// Ждать без предела нельзя: сервер шлёт keep-alive каждые 15 с, поэтому
+// idle-timeout (30 с, умолчание quic-go) для отвечающего пира не наступает
+// никогда, и неаутентифицированный клиент удерживал бы соединение сколько
+// угодно. Предел это исключает.
+//
+// 2 секунды: ждать надо один RTT плюс чтение одного маленького кадра.
+// Измеренная задержка полного вызова против этого же сервера — 81-90 мс
+// (ROADMAP, Phase 16, Performance), то есть запас больше двадцатикратного.
+// Значение заведомо меньше и keep-alive (15 с), и idle-timeout (30 с),
+// поэтому с ними не взаимодействует.
+//
+// Атомарная переменная, а не обычная: тест укорачивает предел, пока
+// соединения уже обслуживаются, и обычная переменная давала бы гонку —
+// настоящую, а не мнимую, потому что читает её другая горутина.
+var unauthorizedLingerNanos atomic.Int64
+
+func init() { unauthorizedLingerNanos.Store(int64(2 * time.Second)) }
+
+func unauthorizedLinger() time.Duration {
+	return time.Duration(unauthorizedLingerNanos.Load())
+}
+
+// rejectUnauthorized отдаёт клиенту отказ handshake и закрывает соединение
+// так, чтобы отказ ДОШЁЛ.
+//
+// Для клиента это единственный способ отличить «сессия не принята» от
+// «связь не работает»: photon-core разбирает ok:false в ErrHandshakeRejected
+// и классифицирует его как PERMISSION_DENIED, тогда как ошибка соединения
+// даёт INTERNAL. Различение живёт в клиенте по sentinel-ошибке, а не по
+// тексту (ADR-033), поэтому серверу достаточно доставить сам кадр.
+func rejectUnauthorized(conn *quic.Conn, stream *quic.Stream) {
+	writeError(stream, "unauthorized")
+	stream.Close()
+
+	// Штатный исход: клиент читает отказ и закрывает соединение сам
+	// (photon-core, session.go: conn.Close() на ошибке handshake). Тогда
+	// ожидание кончается сразу, а своего CONNECTION_CLOSE слать уже некому.
+	select {
+	case <-conn.Context().Done():
+	case <-time.After(unauthorizedLinger()):
+		conn.CloseWithError(0, "unauthorized")
+	}
 }
 
 func writeResponse(w io.Writer, resp Response) { _ = json.NewEncoder(w).Encode(resp) }
