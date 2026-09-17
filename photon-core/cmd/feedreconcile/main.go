@@ -150,15 +150,32 @@ func window(d *dispatcher.Dispatcher) ([]localfeed.Record, feedData) {
 	if err := json.Unmarshal(data, &fd); err != nil {
 		fail("разбор ленты: %v", err)
 	}
-	recs := make([]localfeed.Record, 0, len(fd.Order))
-	for _, id := range fd.Order {
-		p := fd.Posts[id]
+	recs, missing := recordsFrom(fd.Order, fd.Posts)
+	for _, id := range missing {
+		fmt.Printf("  ПРОПУЩЕН: id %s есть в order, но нет в posts — запись не создана\n", short(id))
+	}
+	return recs, fd
+}
+
+// recordsFrom — см. одноимённую функцию в cmd/feedslice: порядок задаёт
+// order, а идентификатор без поста записью не становится. Копия, а не общий
+// пакет: это два самостоятельных инструмента среза, у каждого свой тип post
+// (здесь есть edit_at, там нет), и общий пакет ради восьми строк связал бы
+// их формы друг с другом.
+func recordsFrom(order []string, posts map[string]post) (recs []localfeed.Record, missing []string) {
+	recs = make([]localfeed.Record, 0, len(order))
+	for _, id := range order {
+		p, ok := posts[id]
+		if !ok {
+			missing = append(missing, id)
+			continue
+		}
 		body, _ := json.Marshal(p)
 		recs = append(recs, localfeed.Record{
 			ID: p.ID, OrderKey: p.CreateAt, Version: p.UpdateAt, Body: body,
 		})
 	}
-	return recs, fd
+	return recs, missing
 }
 
 func show(title string, p post) {

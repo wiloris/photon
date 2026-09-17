@@ -196,15 +196,38 @@ func fetch(d *dispatcher.Dispatcher, payload map[string]any) ([]localfeed.Record
 	if !fr.OK {
 		fail("сервер отверг: %s", fr.Error)
 	}
-	recs := make([]localfeed.Record, 0, len(fr.Data.Order))
-	for _, id := range fr.Data.Order {
-		p := fr.Data.Posts[id]
+	recs, missing := recordsFrom(fr.Data.Order, fr.Data.Posts)
+	for _, id := range missing {
+		fmt.Printf("  ПРОПУЩЕН: id %s есть в order, но нет в posts — запись не создана\n", short(id))
+	}
+	return recs, fr.Data.Order, rtt
+}
+
+// recordsFrom переводит пару (order, posts) ответа сервера в записи ленты.
+//
+// Порядок задаёт ТОЛЬКО order: обход map в Go случаен, и запись из него дала
+// бы разный порядок от прогона к прогону при одинаковом ответе.
+//
+// Идентификатор из order, которого нет в posts, ЗАПИСЬЮ НЕ СТАНОВИТСЯ.
+// Прежде такой случай молча давал localfeed.Record с пустым ID и OrderKey 0:
+// Ingest пустой ID не проверяет, и в ленте появлялась бы запись, которая
+// всегда самая старая и ни к какому посту не относится, — то есть локальное
+// хранилище портилось бы тихо. Пропущенные идентификаторы возвращаются
+// вызывающему, чтобы он о них сообщил, а не проглотил.
+func recordsFrom(order []string, posts map[string]post) (recs []localfeed.Record, missing []string) {
+	recs = make([]localfeed.Record, 0, len(order))
+	for _, id := range order {
+		p, ok := posts[id]
+		if !ok {
+			missing = append(missing, id)
+			continue
+		}
 		body, _ := json.Marshal(p)
 		recs = append(recs, localfeed.Record{
 			ID: p.ID, OrderKey: p.CreateAt, Version: p.UpdateAt, Body: body,
 		})
 	}
-	return recs, fr.Data.Order, rtt
+	return recs, missing
 }
 
 // runSeedOld готовит состояние «прошлая сессия оставила старый кусок».
