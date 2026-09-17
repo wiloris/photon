@@ -33,6 +33,11 @@ type fakeTransport struct {
 
 	conn *fakeConn
 
+	// next, если задан, вызывается на каждый Connect вместо выдачи conn.
+	// Нужен там, где важна СМЕНА соединения: одно и то же значение conn не
+	// позволяет отличить «старое закрыли» от «новое не открыли».
+	next func() (ports.Connection, error)
+
 	mu       sync.Mutex
 	connects int
 }
@@ -51,6 +56,9 @@ func (f *fakeTransport) Connect(ctx context.Context, ep ports.Endpoint) (ports.C
 	}
 	if f.connectErr != nil {
 		return nil, f.connectErr
+	}
+	if f.next != nil {
+		return f.next()
 	}
 	return f.conn, nil
 }
@@ -75,6 +83,7 @@ type fakeConn struct {
 	acceptErr error
 	broken    chan struct{}
 	closed    bool
+	closes    int
 	toClose   []io.Closer
 	openCalls int
 }
@@ -177,8 +186,18 @@ func (c *fakeConn) RemoteEndpoint() ports.Endpoint { return "fake://bridge" }
 func (c *fakeConn) Close() error {
 	c.mu.Lock()
 	c.closed = true
+	c.closes++
 	c.mu.Unlock()
 	return nil
+}
+
+// closeCount — сколько раз соединение закрывали. Именно счётчик, а не
+// признак: «закрыто» не отличает одно закрытие от двух, а двойное закрытие
+// настоящего QUIC-соединения — отдельный дефект.
+func (c *fakeConn) closeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closes
 }
 
 func (c *fakeConn) streamsOpened() int {
