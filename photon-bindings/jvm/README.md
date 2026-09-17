@@ -123,7 +123,7 @@ such file or directory`), но команда в README была нерабоч�
 | Компиляция JNI против настоящего `jni.h` (JDK 21) | ✅ `gcc -Wall -Wextra`, чисто |
 | Линковка против реальной `libphoton_core.so` | ✅ `ldd` подтверждает зависимость |
 | Соответствие JNI-сигнатур | ✅ Заголовок сгенерирован `javac -h`, не написан вручную |
-| Compile-time соответствие кодов `PhotonResult` Java↔C | ✅ **11** static assert'ов в `photon_jni.c` (в таблице было 10 — пересчитано) |
+| Compile-time соответствие кодов `PhotonResult` Java↔C | ✅ **10** проверок в `photon_jni.c` — по одной на каждый код `PhotonResult` |
 | Граница ABI не нарушена | ✅ `nm -D`: 0 обращений к Go-символам |
 | **Java E2E на JVM** | ✅ **32/32 PASS** (с ADR-059 — **26/26**: три строки ниже, помеченные ADR-059, удалены) |
 | **Kotlin E2E на JVM** | ✅ **14/14 PASS** |
