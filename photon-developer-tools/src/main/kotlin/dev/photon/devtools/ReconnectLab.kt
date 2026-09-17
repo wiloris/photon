@@ -169,9 +169,9 @@ fun analyzeReconnect(
     return checks
 }
 
-/** Тип события из event_json. Тот же разбор, что у Dashboard и Logging. */
+/** Тип события из event_json в метку прогона. Разбор общий — eventType(). */
 fun eventKind(json: String): MarkKind =
-    when (Regex("\"type\"\\s*:\\s*\"([A-Z_]+)\"").find(json)?.groupValues?.get(1)) {
+    when (eventType(json)) {
         "CONNECTED" -> MarkKind.CONNECTED
         "NETWORK_CHANGED" -> MarkKind.NETWORK_CHANGED
         "MESSAGE" -> MarkKind.MESSAGE

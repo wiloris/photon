@@ -14,9 +14,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * состояния и журнал проверялись без native и без сети, как у остальных
  * лабораторий.
  *
- * Разбор "type" из event_json здесь свой. Такой же разбор есть в LogView,
- * NetworkLab и ReconnectLab (eventKind): это записанный технический долг,
- * а не решение — сводить их в один вне объёма A2.
+ * Разбор "type" из event_json — общий для всех лабораторий: eventType()
+ * в EventType.kt. Прежде здесь была своя копия, как в LogView, NetworkLab
+ * и ReconnectLab; технический долг сведён в один источник.
  */
 
 private val clock = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
@@ -52,7 +52,7 @@ class Dashboard(
         private set
 
     fun onEvent(json: String) {
-        val type = Regex("\"type\"\\s*:\\s*\"([A-Z_]+)\"").find(json)?.groupValues?.get(1) ?: "?"
+        val type = eventType(json) ?: "?"
         // CONNECTED и NETWORK_CHANGED описывают ТОЛЬКО подписное соединение:
         // action-соединение подключается лениво и своего фонового жизненного
         // цикла не имеет (photon_core.h).

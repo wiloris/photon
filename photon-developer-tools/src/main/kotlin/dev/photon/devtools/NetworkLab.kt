@@ -131,8 +131,7 @@ class NetworkLab(private val endpoint: String, private val token: String) {
 
     private fun listener() = object : PhotonEventListener {
         override fun onEvent(eventJson: String) {
-            val type = Regex("\"type\"\\s*:\\s*\"([A-Z_]+)\"")
-                .find(eventJson)?.groupValues?.get(1) ?: "?"
+            val type = eventType(eventJson) ?: "?"
             events.add(EventMark(now(), type, (System.nanoTime() - startedAt) / 1_000_000))
         }
     }

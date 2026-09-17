@@ -248,7 +248,7 @@ private fun gcCampaign(rounds: Int = 12) {
     }
 }
 
-private fun testListenerCtxLifetime() {
+private fun testListenerCtxLifetime(liveCfg: String) {
     val cfg = "{}"
 
     // (а) замена: прежний GlobalRef жив до close и освобождён после
@@ -315,6 +315,38 @@ private fun testListenerCtxLifetime() {
               "осталось живых: $aliveAfter")
     }
 
+    // (д) доставка НОВОМУ слушателю освобождает прежний контекст ДО close().
+    //
+    // Доставки строго последовательны (event-delivery.md §9.1): событие,
+    // пришедшее новому слушателю, доказывает, что доставка прежнему уже
+    // вернулась, а новых с его user_data не будет. Нужен живой Bridge —
+    // без событий освобождать не на чем, и блоки (а)-(в) выше проверяют
+    // именно этот случай.
+    run {
+        val p = Photon.create(liveCfg)
+        val connected = CountDownLatch(1)
+        var old: PhotonEventListener? = listener { connected.countDown() }
+        val weakOld = java.lang.ref.WeakReference(old)
+        p.setEventListener(old)
+        old = null
+        check("подписка поднялась (early-release тест)", connected.await(30, TimeUnit.SECONDS))
+
+        val delivered = CountDownLatch(1)
+        p.setEventListener(listener { delivered.countDown() })
+
+        val ch = selfChannel(p)
+        val id = post(p, ch, "early-release")
+        check("событие дошло до нового слушателя", delivered.await(60, TimeUnit.SECONDS))
+
+        gcCampaign()
+        check("доставка новому слушателю освободила прежний GlobalRef до close()",
+              weakOld.get() == null,
+              "прежний слушатель жив: контекст держится до close, как раньше")
+
+        runCatching { p.sendAction(102, """{"post_id":"$id"}""") }
+        p.close()
+    }
+
     // (г) повторный close идемпотентен и не освобождает контексты дважды
     run {
         val p = Photon.create(cfg)
@@ -343,7 +375,7 @@ fun main(args: Array<String>) {
     testNoCallbackAfterClose(cfg)
     testReplaceListener(cfg)
     testSetOnClosed(cfg)
-    testListenerCtxLifetime()
+    testListenerCtxLifetime(cfg)
 
     println()
     println("=== PASSED: $passed, FAILED: $failed ===")

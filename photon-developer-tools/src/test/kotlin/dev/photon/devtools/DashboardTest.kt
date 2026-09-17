@@ -3,6 +3,7 @@ package dev.photon.devtools
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /*
@@ -163,6 +164,28 @@ class DashboardTest {
         assertFalse(dash.contains("\"ok\\\"") || Regex("""catch\s*\(\s*\w+\s*:\s*PhotonException""").containsMatchIn(dash),
             "в Dashboard не должно быть своей классификации ok:false или ошибки вызова")
         assertFalse(src("Main.kt").contains("class Dashboard"), "Dashboard должен жить в одном месте")
+    }
+
+    /**
+     * Разбор "type" живёт в одном месте. Копии расходятся молча: одна
+     * лаборатория считала бы событие известным, соседняя — нет, и разница
+     * выглядела бы дефектом ядра. Проверяется структурно — поведение четырёх
+     * копий одинаково по определению, пока они одинаковы.
+     */
+    @Test
+    fun `разбор type событий берётся из общего eventType`() {
+        val srcDir = System.getProperty("photon.devtools.src")
+        assertNotNull(srcDir, "-Dphoton.devtools.src задаёт задача Gradle")
+        val offenders = java.io.File(srcDir).walkTopDown()
+            .filter { it.isFile && it.extension == "kt" && it.name != "EventType.kt" }
+            // Маркер копии — экранированный литерал поля в исходнике: Regex("\"type\"...
+            .filter { it.readText().contains("type\\\"") }
+            .map { it.name }.toList()
+        assertTrue(offenders.isEmpty(), "своя копия разбора \"type\": $offenders")
+
+        assertEquals("CONNECTED", eventType("""{"type":"CONNECTED"}"""))
+        assertEquals("NETWORK_CHANGED", eventType("""{ "type" : "NETWORK_CHANGED" }"""))
+        assertEquals(null, eventType("""{"x":1}"""))
     }
 
     @Test

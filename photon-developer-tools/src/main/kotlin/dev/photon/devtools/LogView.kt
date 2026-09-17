@@ -161,7 +161,7 @@ class LoggingView(
 
     private fun listener() = object : PhotonEventListener {
         override fun onEvent(eventJson: String) {
-            val type = Regex("\"type\"\\s*:\\s*\"([A-Z_]+)\"").find(eventJson)?.groupValues?.get(1) ?: "?"
+            val type = eventType(eventJson) ?: "?"
             // Только запоминаем ключ. Связь ищется при отчёте: событие может
             // прийти раньше, чем разобран ответ на вызвавшее его действие.
             stream.add(Source.EVENT, Level.INFO, type, eventJson.take(140),

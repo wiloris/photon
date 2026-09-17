@@ -50,15 +50,66 @@ class Photon private constructor(private var handle: Long) : java.io.Closeable {
         if (closed) null else PhotonNative.getLastError(handle)
 
     /**
-     * Контексты доставки, полученные от setEventListener.
+     * Контексты доставки, полученные от setEventListener, в порядке установки.
      *
-     * Накапливаются намеренно. Освободить контекст сразу при замене
-     * слушателя нельзя: Photon_SetEventCallback не даёт дождаться уже
-     * НАЧАВШЕЙСЯ доставки со старым user_data, и освобождение стало бы
-     * гонкой (jni-events.md §3.2). Ждать такого момента умеет только
-     * Photon_Destroy, поэтому все контексты освобождаются после него.
+     * Освободить контекст ПРЯМО при замене слушателя нельзя:
+     * Photon_SetEventCallback не даёт дождаться уже НАЧАВШЕЙСЯ доставки со
+     * старым user_data, и освобождение стало бы гонкой (jni-events.md §3.2).
+     *
+     * Но ждать close() для этого не обязательно. Доставки строго
+     * последовательны и никогда не параллельны (ADR-045, event-delivery.md
+     * §9.1; мост это свойство не меняет — D1). Значит доставка, пришедшая
+     * НОВОМУ слушателю, доказывает, что доставка старому уже вернулась, а
+     * новых с прежним user_data не будет: ядро подменило адресата под своим
+     * мьютексом. Поэтому старшие контексты освобождаются на первой же
+     * доставке более новому слушателю, а close() добирает остаток.
+     *
+     * Если событий нет вовсе (инстанс без подписки), поведение прежнее: всё
+     * освобождается после Photon_Destroy.
      */
-    private val eventContexts = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+    private val eventContexts = ArrayDeque<Long>()
+
+    /**
+     * Замок ТОЛЬКО для очереди контекстов, отдельный от монитора инстанса.
+     *
+     * Взять здесь монитор инстанса нельзя: close() держит его, пока идёт
+     * Photon_Destroy, а тот ждёт возврата из колбэка — колбэк, ожидающий
+     * того же монитора, дал бы дедлок.
+     */
+    private val ctxLock = Any()
+
+    /**
+     * Обёртка слушателя, знающая свой контекст.
+     *
+     * Нужна ровно для одного: на доставке освободить контексты, установленные
+     * РАНЬШЕ этого. Пользовательский слушатель вызывается после этого и
+     * ничего об обёртке не знает; исключение из него обрабатывает мост (D4),
+     * поэтому здесь оно не перехватывается.
+     */
+    private inner class Tracked(private val delegate: PhotonEventListener) : PhotonEventListener {
+        @Volatile var ctx: Long = 0
+
+        override fun onEvent(eventJson: String) {
+            val mine = ctx
+            // ctx == 0 — доставка обогнала присвоение поля сразу после
+            // установки: освобождать нечего, следующая доставка доберёт.
+            if (mine != 0L) releaseOlderThan(mine)
+            delegate.onEvent(eventJson)
+        }
+    }
+
+    /** Освобождает контексты, установленные раньше [current]. */
+    private fun releaseOlderThan(current: Long) {
+        val stale = synchronized(ctxLock) {
+            if (!eventContexts.contains(current)) return
+            val out = ArrayList<Long>()
+            while (eventContexts.isNotEmpty() && eventContexts.first() != current) {
+                out.add(eventContexts.removeFirst())
+            }
+            out
+        }
+        stale.forEach { PhotonNative.releaseEventListener(it) }
+    }
 
     /**
      * Устанавливает слушателя событий и ЗАПУСКАЕТ подписку — это единственный
@@ -72,9 +123,14 @@ class Photon private constructor(private var handle: Long) : java.io.Closeable {
     fun setEventListener(listener: PhotonEventListener?) {
         check(!closed) { "Photon instance is closed" }
 
-        val ctx = PhotonNative.setEventListener(handle, listener)
+        val tracked = listener?.let { Tracked(it) }
+        val ctx = PhotonNative.setEventListener(handle, tracked)
         if (ctx != 0L) {
-            eventContexts.add(ctx)
+            synchronized(ctxLock) { eventContexts.addLast(ctx) }
+            // Порядок важен: контекст попадает в очередь ДО того, как обёртка
+            // узнаёт его. Иначе доставка могла бы увидеть свой ctx и не найти
+            // его в очереди.
+            tracked?.ctx = ctx
         }
     }
 
@@ -96,10 +152,12 @@ class Photon private constructor(private var handle: Long) : java.io.Closeable {
         // — use-after-free на стороне JVM (jni-events.md §3.3).
         PhotonNative.destroy(handle)
 
-        while (true) {
-            val ctx = eventContexts.poll() ?: break
-            PhotonNative.releaseEventListener(ctx)
+        val rest = synchronized(ctxLock) {
+            val out = ArrayList(eventContexts)
+            eventContexts.clear()
+            out
         }
+        rest.forEach { PhotonNative.releaseEventListener(it) }
         handle = 0
     }
 
