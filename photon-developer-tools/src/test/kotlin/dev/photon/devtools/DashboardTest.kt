@@ -1,5 +1,7 @@
 package dev.photon.devtools
 
+import dev.photon.sdk.PhotonEvent
+
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -28,6 +30,20 @@ class DashboardTest {
     private fun dashboard(stamp: () -> String = { "12:00:00.000" }, out: MutableList<String> = mutableListOf()) =
         Dashboard(stamp = stamp, out = { out.add(it) })
 
+    /*
+     * Конструкторы событий: инструмент получает их типизированными из SDK,
+     * поэтому и в тестах они задаются значениями, а не JSON-строками. Так
+     * проверяется поведение инструмента, а не разбор конверта — он покрыт
+     * тестами SDK.
+     */
+    private fun connected(raw: String = """{"type":"CONNECTED"}""") = PhotonEvent.Connected(raw)
+
+    private fun networkChanged(raw: String = """{"type":"NETWORK_CHANGED","state":"disconnected"}""") =
+        PhotonEvent.NetworkChanged("disconnected", raw)
+
+    private fun message(raw: String = """{"type":"MESSAGE","event":"posted"}""") =
+        PhotonEvent.Message(event = "posted", userId = null, data = null, raw = raw)
+
     private fun result(outcome: Outcome, detail: String, millis: Double, response: String? = null) =
         CallResult(outcome, response, detail, (millis * 1_000_000).toLong())
 
@@ -46,9 +62,9 @@ class DashboardTest {
     @Test
     fun `CONNECTED и NETWORK_CHANGED меняют состояние подписки`() {
         val d = dashboard()
-        d.onEvent("""{"type":"CONNECTED"}""")
+        d.onEvent(connected())
         assertEquals("CONNECTED (с 12:00:00.000)", d.subscription)
-        d.onEvent("""{"type":"NETWORK_CHANGED","state":"disconnected"}""")
+        d.onEvent(networkChanged())
         assertEquals("NETWORK_CHANGED — связь потеряна (12:00:00.000)", d.subscription)
     }
 
@@ -57,9 +73,9 @@ class DashboardTest {
     fun `CONNECTED после NETWORK_CHANGED возвращает состояние связи`() {
         val t = Ticks()
         val d = dashboard(stamp = t::next)
-        d.onEvent("""{"type":"CONNECTED"}""")
-        d.onEvent("""{"type":"NETWORK_CHANGED","state":"disconnected"}""")
-        d.onEvent("""{"type":"CONNECTED"}""")
+        d.onEvent(connected())
+        d.onEvent(networkChanged())
+        d.onEvent(connected())
         assertTrue(d.subscription.startsWith("CONNECTED (с "), d.subscription)
         assertEquals(3, d.eventLog().size)
         assertEquals(listOf("CONNECTED", "NETWORK_CHANGED", "CONNECTED"),
@@ -73,29 +89,22 @@ class DashboardTest {
     @Test
     fun `MESSAGE, неизвестный тип и битый JSON не меняют состояние, но видны в журнале`() {
         val d = dashboard()
-        d.onEvent("""{"type":"CONNECTED"}""")
+        d.onEvent(connected())
         val connected = d.subscription
-        d.onEvent("""{"type":"MESSAGE","data":{"event":"posted"}}""")
-        d.onEvent("""{"type":"PLUGIN_EVENT"}""")
-        d.onEvent("""не json""")
+        d.onEvent(message("""{"type":"MESSAGE","event":"posted"}"""))
+        d.onEvent(PhotonEvent.Unknown("PLUGIN_EVENT", """{"type":"PLUGIN_EVENT"}"""))
+        d.onEvent(PhotonEvent.Unknown(null, "не json"))
         assertEquals(connected, d.subscription)
         assertEquals(listOf("CONNECTED", "MESSAGE", "PLUGIN_EVENT", "?"),
             d.eventLog().map { it.split("  ")[1] })
     }
 
     @Test
-    fun `пробелы в event_json не мешают разбору`() {
-        val d = dashboard()
-        d.onEvent("""{ "type" : "NETWORK_CHANGED" }""")
-        assertTrue(d.subscription.startsWith("NETWORK_CHANGED"), d.subscription)
-    }
-
-    @Test
     fun `событие печатается строкой с молнией и попадает в журнал усечённым`() {
         val out = mutableListOf<String>()
         val d = dashboard(out = out)
-        val long = """{"type":"MESSAGE","data":"${"x".repeat(300)}"}"""
-        d.onEvent(long)
+        val long = """{"type":"MESSAGE","event":"posted","data":"${"x".repeat(300)}"}"""
+        d.onEvent(message(long))
         assertEquals(listOf("  ⚡ 12:00:00.000  MESSAGE"), out)
         assertEquals("12:00:00.000  MESSAGE  ${long.take(160)}", d.eventLog().single())
     }
@@ -148,7 +157,7 @@ class DashboardTest {
 
     @Test
     fun `конфиг онлайн-режима несёт адрес и сессию в объекте bridge`() {
-        val cfg = dashboardConfig("host.example:4443", "tok")
+        val cfg = dashboardConfig("host.example:4443", "tok").toJson()
         assertTrue(cfg.startsWith("""{"bridge":{"""), cfg)
         assertTrue(cfg.contains(""""endpoint":"host.example:4443"""") && cfg.contains(""""session_token":"tok""""), cfg)
     }
@@ -160,37 +169,43 @@ class DashboardTest {
     @Test
     fun `Dashboard классифицирует исход общим Outcome, а не своей копией`() {
         val dash = src("Dashboard.kt")
-        assertTrue(dash.contains("call(p, action, payload)"), "Dashboard обязан звать общий call()")
+        assertTrue(dash.contains("call(client, action, payload)"), "Dashboard обязан звать общий call()")
         assertFalse(dash.contains("\"ok\\\"") || Regex("""catch\s*\(\s*\w+\s*:\s*PhotonException""").containsMatchIn(dash),
             "в Dashboard не должно быть своей классификации ok:false или ошибки вызова")
         assertFalse(src("Main.kt").contains("class Dashboard"), "Dashboard должен жить в одном месте")
     }
 
     /**
-     * Разбор "type" живёт в одном месте. Копии расходятся молча: одна
-     * лаборатория считала бы событие известным, соседняя — нет, и разница
-     * выглядела бы дефектом ядра. Проверяется структурно — поведение четырёх
-     * копий одинаково по определению, пока они одинаковы.
+     * Разбора "type" в инструменте не осталось ВОВСЕ: события приходят
+     * типизированными из SDK (ADR-062 п. 7). Прежде проверка требовала
+     * единственной копии — теперь ни одной, включая EventType.kt, где
+     * осталась только подпись для показа.
      */
     @Test
-    fun `разбор type событий берётся из общего eventType`() {
+    fun `разбора type в инструменте нет ни в одном файле`() {
         val srcDir = System.getProperty("photon.devtools.src")
         assertNotNull(srcDir, "-Dphoton.devtools.src задаёт задача Gradle")
         val offenders = java.io.File(srcDir).walkTopDown()
-            .filter { it.isFile && it.extension == "kt" && it.name != "EventType.kt" }
-            // Маркер копии — экранированный литерал поля в исходнике: Regex("\"type\"...
+            .filter { it.isFile && it.extension == "kt" }
+            // Маркер разбора — экранированный литерал поля в исходнике.
             .filter { it.readText().contains("type\\\"") }
             .map { it.name }.toList()
-        assertTrue(offenders.isEmpty(), "своя копия разбора \"type\": $offenders")
+        assertTrue(offenders.isEmpty(), "разбор \"type\" в инструменте: $offenders")
+    }
 
-        assertEquals("CONNECTED", eventType("""{"type":"CONNECTED"}"""))
-        assertEquals("NETWORK_CHANGED", eventType("""{ "type" : "NETWORK_CHANGED" }"""))
-        assertEquals(null, eventType("""{"x":1}"""))
+    /** Подпись события для показа — единственное, что осталось от EventType.kt. */
+    @Test
+    fun `подпись события берётся из типа, а не из строки`() {
+        assertEquals("CONNECTED", label(connected()))
+        assertEquals("NETWORK_CHANGED", label(networkChanged()))
+        assertEquals("MESSAGE", label(message()))
+        assertEquals("PLUGIN_EVENT", label(PhotonEvent.Unknown("PLUGIN_EVENT", "{}")))
+        assertEquals("?", label(PhotonEvent.Unknown(null, "не json")))
     }
 
     @Test
     fun `коды действий Dashboard берутся из UsedActions`() {
-        val sends = Regex("""dash\.send\(photon,\s*([^,]+),""").findAll(src("Main.kt")).map { it.groupValues[1].trim() }.toList()
+        val sends = Regex("""dash\.send\(client,\s*([^,]+),""").findAll(src("Main.kt")).map { it.groupValues[1].trim() }.toList()
         assertTrue(sends.isNotEmpty(), "вызовы Dashboard не найдены")
         assertTrue(sends.all { it.startsWith("UsedActions.") }, "код действия вписан числом: $sends")
     }

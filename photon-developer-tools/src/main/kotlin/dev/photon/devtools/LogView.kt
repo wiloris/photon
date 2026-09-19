@@ -1,7 +1,10 @@
 package dev.photon.devtools
 
-import dev.photon.core.Photon
-import dev.photon.core.PhotonEventListener
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import dev.photon.sdk.PhotonEvent
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -62,6 +65,8 @@ data class LogEntry(
 fun levelOf(outcome: Outcome): Level = when (outcome) {
     Outcome.OK -> Level.INFO
     Outcome.VERDICT_FALSE -> Level.WARN
+    // Вызов состоялся, но ответ не распознан: не успех и не сбой связи.
+    Outcome.UNRECOGNIZED -> Level.WARN
     Outcome.CALL_ERROR -> Level.ERROR
 }
 
@@ -155,17 +160,22 @@ class LoggingView(
         return e.valueList.firstOrNull { it.number == code }?.name ?: "НЕИЗВЕСТНЫЙ код $code"
     }
 
-    private fun config() =
-        """{"bridge":{"endpoint":"$endpoint","session_token":"$token",""" +
-        """"connect_timeout_ms":15000,"call_timeout_ms":20000}}"""
+    private fun config() = PhotonConfig(
+        BridgeConfig(
+            endpoint = endpoint,
+            sessionToken = token,
+            connectTimeout = Duration.ofSeconds(15),
+            callTimeout = Duration.ofSeconds(20),
+        )
+    )
 
-    private fun listener() = object : PhotonEventListener {
-        override fun onEvent(eventJson: String) {
-            val type = eventType(eventJson) ?: "?"
+    private fun listener() = dev.photon.sdk.PhotonEventListener { event ->
+        run {
+            val type = label(event)
             // Только запоминаем ключ. Связь ищется при отчёте: событие может
             // прийти раньше, чем разобран ответ на вызвавшее его действие.
-            stream.add(Source.EVENT, Level.INFO, type, eventJson.take(140),
-                key = correlationKeyOf(eventJson))
+            stream.add(Source.EVENT, Level.INFO, type, event.raw.take(140),
+                key = correlationKeyOf(event.raw))
         }
     }
 
@@ -173,8 +183,8 @@ class LoggingView(
         println("Logging — поток действий и событий")
         println("источник имён действий: канонический каталог (FileDescriptorSet)\n")
 
-        Photon.create(config()).use { p ->
-            p.setEventListener(listener())
+        PhotonClient.create(config()).use { p ->
+            p.addEventListener(listener())
             stream.add(Source.ACTION, Level.INFO, "подписка", "слушатель установлен, подписка запущена")
 
             fun send(code: Int, payload: String, note: String): String? {

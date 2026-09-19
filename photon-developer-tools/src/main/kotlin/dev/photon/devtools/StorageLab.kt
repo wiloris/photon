@@ -1,6 +1,9 @@
 package dev.photon.devtools
 
-import dev.photon.core.Photon
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import java.time.Duration
 import java.util.Locale
 
 /*
@@ -107,11 +110,16 @@ class StorageLab(private val endpoint: String, private val token: String) {
     /** Счётчик СЕТЕВЫХ вызовов: на публичном пути каждый getFeed — запрос. */
     private var feedCalls = 0
 
-    private fun config() =
-        """{"bridge":{"endpoint":"$endpoint","session_token":"$token",""" +
-            """"connect_timeout_ms":15000,"call_timeout_ms":30000}}"""
+    private fun config() = PhotonConfig(
+        BridgeConfig(
+            endpoint = endpoint,
+            sessionToken = token,
+            connectTimeout = Duration.ofSeconds(15),
+            callTimeout = Duration.ofSeconds(30),
+        )
+    )
 
-    private fun page(p: Photon, channel: String, limit: Int,
+    private fun page(p: PhotonClient, channel: String, limit: Int,
                      before: String? = null, after: String? = null): FeedPage {
         val cursor = when {
             before != null -> ""","before":"$before""""
@@ -131,7 +139,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
         println("Storage Lab — чтение ленты через публичный путь")
         println("страница $limit, глубина $depthPages страниц, возвратов $returns\n")
 
-        Photon.create(config()).use { p ->
+        PhotonClient.create(config()).use { p ->
             val channel = channelArg ?: selfChannel(p)
             if (channel == null) {
                 System.err.println("канал не получен — дальше мерить нечего")
@@ -158,7 +166,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
 
     // ── канал и заготовка ────────────────────────────────────────────────────
 
-    private fun selfChannel(p: Photon): String? {
+    private fun selfChannel(p: PhotonClient): String? {
         val me = call(p, UsedActions.GET_ME, "{}")
         val id = Regex("\"id\"\\s*:\\s*\"([^\"]+)\"").find(me.response ?: "")?.groupValues?.get(1)
             ?: return null
@@ -172,7 +180,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
      * Посты создаются ТЕМ ЖЕ публичным действием: иначе лента была бы набита
      * мимо пути, который меряется, и числа относились бы к другому сценарию.
      */
-    private fun seedFeed(p: Photon, channel: String, n: Int) {
+    private fun seedFeed(p: PhotonClient, channel: String, n: Int) {
         println("── заготовка ленты: $n постов ──────────────────")
         val started = System.nanoTime()
         var ok = 0
@@ -187,7 +195,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
 
     // ── 1. открытие канала ───────────────────────────────────────────────────
 
-    private fun openChannel(p: Photon, channel: String, limit: Int): FeedPage {
+    private fun openChannel(p: PhotonClient, channel: String, limit: Int): FeedPage {
         println("── открытие канала (страница без курсора) ──────")
         val page = openMeasured(p, channel, limit, 5)
         println("  задержка: ${summary(page.second)}")
@@ -195,7 +203,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
         return page.first
     }
 
-    private fun openMeasured(p: Photon, channel: String, limit: Int, times: Int): Pair<FeedPage, List<Double>> {
+    private fun openMeasured(p: PhotonClient, channel: String, limit: Int, times: Int): Pair<FeedPage, List<Double>> {
         var last = page(p, channel, limit)   // прогрев: первый вызов несёт установление соединения
         val samples = mutableListOf<Double>()
         repeat(times) {
@@ -207,7 +215,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
 
     // ── 2. глубина через before ──────────────────────────────────────────────
 
-    private fun depth(p: Photon, channel: String, limit: Int,
+    private fun depth(p: PhotonClient, channel: String, limit: Int,
                       pages: Int, first: FeedPage): List<FeedPage> {
         println("── глубина: обход назад курсором before ────────")
         val walk = mutableListOf(first)
@@ -259,7 +267,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
 
     // ── 3. повторные возвраты ────────────────────────────────────────────────
 
-    private fun repeats(p: Photon, channel: String, limit: Int, times: Int, firstMs: Double) {
+    private fun repeats(p: PhotonClient, channel: String, limit: Int, times: Int, firstMs: Double) {
         if (times <= 0) return
         println("── повторные возвраты в канал ──────────────────")
         val samples = mutableListOf<Double>()
@@ -281,7 +289,7 @@ class StorageLab(private val endpoint: String, private val token: String) {
      * закрытия дыры не сходился бы. Здесь то же свойство наблюдается
      * клиентским путём.
      */
-    private fun catchUp(p: Photon, channel: String, limit: Int) {
+    private fun catchUp(p: PhotonClient, channel: String, limit: Int) {
         println("── догрузка после offline (курсор after) ───────")
         val head = page(p, channel, limit)
         val watermark = head.order.firstOrNull()

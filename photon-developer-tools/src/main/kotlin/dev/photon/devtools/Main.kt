@@ -1,7 +1,8 @@
 package dev.photon.devtools
 
 import dev.photon.core.Photon
-import dev.photon.core.PhotonEventListener
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
 
 /*
  * Photon Developer Tools — точка входа и Dashboard, объём Phase 16.
@@ -149,34 +150,31 @@ fun main(args: Array<String>) {
     println("  совместимость:   ${if (abi.compatible) "да" else "НЕТ — клиент собран под другой MAJOR"}")
 
     val online = args.size >= 2
-    val cfg = if (online) dashboardConfig(args[0], args[1]) else "{}"
+    val cfg = if (online) dashboardConfig(args[0], args[1]) else PhotonConfig()
     if (!online) {
         println("\n  режим: БЕЗ Bridge (адрес и Session ID не переданы).")
         println("  запуск с ними:  ./gradlew run --args=\"<endpoint> <sessionId>\"")
     }
 
     val dash = Dashboard()
-    Photon.create(cfg).use { photon ->
+    PhotonClient.create(cfg).use { client ->
         println("\n── инстанс ───────────────────────────────────────")
         println("  создан:          да")
-        println("  последняя ошибка: ${photon.lastError() ?: "нет"}")
 
         // Первый ненулевой слушатель ЗАПУСКАЕТ подписку: это единственный
         // вызов ABI, выражающий такое намерение (photon_core.h).
         println("\n── подписка ──────────────────────────────────────")
-        photon.setEventListener(object : PhotonEventListener {
-            override fun onEvent(eventJson: String) = dash.onEvent(eventJson)
-        })
+        client.addEventListener { event -> dash.onEvent(event) }
         println("  слушатель установлен, подписка запущена")
 
-        dash.send(photon, UsedActions.GET_ME, "{}")   // доказывает весь путь
-        dash.send(photon, UsedActions.DELIBERATELY_UNKNOWN, "{}")  // ошибка ВЫЗОВА
+        dash.send(client, UsedActions.GET_ME, "{}")   // доказывает весь путь
+        dash.send(client, UsedActions.DELIBERATELY_UNKNOWN, "{}")  // ошибка ВЫЗОВА
 
         if (online) {
             // Отказ СЕРВЕРА при состоявшемся вызове: payload без обязательного
             // поля. Именно эта строка показывает разницу между исходом вызова
             // и вердиктом операции — без неё различение видно наполовину.
-            dash.send(photon, UsedActions.GET_OR_CREATE_DIRECT_CHANNEL, "{}")
+            dash.send(client, UsedActions.GET_OR_CREATE_DIRECT_CHANNEL, "{}")
             Thread.sleep(6000)                  // окно, в котором приходит CONNECTED
         }
 

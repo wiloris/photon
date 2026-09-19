@@ -135,8 +135,8 @@ class StorageLabTest {
         listOf("services/localfeed", "adapters/bbolt", "ports.Storage", "photon-core/services").forEach {
             assertTrue(!src.contains("import $it"), "прямого импорта $it быть не должно")
         }
-        assertTrue(src.contains("dev.photon.core.Photon"),
-            "единственный вход в платформу — публичный мост")
+        assertTrue(src.contains("dev.photon.sdk.PhotonClient"),
+            "единственный вход в платформу — публичный API SDK (ADR-062 п. 7)")
     }
 
     /**

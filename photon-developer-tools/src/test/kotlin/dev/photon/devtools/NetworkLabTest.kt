@@ -1,5 +1,7 @@
 package dev.photon.devtools
 
+import dev.photon.sdk.PhotonResponse
+
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -46,19 +48,35 @@ class NetworkLabTest {
         assertEquals(asc.min, desc.min)
     }
 
+    /*
+     * Разбора конверта в инструменте больше нет: SDK отдаёт PhotonResponse, и
+     * проверяется только отображение ответа в ярлык отчёта (ADR-062 п. 7).
+     * Сам разбор — включая пробелы в конверте — держат тесты SDK.
+     */
     @Test
     fun `вердикт ok false не считается сетевым сбоем`() {
-        assertEquals(Outcome.VERDICT_FALSE,
-            classifyResponse("""{"ok":false,"error":"target_user_id is required"}"""))
-        assertEquals(Outcome.OK, classifyResponse("""{"ok":true,"data":{"id":"abc"}}"""))
-        assertEquals("target_user_id is required",
-            verdictReason("""{"ok":false,"error":"target_user_id is required"}"""))
+        val rejected = PhotonResponse.Rejected(
+            error = "target_user_id is required", data = null,
+            raw = """{"ok":false,"error":"target_user_id is required"}""")
+        assertEquals(Outcome.VERDICT_FALSE, outcomeOf(rejected))
+        assertTrue(detailOf(rejected).contains("target_user_id is required"), detailOf(rejected))
+
+        assertEquals(Outcome.OK,
+            outcomeOf(PhotonResponse.Ok(data = """{"id":"abc"}""", raw = """{"ok":true,"data":{"id":"abc"}}""")))
     }
 
+    /**
+     * Нераспознанный конверт — отдельный исход, а не успех.
+     *
+     * Прежняя классификация инструмента искала регулярным выражением только
+     * `ok:false`, поэтому испорченный ответ засчитывался как OK. SDK такой
+     * ответ называет Unrecognized, и инструмент обязан это показывать.
+     */
     @Test
-    fun `пробелы в конверте не меняют классификацию`() {
-        assertEquals(Outcome.VERDICT_FALSE, classifyResponse("""{ "ok" : false , "error":"нет" }"""))
-        assertEquals(Outcome.OK, classifyResponse("""{ "ok" : true }"""))
+    fun `нераспознанный конверт не засчитывается успехом`() {
+        val unrecognized = PhotonResponse.Unrecognized("""{"нет-ok":1}""")
+        assertEquals(Outcome.UNRECOGNIZED, outcomeOf(unrecognized))
+        assertEquals(Level.WARN, levelOf(Outcome.UNRECOGNIZED))
     }
 
     @Test

@@ -1,6 +1,11 @@
 package dev.photon.devtools
 
 import dev.photon.core.Photon
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import dev.photon.sdk.TlsConfig
+import java.time.Duration
 import java.util.Locale
 
 /*
@@ -97,16 +102,23 @@ class CryptoLab(
     private val catalog: Inspector?,
 ) {
 
-    private fun config(ep: String, tok: String, insecure: Boolean) =
-        """{"bridge":{"endpoint":"$ep","session_token":"$tok",""" +
-            """"connect_timeout_ms":15000,"call_timeout_ms":20000""" +
-            (if (insecure) ""","tls":{"insecure_skip_verify":true}""" else "") + "}}"
+    private fun config(ep: String, tok: String, insecure: Boolean) = PhotonConfig(
+        BridgeConfig(
+            endpoint = ep,
+            sessionToken = tok,
+            connectTimeout = Duration.ofSeconds(15),
+            callTimeout = Duration.ofSeconds(20),
+            // Незаданное поле в JSON не попадает, поэтому «проверка включена»
+            // выражается отсутствием секции tls, а не false.
+            tls = if (insecure) TlsConfig(insecureSkipVerify = true) else null,
+        )
+    )
 
     /** Один зонд: создать инстанс, сделать один обычный вызов, записать исход. */
     private fun probe(what: String, ep: String, tok: String, insecure: Boolean): CryptoObservation {
         val started = System.nanoTime()
         return try {
-            Photon.create(config(ep, tok, insecure)).use { p ->
+            PhotonClient.create(config(ep, tok, insecure)).use { p ->
                 val r = call(p, UsedActions.GET_ME, "{}")
                 CryptoObservation(what, r.outcome, r.detail, r.millis)
             }
@@ -277,6 +289,7 @@ class CryptoLab(
         val mark = when (o.outcome) {
             Outcome.OK -> "✅"
             Outcome.VERDICT_FALSE -> "🟡"
+            Outcome.UNRECOGNIZED -> "🟡"
             Outcome.CALL_ERROR -> "⛔"
         }
         println("  $mark ${o.what}: ${o.detail} (${c1(o.millis)} мс)")

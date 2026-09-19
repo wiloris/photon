@@ -1,6 +1,10 @@
 package dev.photon.devtools
 
 import dev.photon.core.Photon
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import java.time.Duration
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -63,9 +67,17 @@ class PerfLab(private val endpoint: String?, private val token: String?) {
     private val online = endpoint != null && token != null
 
     private fun config() =
-        if (online) """{"bridge":{"endpoint":"$endpoint","session_token":"$token",""" +
-                    """"connect_timeout_ms":15000,"call_timeout_ms":20000}}"""
-        else "{}"
+        if (online) PhotonConfig(
+            BridgeConfig(
+                endpoint = endpoint,
+                sessionToken = token,
+                connectTimeout = Duration.ofSeconds(15),
+                callTimeout = Duration.ofSeconds(20),
+            )
+        )
+        // Инстанс без адреса Bridge законен: сети он не касается, и локальный
+        // путь меряется именно на нём.
+        else PhotonConfig()
 
     /**
      * Прогрев обязателен и вынесен в отдельный шаг.
@@ -86,7 +98,7 @@ class PerfLab(private val endpoint: String?, private val token: String?) {
         return Latencies(samples)
     }
 
-    private fun probes(p: Photon?, n: Int): List<Probe> {
+    private fun probes(p: PhotonClient?, n: Int): List<Probe> {
         val out = ArrayList<Probe>()
 
         // 1. Граница JVM↔native в чистом виде: константа, ни замка, ни состояния.
@@ -110,7 +122,7 @@ class PerfLab(private val endpoint: String?, private val token: String?) {
         return out
     }
 
-    private fun throughputSweep(p: Photon, threadCounts: List<Int>, perThread: Int): List<Pair<Int, Double>> =
+    private fun throughputSweep(p: PhotonClient, threadCounts: List<Int>, perThread: Int): List<Pair<Int, Double>> =
         threadCounts.map { threads ->
             val ready = CountDownLatch(threads)
             val go = CountDownLatch(1)
@@ -133,7 +145,7 @@ class PerfLab(private val endpoint: String?, private val token: String?) {
 
         val before = MemorySnapshot.take()
 
-        Photon.create(config()).use { p ->
+        PhotonClient.create(config()).use { p ->
             println("── задержка по слоям, $samples измерений после прогрева ".padEnd(64, '─'))
             val list = probes(p, samples)
             list.forEach { pr ->

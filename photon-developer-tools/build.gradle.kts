@@ -33,6 +33,18 @@ dependencies {
      * стоит на машине.
      */
     implementation("com.google.protobuf:protobuf-java:3.21.12")
+
+    /*
+     * Photon SDK — публичный путь к ядру (ADR-062 п. 7). Пришёл на смену
+     * прямому подключению исходников моста из photon-bindings/jvm: инструмент
+     * ходит тем же путём, что и будущие приложения, а не своей дорогой.
+     *
+     * Подстановка на композитную сборку объявлена в settings.gradle.kts.
+     * Классы моста (`dev.photon.core.*`) приходят внутри артефакта SDK —
+     * второй копии маршалинга не появляется (ADR-062 п. 2).
+     */
+    implementation("dev.photon:photon-sdk")
+
     testImplementation(kotlin("test"))
 }
 
@@ -60,23 +72,6 @@ val nativeDir: File = layout.buildDirectory.dir("native").get().asFile
  */
 val protoFile: File = File(repoRoot, "photon-core/protobuf/photon.proto")
 val descriptorFile: File = layout.buildDirectory.file("descriptor/photon.desc").get().asFile
-
-/*
- * Исходники моста подключаются НАПРЯМУЮ из photon-bindings/jvm: публикуемого
- * артефакта Kotlin-обёртки пока нет, и заводить его ради первого экрана —
- * решать больше, чем требует Phase 16 (ADR-051).
- *
- * Тестовые точки входа моста исключены: у каждой свой main(), и вместе с
- * приложением они дали бы несколько кандидатов на запуск.
- */
-sourceSets {
-    main {
-        java.srcDir(File(bridgeDir, "java"))
-        java.exclude("PhotonJniTest.java")
-        kotlin.srcDir(File(bridgeDir, "kotlin"))
-        kotlin.exclude("PhotonKotlinTest.kt", "PhotonEventsTest.kt")
-    }
-}
 
 application {
     mainClass.set("dev.photon.devtools.MainKt")

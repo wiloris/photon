@@ -1,6 +1,10 @@
 package dev.photon.devtools
 
-import dev.photon.core.Photon
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import dev.photon.sdk.PhotonEvent
+import java.time.Duration
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -14,9 +18,10 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * состояния и журнал проверялись без native и без сети, как у остальных
  * лабораторий.
  *
- * Разбор "type" из event_json — общий для всех лабораторий: eventType()
- * в EventType.kt. Прежде здесь была своя копия, как в LogView, NetworkLab
- * и ReconnectLab; технический долг сведён в один источник.
+ * События приходят типизированными: SDK отдаёт PhotonEvent, и разбора
+ * event_json здесь нет вовсе. Прежде тут была своя копия разбора "type" —
+ * как в LogView, NetworkLab и ReconnectLab; сначала долг свели в один
+ * источник, затем переход на SDK убрал и его (ADR-062 п. 7).
  */
 
 private val clock = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
@@ -51,16 +56,17 @@ class Dashboard(
     @Volatile var subscription: String = "нет подписки"
         private set
 
-    fun onEvent(json: String) {
-        val type = eventType(json) ?: "?"
+    fun onEvent(event: PhotonEvent) {
+        val type = label(event)
         // CONNECTED и NETWORK_CHANGED описывают ТОЛЬКО подписное соединение:
         // action-соединение подключается лениво и своего фонового жизненного
         // цикла не имеет (photon_core.h).
-        when (type) {
-            "CONNECTED" -> subscription = "CONNECTED (с ${stamp()})"
-            "NETWORK_CHANGED" -> subscription = "NETWORK_CHANGED — связь потеряна (${stamp()})"
+        when (event) {
+            is PhotonEvent.Connected -> subscription = "CONNECTED (с ${stamp()})"
+            is PhotonEvent.NetworkChanged -> subscription = "NETWORK_CHANGED — связь потеряна (${stamp()})"
+            else -> {}
         }
-        events.add("${stamp()}  $type  ${json.take(160)}")
+        events.add("${stamp()}  $type  ${event.raw.take(160)}")
         out("  ⚡ ${stamp()}  $type")
     }
 
@@ -74,10 +80,10 @@ class Dashboard(
      * Смешивать их значит терять различие между «связь сломана» и «сервер
      * сказал нет».
      */
-    fun send(p: Photon, action: Int, payload: String): String? =
+    fun send(client: PhotonClient, action: Int, payload: String): String? =
         // Классификация живёт в Outcome.kt и только там: Network Lab
         // пользуется той же, и две копии разошлись бы.
-        record(action, payload, call(p, action, payload))
+        record(action, payload, call(client, action, payload))
 
     /** Запись исхода уже состоявшегося [call]. Отделена от вызова ради тестов. */
     fun record(action: Int, payload: String, r: CallResult): String? {
@@ -119,5 +125,20 @@ fun abiInfo(packed: Int, expectedMajor: Int): AbiInfo {
     return AbiInfo(major, minor, major == expectedMajor)
 }
 
-fun dashboardConfig(endpoint: String, token: String) =
-    """{"bridge":{"endpoint":"$endpoint","session_token":"$token","connect_timeout_ms":15000,"call_timeout_ms":20000}}"""
+/**
+ * Конфигурация онлайн-режима.
+ *
+ * Собирается типизированно (ADR-062 п. 6): строковой сборки `config_json` в
+ * инструменте больше нет ни в одном месте — её было семь. Значения по
+ * умолчанию SDK не подставляет, поэтому заданные здесь таймауты — осознанный
+ * выбор инструмента, а не копия умолчаний ядра.
+ */
+fun dashboardConfig(endpoint: String, token: String): PhotonConfig =
+    PhotonConfig(
+        BridgeConfig(
+            endpoint = endpoint,
+            sessionToken = token,
+            connectTimeout = Duration.ofSeconds(15),
+            callTimeout = Duration.ofSeconds(20),
+        )
+    )

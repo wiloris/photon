@@ -138,8 +138,8 @@ class CryptoLabTest {
         val src = java.io.File(System.getProperty("photon.devtools.src"), "CryptoLab.kt").readText()
         listOf("java.security", "javax.crypto", "Signature.getInstance", "KeyPairGenerator")
             .forEach { assertTrue(!src.contains(it), "$it в лаборатории быть не должно") }
-        assertTrue(src.contains("dev.photon.core.Photon"),
-            "единственный вход в платформу — публичный мост")
+        assertTrue(src.contains("dev.photon.sdk.PhotonClient"),
+            "единственный вход в платформу — публичный API SDK (ADR-062 п. 7)")
     }
 
     /**

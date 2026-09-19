@@ -1,7 +1,11 @@
 package dev.photon.devtools
 
-import dev.photon.core.Photon
-import dev.photon.core.PhotonEventListener
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import dev.photon.sdk.PhotonEvent
+import dev.photon.sdk.TlsConfig
+import java.time.Duration
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.Callable
@@ -169,13 +173,13 @@ fun analyzeReconnect(
     return checks
 }
 
-/** Тип события из event_json в метку прогона. Разбор общий — eventType(). */
-fun eventKind(json: String): MarkKind =
-    when (eventType(json)) {
-        "CONNECTED" -> MarkKind.CONNECTED
-        "NETWORK_CHANGED" -> MarkKind.NETWORK_CHANGED
-        "MESSAGE" -> MarkKind.MESSAGE
-        else -> MarkKind.OTHER_EVENT
+/** Типизированное событие SDK в метку прогона. Разбора event_json здесь нет. */
+fun eventKind(event: PhotonEvent): MarkKind =
+    when (event) {
+        is PhotonEvent.Connected -> MarkKind.CONNECTED
+        is PhotonEvent.NetworkChanged -> MarkKind.NETWORK_CHANGED
+        is PhotonEvent.Message -> MarkKind.MESSAGE
+        is PhotonEvent.Unknown -> MarkKind.OTHER_EVENT
     }
 
 /** Число открытых дескрипторов процесса — наблюдение, а не порог. */
@@ -203,11 +207,19 @@ class ReconnectLab(private val endpoint: String, private val sessionId: String) 
 
     private fun host(): String = endpoint.substring(0, endpoint.lastIndexOf(':'))
 
-    private fun config(relayPort: Int) =
-        """{"bridge":{"endpoint":"127.0.0.1:$relayPort","session_token":"$sessionId",""" +
-            """"connect_timeout_ms":$connectTimeoutMs,"call_timeout_ms":$callTimeoutMs,""" +
-            """"event_backoff_min_ms":1000,"event_backoff_max_ms":5000,""" +
-            """"tls":{"server_name":"${host()}"}}}"""
+    private fun config(relayPort: Int) = PhotonConfig(
+        BridgeConfig(
+            endpoint = "127.0.0.1:$relayPort",
+            sessionToken = sessionId,
+            connectTimeout = Duration.ofMillis(connectTimeoutMs),
+            callTimeout = Duration.ofMillis(callTimeoutMs),
+            eventBackoffMin = Duration.ofSeconds(1),
+            eventBackoffMax = Duration.ofSeconds(5),
+            // Имя для TLS — настоящий хост Bridge: соединение идёт через
+            // локальный ретранслятор, и сертификат выписан не на 127.0.0.1.
+            tls = TlsConfig(serverName = host()),
+        )
+    )
 
     private fun mark(kind: MarkKind, detail: String = "") {
         marks.add(Mark(now(), kind, detail))
@@ -227,7 +239,7 @@ class ReconnectLab(private val endpoint: String, private val sessionId: String) 
         return count(kind) >= n
     }
 
-    private fun startProbe(p: Photon, label: String, cycle: Int, phase: ProbePhase): Pair<Long, Future<CallResult>> {
+    private fun startProbe(p: PhotonClient, label: String, cycle: Int, phase: ProbePhase): Pair<Long, Future<CallResult>> {
         val started = now()
         mark(MarkKind.ACTION, "→ $label (getMe)")
         return started to pool.submit(Callable { call(p, UsedActions.GET_ME, "{}") })
@@ -245,7 +257,7 @@ class ReconnectLab(private val endpoint: String, private val sessionId: String) 
         return probe
     }
 
-    private fun probe(p: Photon, label: String, cycle: Int, phase: ProbePhase) =
+    private fun probe(p: PhotonClient, label: String, cycle: Int, phase: ProbePhase) =
         finishProbe(startProbe(p, label, cycle, phase), label, cycle, phase)
 
     fun run(cycles: Int = 2) {
@@ -262,21 +274,19 @@ class ReconnectLab(private val endpoint: String, private val sessionId: String) 
         var fdAfter: Int? = null
 
         try {
-            val photon = Photon.create(config(relay.port))
-            photon.setEventListener(object : PhotonEventListener {
-                override fun onEvent(eventJson: String) {
-                    val c = inCallback.incrementAndGet()
-                    maxInCallback.accumulateAndGet(c) { a, b -> maxOf(a, b) }
-                    try {
-                        val kind = eventKind(eventJson)
-                        // Содержимое MESSAGE не печатается: там данные
-                        // пользователя, а лаборатории нужен только факт.
-                        mark(kind, if (kind == MarkKind.MESSAGE) "" else eventJson.take(120))
-                    } finally {
-                        inCallback.decrementAndGet()
-                    }
+            val photon = PhotonClient.create(config(relay.port))
+            photon.addEventListener { event ->
+                val c = inCallback.incrementAndGet()
+                maxInCallback.accumulateAndGet(c) { a, b -> maxOf(a, b) }
+                try {
+                    val kind = eventKind(event)
+                    // Содержимое MESSAGE не печатается: там данные
+                    // пользователя, а лаборатории нужен только факт.
+                    mark(kind, if (kind == MarkKind.MESSAGE) "" else event.raw.take(120))
+                } finally {
+                    inCallback.decrementAndGet()
                 }
-            })
+            }
 
             println("── подписка и действие до обрыва ────────────────")
             if (!waitFor(MarkKind.CONNECTED, 1, 30)) println("  ❌ CONNECTED не пришёл за 30 с")

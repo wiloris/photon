@@ -1,7 +1,10 @@
 package dev.photon.devtools
 
-import dev.photon.core.Photon
-import dev.photon.core.PhotonEventListener
+import dev.photon.sdk.BridgeConfig
+import dev.photon.sdk.PhotonClient
+import dev.photon.sdk.PhotonConfig
+import dev.photon.sdk.PhotonEventListener
+import java.time.Duration
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -125,15 +128,17 @@ class NetworkLab(private val endpoint: String, private val token: String) {
     private val events = ConcurrentLinkedQueue<EventMark>()
     private val startedAt = System.nanoTime()
 
-    private fun config() =
-        """{"bridge":{"endpoint":"$endpoint","session_token":"$token",""" +
-        """"connect_timeout_ms":15000,"call_timeout_ms":20000}}"""
+    private fun config() = PhotonConfig(
+        BridgeConfig(
+            endpoint = endpoint,
+            sessionToken = token,
+            connectTimeout = Duration.ofSeconds(15),
+            callTimeout = Duration.ofSeconds(20),
+        )
+    )
 
-    private fun listener() = object : PhotonEventListener {
-        override fun onEvent(eventJson: String) {
-            val type = eventType(eventJson) ?: "?"
-            events.add(EventMark(now(), type, (System.nanoTime() - startedAt) / 1_000_000))
-        }
+    private fun listener() = PhotonEventListener { event ->
+        events.add(EventMark(now(), label(event), (System.nanoTime() - startedAt) / 1_000_000))
     }
 
     /**
@@ -143,7 +148,7 @@ class NetworkLab(private val endpoint: String, private val token: String) {
      * меняющее состояние: сценарий можно гонять сколько угодно раз, не
      * оставляя следов на сервере.
      */
-    private fun serial(p: Photon, n: Int, name: String, note: String): Pair<ScenarioResult, List<Double>> {
+    private fun serial(p: PhotonClient, n: Int, name: String, note: String): Pair<ScenarioResult, List<Double>> {
         val results = ArrayList<CallResult>(n)
         val wall = System.nanoTime()
         repeat(n) { results.add(call(p, UsedActions.GET_ME, "{}")) }
@@ -153,7 +158,7 @@ class NetworkLab(private val endpoint: String, private val token: String) {
     }
 
     /** Конкурентные действия на одном инстансе: путь не должен становиться последовательным. */
-    private fun concurrent(p: Photon, threads: Int, perThread: Int): ScenarioResult {
+    private fun concurrent(p: PhotonClient, threads: Int, perThread: Int): ScenarioResult {
         val results = ConcurrentLinkedQueue<CallResult>()
         val ready = CountDownLatch(threads)
         val go = CountDownLatch(1)
@@ -177,8 +182,8 @@ class NetworkLab(private val endpoint: String, private val token: String) {
         println("Network Lab — $endpoint")
         println("путь: Kotlin → JNI → C ABI → Photon Core; новых действий и возможностей ABI нет\n")
 
-        Photon.create(config()).use { p ->
-            p.setEventListener(listener())
+        PhotonClient.create(config()).use { p ->
+            p.addEventListener(listener())
             println("  слушатель установлен, подписка запущена")
 
             // 1. Базовая серия.

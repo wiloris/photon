@@ -1,5 +1,7 @@
 package dev.photon.devtools
 
+import dev.photon.sdk.PhotonEvent
+
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -271,12 +273,14 @@ class ReconnectLabTest {
         assertTrue("close() вернулся в срок" in failed(analyze(close = s(20.0))))
     }
 
+    /** Типизированное событие SDK → метка прогона. Разбора конверта здесь нет. */
     @Test
-    fun `тип события разбирается из event_json`() {
-        assertEquals(MarkKind.CONNECTED, eventKind("""{"type":"CONNECTED"}"""))
-        assertEquals(MarkKind.NETWORK_CHANGED, eventKind("""{"type": "NETWORK_CHANGED","state":"disconnected"}"""))
-        assertEquals(MarkKind.MESSAGE, eventKind("""{"type":"MESSAGE","data":{}}"""))
-        assertEquals(MarkKind.OTHER_EVENT, eventKind("""{"x":1}"""))
+    fun `тип события отображается в метку прогона`() {
+        assertEquals(MarkKind.CONNECTED, eventKind(PhotonEvent.Connected("{}")))
+        assertEquals(MarkKind.NETWORK_CHANGED, eventKind(PhotonEvent.NetworkChanged("disconnected", "{}")))
+        assertEquals(MarkKind.MESSAGE, eventKind(PhotonEvent.Message("posted", null, null, "{}")))
+        assertEquals(MarkKind.OTHER_EVENT, eventKind(PhotonEvent.Unknown("PLUGIN_EVENT", "{}")))
+        assertEquals(MarkKind.OTHER_EVENT, eventKind(PhotonEvent.Unknown(null, "не json")))
     }
 
     // ── структурные границы ──────────────────────────────────────────────────
@@ -292,10 +296,12 @@ class ReconnectLabTest {
     }
 
     @Test
-    fun `инстанс создаётся существующим конфигом, а не новым API`() {
+    fun `инстанс создаётся публичным API SDK и смотрит в ретранслятор`() {
         val lab = src("ReconnectLab.kt")
-        assertTrue(lab.contains("Photon.create(") && lab.contains("\"server_name\""))
-        assertNotNull(Regex("\"endpoint\":\"127\\.0\\.0\\.1:").find(lab))
+        assertTrue(lab.contains("PhotonClient.create("), "инстанс обязан создаваться через SDK")
+        assertTrue(lab.contains("serverName = host()"), "имя для TLS — настоящий хост Bridge")
+        assertNotNull(Regex("""endpoint = "127\.0\.0\.1:""").find(lab),
+            "адрес обязан указывать на локальный ретранслятор")
     }
 
     /** Границы проверки обязаны быть названы в отчёте, а не подразумеваться. */

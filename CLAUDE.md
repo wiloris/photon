@@ -20,7 +20,7 @@
 0. `CURRENT_TASK.md` — над чем идёт работа прямо сейчас. Читать первым.
 1. `ROADMAP.md` — 25 фаз со статусами. Источник истины о том, что сделано.
 2. `ARCHITECTURE.md` — как всё устроено вместе.
-3. `DECISIONS.md` — **61 ADR**. Не перечитывать целиком: смотреть те, что
+3. `DECISIONS.md` — **63 ADR**. Не перечитывать целиком: смотреть те, что
    упомянуты в коде и спецификациях.
 4. `REPOSITORY.md` — структура репозиториев.
 5. `IMPLEMENTATION_LOG.md` в каждом реализованном пакете — почему решения приняты
@@ -134,7 +134,7 @@
 
 **JVM-сторона считается своими прогонами, а не этим методом** (у неё другой
 инструмент): `photon-bindings/jvm` — **32** Java + **14** Kotlin + **23**
-события против живого Bridge; `photon-developer-tools` — **102** (`gradle
+события против живого Bridge; `photon-developer-tools` — **103** (`gradle
 test`: Network Lab 8, Inspector 8, Logging 7, Performance 7, Storage Lab 14,
 Crypto Lab 12, Plugin Lab 15, Reconnect Lab 19, Dashboard 12; было 30 до
 Storage/Crypto/Plugin Lab, 85 до тестов Dashboard, 97 до B4b).
