@@ -119,6 +119,41 @@ var (
 
 	// ErrEmptyBlock — блок без записей и без якоря не доказывает ничего.
 	ErrEmptyBlock = errors.New("localfeed: block without records and without anchor proves nothing")
+
+	// ErrUnknownDirection — Dir вне трёх известных значений (ADR-065 п. 3.7).
+	//
+	// Direction — int, и до ADR-065 ветка default в coverage трактовала
+	// НЕИЗВЕСТНОЕ направление как DirNewest. Для внутреннего вызывающего это
+	// было безобидно: значения приходили константами пакета. Для внешнего
+	// опечатка молча превращалась в утверждение о полноте — худший вид
+	// ошибки, потому что он не отличим от правильной работы.
+	ErrUnknownDirection = errors.New("localfeed: unknown block direction")
+
+	// ErrAnchorNotAllowed — якорь при DirNewest (ADR-065 п. 3.8).
+	//
+	// «Самые свежие» — запрос БЕЗ курсора, и якоря у него нет по построению.
+	// Якорь, приложенный к такому блоку, раньше молча расширял покрытие до
+	// своей позиции: сегмент объявлял полноту участка, о котором блок не
+	// говорил ничего. Противоречие внутри самого утверждения, и распознаётся
+	// оно без обращения к серверу.
+	ErrAnchorNotAllowed = errors.New("localfeed: anchor is not allowed for DirNewest")
+
+	// ErrRecordCrossesAnchor — запись лежит не по ту сторону якоря, какую
+	// объявляет направление (ADR-065 п. 3.9).
+	//
+	// Сервер отсчитывает от якоря: after отдаёт записи НОВЕЕ его, before —
+	// СТАРШЕ. Блок, нарушающий это, противоречит сам себе, и Core обязан
+	// такое видеть: сравнение позиций у него уже есть, и оно заморожено
+	// (Position.newerThan, ADR-052). Проверка ловит перепутанные местами
+	// before/after — ошибку, которую живой прогон уже однажды ловил с другого
+	// конца (docs/feed-catchup.md §7).
+	//
+	// РАВНАЯ ЯКОРЮ запись нарушением НЕ считается, и это не послабление.
+	// Включать якорь в блок — законный и уже применяемый приём: иначе сегмент
+	// обещал бы полноту до позиции, записи которой в хранилище нет
+	// (cmd/feedslice.runSeedOld). Строгое сравнение сломало бы работающий
+	// сценарий, ничего не поймав взамен.
+	ErrRecordCrossesAnchor = errors.New("localfeed: record lies on the wrong side of the anchor")
 )
 
 // segmentsKey — ключ списка сегментов канала.
@@ -179,15 +214,26 @@ func normalize(segs []Segment) []Segment {
 
 // coverage — какой участок доказал блок.
 func coverage(b Block, recs []Record) (Segment, error) {
+	// Направление проверяется ПЕРЕЧИСЛЕНИЕМ, а не через default: неизвестное
+	// значение обязано отвергаться, а не получать поведение какого-то из
+	// известных (ADR-065 п. 3.7).
 	switch b.Dir {
+	case DirNewest:
+		if b.Anchor != nil {
+			return Segment{}, ErrAnchorNotAllowed
+		}
+		if len(recs) == 0 {
+			return Segment{}, ErrEmptyBlock
+		}
 	case DirAfter, DirBefore:
 		if b.Anchor == nil {
 			return Segment{}, ErrAnchorRequired
 		}
-	default:
-		if len(recs) == 0 {
-			return Segment{}, ErrEmptyBlock
+		if err := checkAnchorSide(b.Dir, *b.Anchor, recs); err != nil {
+			return Segment{}, err
 		}
+	default:
+		return Segment{}, fmt.Errorf("%w: %d", ErrUnknownDirection, int(b.Dir))
 	}
 
 	var seg Segment
@@ -213,6 +259,33 @@ func coverage(b Block, recs []Record) (Segment, error) {
 		}
 	}
 	return seg, nil
+}
+
+// checkAnchorSide — направленная согласованность блока с якорем.
+//
+// Сравнение берётся замороженное (Position.newerThan, ADR-052) и никакого
+// второго порядка не заводится: разойдясь с ним, проверка стала бы отвергать
+// то, что обход ключей считает правильным.
+//
+// Границы включительные — равная якорю запись законна, см. комментарий
+// ErrRecordCrossesAnchor.
+func checkAnchorSide(dir Direction, anchor Position, recs []Record) error {
+	for _, r := range recs {
+		p := Position{OrderKey: r.OrderKey, ID: r.ID}
+		switch dir {
+		case DirAfter:
+			if anchor.newerThan(p) {
+				return fmt.Errorf("%w: DirAfter, record %q (order %d) is older than anchor %q (order %d)",
+					ErrRecordCrossesAnchor, r.ID, r.OrderKey, anchor.ID, anchor.OrderKey)
+			}
+		case DirBefore:
+			if p.newerThan(anchor) {
+				return fmt.Errorf("%w: DirBefore, record %q (order %d) is newer than anchor %q (order %d)",
+					ErrRecordCrossesAnchor, r.ID, r.OrderKey, anchor.ID, anchor.OrderKey)
+			}
+		}
+	}
+	return nil
 }
 
 // applyBlock — алгебра слияния. Отделена от хранилища намеренно: свойство

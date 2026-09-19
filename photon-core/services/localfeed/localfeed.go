@@ -32,6 +32,31 @@ const SchemaVersion = 1
 
 var ErrEmptyChannel = errors.New("localfeed: channel id is required")
 
+// ErrEmptyRecordID — запись без идентификатора (ADR-065 п. 3.6).
+//
+// До ADR-065 проверки не было НИ ОДНОЙ, и защита жила у вызывающего:
+// cmd/feedslice.recordsFrom отбрасывает идентификатор из order, которого нет в
+// posts, и объясняет почему — пустой ID даёт запись, которая всегда самая
+// старая (OrderKey 0 инвертируется в максимум) и ни к чему у источника не
+// относится. Пока вызывающим был собственный CLI, дисциплины хватало; с
+// появлением клиента через ABI её не хватает, потому что испорченную ленту
+// нечем чинить: localfeed не удаляет ничего (ADR-054, ADR-060).
+var ErrEmptyRecordID = errors.New("localfeed: record id is required")
+
+// validateRecords — структурные проверки записей, общие для Put и Ingest.
+//
+// Вызывается ДО открытия транзакции: писать блок, о котором уже известно, что
+// он негоден, значило бы держать единственный на хранилище writer-лок ради
+// заведомого отката.
+func validateRecords(recs []Record) error {
+	for i, r := range recs {
+		if r.ID == "" {
+			return fmt.Errorf("%w: record #%d", ErrEmptyRecordID, i)
+		}
+	}
+	return nil
+}
+
 // Record — единица синхронизации среза.
 //
 // Тело непрозрачно: Core не разбирает и не валидирует его как домен. Порядок
@@ -167,6 +192,9 @@ func (s *Store) Put(ctx context.Context, channelID string, recs []Record) error 
 	if channelID == "" {
 		return ErrEmptyChannel
 	}
+	if err := validateRecords(recs); err != nil {
+		return err
+	}
 	return s.st.Update(ctx, func(tx ports.WriteTx) error {
 		for _, r := range recs {
 			v, err := encode(r)
@@ -242,6 +270,9 @@ type IngestResult struct {
 func (s *Store) Ingest(ctx context.Context, channelID string, b Block) (IngestResult, error) {
 	if channelID == "" {
 		return IngestResult{}, ErrEmptyChannel
+	}
+	if err := validateRecords(b.Records); err != nil {
+		return IngestResult{}, err
 	}
 
 	var res IngestResult
