@@ -117,6 +117,14 @@ const (
 	// сервер его исполняет, а потому, что Dispatch принимает любое число с
 	// провода и обязан иметь для него ЯВНОЕ правило отказа.
 	ActionLocalFeedPage = int(photonpb.Action_ACTION_LOCAL_FEED_PAGE)
+
+	// Запись в локальную ленту (ADR-065). Причина объявления та же, что у
+	// 800, и она не про сервер: записи эти действия делают в хранилище
+	// КЛИЕНТА, до Bridge не доходят вовсе, и правило отказа нужно ровно
+	// потому, что число с провода может прийти любое.
+	ActionLocalFeedPut       = int(photonpb.Action_ACTION_LOCAL_FEED_PUT)
+	ActionLocalFeedIngest    = int(photonpb.Action_ACTION_LOCAL_FEED_INGEST)
+	ActionLocalFeedGapAnchor = int(photonpb.Action_ACTION_LOCAL_FEED_GAP_ANCHOR)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

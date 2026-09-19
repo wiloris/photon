@@ -482,7 +482,10 @@ var rules = map[int]rule{
 	ActionMediaGetInfo:  {objMedia, readC()},
 
 	// ── LocalFeed: сервер не исполняет, отказ всегда ──
-	ActionLocalFeedPage: {objNone, notServedHere()},
+	ActionLocalFeedPage:      {objNone, notServedHere()},
+	ActionLocalFeedPut:       {objNone, notServedHere()},
+	ActionLocalFeedIngest:    {objNone, notServedHere()},
+	ActionLocalFeedGapAnchor: {objNone, notServedHere()},
 
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},

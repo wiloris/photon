@@ -50,9 +50,9 @@ class InspectorTest {
         // источник кодов остаётся один, и Inspector обязан их показывать.
         assertEquals(800, byName["ACTION_LOCAL_FEED_PAGE"])
 
-        // 61 значение, из них одно UNSPECIFIED — 60 реальных кодов.
-        assertEquals(61, action.valueCount)
-        assertEquals(60, action.valueList.count { it.number != 0 })
+        // 64 значения, из них одно UNSPECIFIED — 63 реальных кода.
+        assertEquals(64, action.valueCount)
+        assertEquals(63, action.valueList.count { it.number != 0 })
     }
 
     @Test
