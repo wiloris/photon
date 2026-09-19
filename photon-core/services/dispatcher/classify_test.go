@@ -1,11 +1,14 @@
 package dispatcher
 
 import (
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
 
+	"github.com/wiloris/photon-core/services/localfeed"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -48,11 +51,31 @@ var known = map[string]error{
 	"ErrBodyLengthRequired": session.ErrBodyLengthRequired,
 	"ErrBodyTruncated":      session.ErrBodyTruncated,
 	"ErrBodyLengthInvalid":  session.ErrBodyLengthInvalid,
+
+	// Инварианты локальной ленты (ADR-065). Четыре нижних добавлены самим
+	// ADR-065; три верхних существовали с первого среза Phase 12 и были
+	// неклассифицированы всё это время — их не «прихватили по дороге», а
+	// внесли потому, что оставить три из семи значило бы объявить полноту,
+	// которой нет.
+	"ErrEmptyChannel":        localfeed.ErrEmptyChannel,
+	"ErrAnchorRequired":      localfeed.ErrAnchorRequired,
+	"ErrEmptyBlock":          localfeed.ErrEmptyBlock,
+	"ErrEmptyRecordID":       localfeed.ErrEmptyRecordID,
+	"ErrUnknownDirection":    localfeed.ErrUnknownDirection,
+	"ErrAnchorNotAllowed":    localfeed.ErrAnchorNotAllowed,
+	"ErrRecordCrossesAnchor": localfeed.ErrRecordCrossesAnchor,
 }
 
 func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
 	names := sentinelNames(t, "../session/errors.go")
 	names = append(names, sentinelNames(t, "errors.go")...)
+
+	// localfeed добавлен с ADR-065: его инварианты доходят до границы ABI так
+	// же, как ошибки сессии, и sentinel без строки в classTable уехал бы в
+	// PHOTON_ERR_INTERNAL ровно с тем же результатом — невнятное «internal
+	// error» у клиента, которому на самом деле надо чинить payload.
+	names = append(names, sentinelNames(t, "../localfeed/localfeed.go")...)
+	names = append(names, sentinelNames(t, "../localfeed/segments.go")...)
 
 	for _, name := range names {
 		err, ok := known[name]
@@ -154,3 +177,111 @@ func TestClassifyMapping(t *testing.T) {
 type errUnknownForTest struct{}
 
 func (errUnknownForTest) Error() string { return "нечто своё" }
+
+// ── Инварианты локальной ленты на границе ABI (ADR-065 п. 8) ────────────
+
+// Класс каждого sentinel'а localfeed.
+//
+// Отдельным тестом, а не строками в TestClassifyMapping: у этих ошибок общий
+// довод — все они означают «вызывающий прислал противоречивый блок», — и
+// проверять его лучше там, где он записан один раз.
+func TestClassifyLocalfeedSentinels(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"пустой канал", localfeed.ErrEmptyChannel, ClassInvalidArgument},
+		{"пустой id записи", localfeed.ErrEmptyRecordID, ClassInvalidArgument},
+		{"нет якоря для after/before", localfeed.ErrAnchorRequired, ClassInvalidArgument},
+		{"пустой блок без якоря", localfeed.ErrEmptyBlock, ClassInvalidArgument},
+		{"неизвестное направление", localfeed.ErrUnknownDirection, ClassInvalidArgument},
+		{"якорь при newest", localfeed.ErrAnchorNotAllowed, ClassInvalidArgument},
+		{"запись не по ту сторону якоря", localfeed.ErrRecordCrossesAnchor, ClassInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.err); got != tc.want {
+				t.Fatalf("Classify(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+			// Полнота отдельно от правильности: строка обязана быть НАЙДЕНА,
+			// а не совпасть с ClassInternal по умолчанию. Без этой проверки
+			// удаление строки прошло бы незамеченным для всех семи, потому
+			// что ClassInternal и «не нашлось» неразличимы по одному классу.
+			if _, found := classifyKnown(tc.err); !found {
+				t.Fatalf("%v не найден в classTable — класс совпал случайно", tc.err)
+			}
+		})
+	}
+}
+
+// Ошибка, дошедшая через localfeed.Ingest, обёрнута им самим
+// (fmt.Errorf("localfeed: ingest: %w", err)). Классификация обязана пережить
+// обёртку: она идёт по errors.Is, а не по тексту (ADR-033).
+func TestClassifyLocalfeedSentinelThroughIngestWrap(t *testing.T) {
+	err := fmt.Errorf("localfeed: ingest: %w", localfeed.ErrRecordCrossesAnchor)
+	if got := Classify(err); got != ClassInvalidArgument {
+		t.Fatalf("класс %v, ожидался ClassInvalidArgument", got)
+	}
+}
+
+// Оборачивание среза 3 сохраняет ОБА: класс и исходный sentinel.
+//
+// Проверяется на настоящем wrapFeedWriteError, а не на собранной здесь копии
+// его формата: копия разошлась бы с оригиналом молча, и тест продолжил бы
+// зеленеть, проверяя сам себя.
+func TestClassifyWrappedFeedErrorKeepsSentinel(t *testing.T) {
+	for _, sentinel := range []error{
+		localfeed.ErrEmptyChannel,
+		localfeed.ErrEmptyRecordID,
+		localfeed.ErrAnchorRequired,
+		localfeed.ErrEmptyBlock,
+		localfeed.ErrUnknownDirection,
+		localfeed.ErrAnchorNotAllowed,
+		localfeed.ErrRecordCrossesAnchor,
+	} {
+		wrapped := wrapFeedWriteError(sentinel)
+		if !errors.Is(wrapped, sentinel) {
+			t.Fatalf("после оборачивания errors.Is не находит %v: %v", sentinel, wrapped)
+		}
+		if got := Classify(wrapped); got != ClassInvalidArgument {
+			t.Fatalf("класс обёрнутой %v = %v, ожидался ClassInvalidArgument", sentinel, got)
+		}
+	}
+}
+
+// Порядок строк значим, и вот случай, ради которого он выбран.
+//
+// Если новый sentinel localfeed забудут внести в feedWriteArgErrors, ошибка
+// придёт обёрнутой как сбой хранилища, сохранив исходную причину внутри.
+// Такая ошибка Is-совместима СРАЗУ С ДВУМЯ строками таблицы, и побеждать
+// обязана конкретная причина: вызывающий должен узнать, что чинить payload, а
+// не диск.
+func TestClassifyLocalfeedSentinelWinsOverStorageWrapper(t *testing.T) {
+	both := fmt.Errorf("%w: %w", ErrStorageUnavailable, localfeed.ErrUnknownDirection)
+
+	if !errors.Is(both, ErrStorageUnavailable) || !errors.Is(both, localfeed.ErrUnknownDirection) {
+		t.Fatal("стенд построен неверно: ошибка обязана совпадать с обеими строками")
+	}
+	if got := Classify(both); got != ClassInvalidArgument {
+		t.Fatalf("класс %v, ожидался ClassInvalidArgument — общая обёртка победила конкретную причину", got)
+	}
+}
+
+// Поведение для непредусмотренной ошибки не изменилось: новые строки его не
+// затронули. Проверяется и класс, и признак «не найдено» — без второго
+// ClassInternal по умолчанию неотличим от ClassInternal по таблице.
+func TestClassifyUnknownErrorUnchangedAfterLocalfeedRows(t *testing.T) {
+	unknown := errors.New("localfeed: нечто, чего в таблице нет")
+
+	if got, found := classifyKnown(unknown); found || got != ClassInternal {
+		t.Fatalf("classifyKnown = (%v, %v), ожидалось (ClassInternal, false)", got, found)
+	}
+	if got := Classify(unknown); got != ClassInternal {
+		t.Fatalf("Classify = %v, ожидался ClassInternal", got)
+	}
+	// Сбой хранилища без узнаваемой причины остаётся внутренней ошибкой.
+	if got := Classify(wrapFeedWriteError(unknown)); got != ClassInternal {
+		t.Fatalf("обёрнутая неизвестная ошибка → %v, ожидался ClassInternal", got)
+	}
+}

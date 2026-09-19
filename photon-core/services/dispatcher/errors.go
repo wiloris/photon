@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/wiloris/photon-core/services/localfeed"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -100,6 +101,30 @@ var classTable = []struct {
 	{session.ErrNoResourceForAction, ClassInvalidAction},
 	{session.ErrInvalidPayload, ClassInvalidArgument},
 	{ErrNoEndpoint, ClassNotConnected},
+
+	// Инварианты локальной ленты (ADR-065 п. 8). Все семь — ошибки
+	// ВЫЗЫВАЮЩЕГО по тому же критерию, которым пользуется вся таблица: есть
+	// ли что исправлять в вызове. Есть: блок противоречит сам себе, и повтор
+	// с тем же payload даст тот же отказ.
+	//
+	// Строки стоят ВЫШЕ ErrStorageUnavailable, и это не оформление. Локальная
+	// запись оборачивает ошибку в один из двух классов (local.go,
+	// wrapFeedWriteError), и если новый sentinel забудут внести в его список,
+	// ошибка придёт обёрнутой как сбой хранилища, сохранив исходный sentinel
+	// внутри. Побеждает первое совпадение — значит выигрывает конкретная
+	// причина, а не общая обёртка, и вызывающий узнаёт, что чинить payload, а
+	// не диск. Тот же принцип, по которому sentinel'ы сессии стоят выше
+	// context.*.
+	//
+	// Своего класса здесь не заводится: ClassInvalidArgument описывает ровно
+	// это и уже отображён на PHOTON_ERR_INVALID_ARGUMENT.
+	{localfeed.ErrEmptyChannel, ClassInvalidArgument},
+	{localfeed.ErrEmptyRecordID, ClassInvalidArgument},
+	{localfeed.ErrAnchorRequired, ClassInvalidArgument},
+	{localfeed.ErrEmptyBlock, ClassInvalidArgument},
+	{localfeed.ErrUnknownDirection, ClassInvalidArgument},
+	{localfeed.ErrAnchorNotAllowed, ClassInvalidArgument},
+	{localfeed.ErrRecordCrossesAnchor, ClassInvalidArgument},
 
 	// Потоковая передача. Все четыре — ошибки АРГУМЕНТА или КАДРА, а не
 	// связи: повторять вызов с теми же параметрами бессмысленно, и класс
