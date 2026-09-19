@@ -36,6 +36,21 @@ internal class FakeNativeSession : NativeSession {
     /** Признак «идёт доставка» — им close() и ждёт, как настоящий Destroy. */
     private val inDelivery = AtomicInteger(0)
 
+    /**
+     * Поток, на котором прямо сейчас идёт доставка.
+     *
+     * Нужен для одного свойства настоящего ABI: `Photon_Destroy`
+     * РЕЕНТЕРАБЕЛЕН — вызванный из колбэка, он опознаёт свой поток сравнением
+     * идентификаторов и возвращается немедленно, не дожидаясь сам себя
+     * (event-delivery.md §10.2, `photon_jni.c`). Живой прогон 2026-09-18
+     * измерил этот возврат: 25 мс.
+     *
+     * Без модели реентерабельности шов повесил бы тест на себе же, и
+     * проверка `close()` из обработчика ошибок проверяла бы дефект стенда, а
+     * не поведение SDK.
+     */
+    private val deliveryThread = AtomicReference<Thread?>(null)
+
     /** Если задан, close() ждёт его, имитируя ожидание колбэка. */
     @Volatile var closeGate: CountDownLatch? = null
 
@@ -54,6 +69,10 @@ internal class FakeNativeSession : NativeSession {
 
     override fun close() {
         closes.incrementAndGet()
+        // Реентерабельный путь: вызов ИЗ колбэка возвращается сразу. Ждать
+        // здесь значило бы ждать самого себя.
+        if (deliveryThread.get() === Thread.currentThread()) return
+
         // Настоящий Photon_Destroy возвращается только после завершения
         // идущего колбэка — воспроизводим это, иначе тест на дедлок ничего
         // бы не проверял.
@@ -65,9 +84,11 @@ internal class FakeNativeSession : NativeSession {
     fun emit(eventJson: String) {
         val cb = callback.get() ?: return
         inDelivery.incrementAndGet()
+        deliveryThread.set(Thread.currentThread())
         try {
             cb.onEvent(eventJson)
         } finally {
+            deliveryThread.set(null)
             inDelivery.decrementAndGet()
         }
     }

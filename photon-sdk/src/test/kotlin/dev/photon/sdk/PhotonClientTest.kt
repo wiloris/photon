@@ -3,6 +3,7 @@ package dev.photon.sdk
 import dev.photon.core.PhotonException
 import dev.photon.core.PhotonNative
 import java.time.Duration
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,6 +41,7 @@ class PhotonClientTest {
         PhotonClient.createWith(PhotonConfig()) { fake } to fake
 
     private val connected = """{"type":"CONNECTED"}"""
+    private val message = """{"type":"MESSAGE","event":"posted","data":{"a":1}}"""
 
     // ── Создание ─────────────────────────────────────────────────────────
 
@@ -298,6 +300,91 @@ class PhotonClientTest {
         assertFalse(closer.isAlive, "close() не вернулся — дедлок")
         assertFalse(emitter.isAlive, "доставка не завершилась — дедлок")
         assertTrue(addThrew.get(), "add из колбэка закрываемого клиента обязан бросить IllegalStateException")
+    }
+
+    // ── §3.4 п. 7: close() из обработчика ошибок ─────────────────────────
+
+    /**
+     * Спецификация §3.4 п. 7 объявляет `close()` из обработчика допустимым, а
+     * §8 L6 — что после возврата из `Destroy` доставок нет. До этого теста
+     * оба свойства держались только живым прогоном 2026-09-18 (возврат за
+     * 25 мс), оснастка которого в репозиторий не вошла.
+     *
+     * Шов моделирует реентерабельный `Photon_Destroy`: вызов из колбэка
+     * возвращается сразу, не дожидаясь сам себя.
+     */
+    @Test
+    fun `close из обработчика ошибок возвращает управление и не даёт новых доставок`() {
+        val fake = FakeNativeSession()
+        val client = PhotonClient.createWith(PhotonConfig()) { fake }
+
+        val handlerReturned = AtomicBoolean(false)
+        val closeThrew = AtomicReference<Throwable?>(null)
+        Thread.setDefaultUncaughtExceptionHandler { _, _ ->
+            closeThrew.set(runCatching { client.close() }.exceptionOrNull())
+            handlerReturned.set(true)
+        }
+
+        val afterClose = AtomicInteger(0)
+        client.addEventListener { if (it is PhotonEvent.Message) throw IllegalStateException("отказ") }
+        client.addEventListener { afterClose.incrementAndGet() }
+
+        // Доставка идёт на этом же потоке: если close() внутри обработчика
+        // повиснет, тест не вернётся вовсе — и это правильный способ
+        // обнаружить дедлок, а не таймаут с мягким сообщением.
+        fake.emit(message)
+
+        assertTrue(handlerReturned.get(), "обработчик не вернул управление — close() повис")
+        assertNull(closeThrew.get(), "close() из обработчика бросил: ${closeThrew.get()}")
+        assertEquals(1, fake.closes.get(), "Photon_Destroy вызван не один раз")
+
+        // Остаток снимка отработал: отменить идущую доставку ядро не может и
+        // не обещает (§3.4 п. 7).
+        assertEquals(1, afterClose.get(), "слушатель после бросившего не получил событие")
+
+        // А новых доставок больше нет — клиент закрыт.
+        val before = afterClose.get()
+        fake.emit(message)
+        assertEquals(before, afterClose.get(), "после close() пришла новая доставка")
+    }
+
+    /**
+     * §3.4, конец: слушатель, идущий следом за закрытием, обращается к уже
+     * закрытому клиенту и получает `IllegalStateException` — это ОБЫЧНОЕ
+     * исключение слушателя, и оно идёт тем же путём п. 1–6, то есть попадает
+     * тому же обработчику. Цепочка конечна.
+     */
+    @Test
+    fun `отказ слушателя на уже закрытом инстансе идёт тем же путём`() {
+        val fake = FakeNativeSession()
+        val client = PhotonClient.createWith(PhotonConfig()) { fake }
+
+        val reported = CopyOnWriteArrayList<Throwable>()
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            reported.add(e)
+            // Закрываем ровно один раз, на первом отказе.
+            if (reported.size == 1) client.close()
+        }
+
+        val lastRan = AtomicBoolean(false)
+        client.addEventListener { if (it is PhotonEvent.Message) throw IllegalStateException("первый отказ") }
+        client.addEventListener {
+            // Клиент уже закрыт обработчиком — вызов обязан бросить.
+            client.sendAction(200, "{}")
+        }
+        client.addEventListener { lastRan.set(true) }
+
+        fake.emit(message)
+
+        assertEquals(2, reported.size, "обработчик получил не оба отказа: $reported")
+        assertIs<IllegalStateException>(reported[0])
+        val second = assertIs<IllegalStateException>(reported[1])
+        assertTrue(
+            second.message!!.contains("Photon client is closed"),
+            "второй отказ пришёл не от закрытого клиента: ${second.message}"
+        )
+        assertTrue(lastRan.get(), "цепочка оборвала доставку остатку снимка")
+        assertEquals(1, fake.closes.get(), "close() вызван повторно — цепочка не конечна")
     }
 
     // ── §9: действия ─────────────────────────────────────────────────────
