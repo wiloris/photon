@@ -20,6 +20,19 @@ var (
 	// PHOTON_ERR_INVALID_ARGUMENT, потому что хендл уходит и повторять вызов
 	// не на чем.
 	ErrClosed = errors.New("dispatcher: closed")
+
+	// ErrNoStorage — у инстанса нет локального backend (ADR-064 п. 1.5).
+	// Отсутствие секции storage ошибкой создания НЕ является: инстанс
+	// законен и сетевые действия исполняет. Локальное действие на таком
+	// инстансе получает этот отказ — ровно как сетевое получает
+	// ErrNoEndpoint на инстансе без адреса Bridge.
+	ErrNoStorage = errors.New("dispatcher: local storage is not configured")
+
+	// ErrStorageUnavailable — путь задан и годен, а хранилище по нему
+	// открыть или мигрировать не удалось: права, блокировка другим
+	// процессом, повреждение (ADR-064 п. 1.6). Отличается от негодной
+	// конфигурации: проверять вызывающему нечего, конфигурация верна.
+	ErrStorageUnavailable = errors.New("dispatcher: local storage is unavailable")
 )
 
 // Class — класс исхода вызова, из которого граница ABI получает PhotonResult.
@@ -107,6 +120,14 @@ var classTable = []struct {
 	// переподключится (D-3, §7.1).
 	{session.ErrNotReady, ClassNotConnected},
 	{session.ErrConnectionLost, ClassNotConnected},
+
+	// Локального backend нет. Как и ErrNoEndpoint, это не ошибка аргументов:
+	// действие названо верно, исполнять его нечем.
+	{ErrNoStorage, ClassNotConnected},
+
+	// Хранилище есть в конфигурации, но недоступно. Повтор вызова не
+	// поможет, и это не вина параметров — INTERNAL.
+	{ErrStorageUnavailable, ClassInternal},
 
 	// Хендл уходит — повторять не на чем.
 	{ErrClosed, ClassInvalidArgument},

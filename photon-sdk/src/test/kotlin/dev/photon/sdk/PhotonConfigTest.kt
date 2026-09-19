@@ -152,6 +152,36 @@ class PhotonConfigTest {
         )
     }
 
+    // ── секция storage (ADR-064) ─────────────────────────────────────────
+
+    @Test
+    fun `секция storage сериализуется отдельно от bridge`() {
+        // Отдельная секция, а не поле внутри bridge: хранилище к Bridge
+        // отношения не имеет (ADR-064 п. 1.2).
+        assertEquals(
+            """{"storage":{"path":"/tmp/photon/feed.db"}}""",
+            PhotonConfig(storage = StorageConfig(path = "/tmp/photon/feed.db")).toJson()
+        )
+    }
+
+    @Test
+    fun `bridge и storage сосуществуют в одном конфиге`() {
+        val json = PhotonConfig(
+            bridge = BridgeConfig(endpoint = "h:1"),
+            storage = StorageConfig(path = "/tmp/f.db"),
+        ).toJson()
+        assertEquals("""{"bridge":{"endpoint":"h:1"},"storage":{"path":"/tmp/f.db"}}""", json)
+    }
+
+    @Test
+    fun `конфиг без storage секции её не пишет`() {
+        // Отсутствие локального backend — законное состояние, и выражается
+        // отсутствием секции, а не пустой строкой пути.
+        val json = PhotonConfig(BridgeConfig(endpoint = "h:1")).toJson()
+        assertFalse(json.contains("storage"), json)
+    }
+
+
     // ── raw ──────────────────────────────────────────────────────────────
 
     @Test

@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon-core/services/localfeed"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -42,6 +43,14 @@ type Dispatcher struct {
 	// может быть общим для нескольких потребителей, и закрыть чужое — способ
 	// сломать соседа.
 	ownTransport bool
+
+	// Локальный backend (ADR-064). st — хранилище инстанса, feed — лента
+	// поверх него; nil у обоих означает «backend не настроен», законное
+	// состояние. ownStorage — закрывать ли его при Close, по тому же
+	// правилу, что ownTransport выше.
+	st         ports.Storage
+	feed       *localfeed.Store
+	ownStorage bool
 
 	// ctx живёт столько же, сколько инстанс. Отмена — единственный способ
 	// снять с сети вызовы в полёте, не дожидаясь их таймаутов (§9).
@@ -90,15 +99,32 @@ func New(cfg Config) (*Dispatcher, error) {
 	d := &Dispatcher{cfg: cfg}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 
+	// Хранилище открывается ДО сессии и независимо от неё: инстанс может
+	// иметь локальный backend без Bridge и Bridge без backend (ADR-064).
+	st, own, err := openStorage(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if st != nil {
+		feed, ferr := prepareFeed(d.ctx, st)
+		if ferr != nil {
+			if own {
+				_ = st.Close(context.Background())
+			}
+			return nil, ferr
+		}
+		d.st, d.feed, d.ownStorage = st, feed, own
+	}
+
 	if cfg.Endpoint == "" {
 		return d, nil
 	}
 
 	tr := cfg.Transport
-	own := false
+	ownTr := false
 	if tr == nil {
 		tr = newQUICTransport(cfg)
-		own = true
+		ownTr = true
 	}
 
 	s, err := session.New(session.Config{
@@ -119,7 +145,7 @@ func New(cfg Config) (*Dispatcher, error) {
 		return nil, fmt.Errorf("dispatcher: %w", err)
 	}
 
-	d.tr, d.sess, d.ownTransport = tr, s, own
+	d.tr, d.sess, d.ownTransport = tr, s, ownTr
 	return d, nil
 }
 
@@ -138,7 +164,8 @@ func (d *Dispatcher) SendAction(action int32, payload []byte) ([]byte, error) {
 	// 1. Код действия. Ровно та же проверка, что делает session.Do первой
 	//    строкой; здесь она нужна раньше, чтобы не зависеть от наличия
 	//    сессии — её может не быть вовсе.
-	if _, err := session.ResourceFor(action); err != nil {
+	resource, err := session.ResourceFor(action)
+	if err != nil {
 		return nil, err
 	}
 
@@ -155,7 +182,22 @@ func (d *Dispatcher) SendAction(action int32, payload []byte) ([]byte, error) {
 		d.mu.Unlock()
 		return nil, ErrClosed
 	}
-	// 3. Адресат.
+
+	// 3. Локальное действие исполняется ЗДЕСЬ и до сессии не доходит
+	//    никогда (ADR-064 п. 2.4). Ветка стоит после проверки закрытия и
+	//    до проверки адресата: локальному действию адресат не нужен, и
+	//    инстанс без Bridge обязан его исполнять.
+	if resource == session.ResourceLocalFeed {
+		d.inflight.Add(1)
+		d.mu.Unlock()
+		defer d.inflight.Done()
+
+		lctx, lcancel := context.WithTimeout(d.ctx, d.cfg.CallTimeout)
+		defer lcancel()
+		return d.localAction(lctx, action, payload)
+	}
+
+	// 4. Адресат.
 	if d.sess == nil {
 		d.mu.Unlock()
 		return nil, ErrNoEndpoint
@@ -285,6 +327,14 @@ func (d *Dispatcher) Close() error {
 	}
 	if d.ownTransport && d.tr != nil {
 		if cerr := d.tr.Close(); err == nil {
+			err = cerr
+		}
+	}
+	// Хранилище закрывается ПОСЛЕ сессии и транспорта (ADR-064 п. 1.4):
+	// пока идут вызовы, оно может понадобиться, и порядок здесь тот же, что
+	// у остальных ресурсов инстанса — сначала то, что говорит по сети.
+	if d.ownStorage && d.st != nil {
+		if cerr := d.st.Close(context.Background()); err == nil {
 			err = cerr
 		}
 	}

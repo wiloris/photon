@@ -261,6 +261,16 @@ type policy func(z *authz, subject string, o objectRef) bool
 
 func authenticated() policy { return func(*authz, string, objectRef) bool { return true } }
 
+// notServedHere — действие, которого сервер не исполняет: отказ всегда и
+// всем (ADR-064 п. 2.5).
+//
+// Локальные действия клиента (диапазон 800-899) живут в том же каноническом
+// enum, что и сетевые (ADR-025), и Dispatch обязан ответить на любое число,
+// пришедшее с провода. Явное правило лучше умолчания ровно потому, что
+// умолчание нигде не записано как решение, а инвариант полноты
+// (TestAuthzCoversEveryAction) не допускает исключений «для своих».
+func notServedHere() policy { return func(*authz, string, objectRef) bool { return false } }
+
 func isSelf() policy {
 	return func(_ *authz, _ string, o objectRef) bool { return o.isSelf }
 }
@@ -470,6 +480,9 @@ var rules = map[int]rule{
 	ActionMediaUpload:   {objChannel, permChan(model.PermissionUploadFile)},
 	ActionMediaDownload: {objMedia, readC()},
 	ActionMediaGetInfo:  {objMedia, readC()},
+
+	// ── LocalFeed: сервер не исполняет, отказ всегда ──
+	ActionLocalFeedPage: {objNone, notServedHere()},
 
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},

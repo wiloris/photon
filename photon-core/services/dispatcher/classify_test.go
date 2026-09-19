@@ -38,8 +38,10 @@ var known = map[string]error{
 	"ErrMalformedFrame":      session.ErrMalformedFrame,
 	"ErrConnectionLost":      session.ErrConnectionLost,
 
-	"ErrNoEndpoint": ErrNoEndpoint,
-	"ErrClosed":     ErrClosed,
+	"ErrNoEndpoint":         ErrNoEndpoint,
+	"ErrClosed":             ErrClosed,
+	"ErrNoStorage":          ErrNoStorage,
+	"ErrStorageUnavailable": ErrStorageUnavailable,
 
 	// Потоковая передача (DoStream).
 	"ErrStreamDirection":    session.ErrStreamDirection,

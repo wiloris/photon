@@ -34,6 +34,7 @@ static void photon_invoke_callback(PhotonEventCallback cb, const char* json, voi
 import "C"
 
 import (
+	"errors"
 	"sync"
 	"unsafe"
 
@@ -185,8 +186,18 @@ func Photon_Create(configJSON *C.char, handle **C.PhotonHandle) C.PhotonResult {
 	// Сети не касается: dispatcher.New строит объекты, подключение
 	// происходит по требованию при первом SendAction (D-1). Обещание
 	// заголовка «ни одного сетевого пакета до возврата» держится здесь.
+	//
+	// Файловой системы КАСАЕТСЯ, если задана секция storage: хранилище
+	// инстанса открывается и мигрируется здесь (ADR-064 п. 1.3). Эти два
+	// свойства разные, и смешивать их нельзя.
 	disp, err := dispatcher.New(cfg)
 	if err != nil {
+		// Негодная конфигурация — ошибка вызывающего в параметре; годный
+		// путь, который не открылся (права, блокировка, повреждение), —
+		// внутренняя ошибка: проверять вызывающему нечего (ADR-064 п. 1.6).
+		if errors.Is(err, dispatcher.ErrStorageUnavailable) {
+			return C.PHOTON_ERR_INTERNAL
+		}
 		return C.PHOTON_ERR_INVALID_ARGUMENT
 	}
 

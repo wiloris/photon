@@ -36,6 +36,14 @@ import (
 // проверкой всех 48 вызовов action(...) в test-client/test_photon.go —
 // клиенте, проверенном против живого сервера. Каждая сотня отображается
 // ровно в один resource, исключений нет.
+// ResourceLocalFeed — ресурс ЛОКАЛЬНЫХ действий (ADR-064).
+//
+// Отличается от остальных тем, что на провод не выходит: диспетчер исполняет
+// такие действия хранилищем инстанса и до сессии не доходит. Имя всё равно
+// выдаёт ResourceFor, а не отдельная проверка диапазона в диспетчере: арбитр
+// кодов остаётся один, и новый диапазон нельзя завести мимо него.
+const ResourceLocalFeed = "LocalFeedResource"
+
 func ResourceFor(action int32) (string, error) {
 	if _, known := photonpb.Action_name[action]; !known || action == 0 {
 		return "", fmt.Errorf("%w: %d", ErrUnknownAction, action)
@@ -56,6 +64,8 @@ func ResourceFor(action int32) (string, error) {
 		return "WallResource", nil
 	case action >= 700 && action <= 799:
 		return "MediaResource", nil
+	case action >= 800 && action <= 899:
+		return ResourceLocalFeed, nil
 	}
 
 	// Достижимо только если в enum Action появится код вне известных

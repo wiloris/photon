@@ -28,17 +28,23 @@ import kotlinx.serialization.json.put
 public class PhotonConfig {
 
     private val bridge: BridgeConfig?
+    private val storage: StorageConfig?
     private val rawJson: String?
 
-    /** Типизированный путь. `PhotonConfig()` даёт `{}` — инстанс без Bridge законен. */
+    /**
+     * Типизированный путь. `PhotonConfig()` даёт `{}` — инстанс без Bridge и
+     * без локального хранилища законен.
+     */
     @JvmOverloads
-    public constructor(bridge: BridgeConfig? = null) {
+    public constructor(bridge: BridgeConfig? = null, storage: StorageConfig? = null) {
         this.bridge = bridge
+        this.storage = storage
         this.rawJson = null
     }
 
     private constructor(rawJson: String) {
         this.bridge = null
+        this.storage = null
         this.rawJson = rawJson
     }
 
@@ -55,12 +61,12 @@ public class PhotonConfig {
      * оригиналом молча.
      */
     public fun toJson(): String = rawJson ?: buildJsonObject {
-        val b = bridge ?: return@buildJsonObject
-        put("bridge", b.toJsonObject())
+        bridge?.let { put("bridge", it.toJsonObject()) }
+        storage?.let { put("storage", it.toJsonObject()) }
     }.toString()
 
     override fun toString(): String =
-        if (rawJson != null) "PhotonConfig(raw)" else "PhotonConfig(bridge=$bridge)"
+        if (rawJson != null) "PhotonConfig(raw)" else "PhotonConfig(bridge=$bridge, storage=$storage)"
 
     public companion object {
         /**
@@ -119,6 +125,30 @@ public data class TlsConfig @JvmOverloads constructor(
     internal fun toJsonObject(): JsonObject = buildJsonObject {
         insecureSkipVerify?.let { put("insecure_skip_verify", JsonPrimitive(it)) }
         serverName?.let { put("server_name", it) }
+    }
+}
+
+/**
+ * Секция `storage` — локальное хранилище инстанса (ADR-064).
+ *
+ * **Отдельная секция, а не поле внутри `bridge`:** хранилище к Bridge
+ * отношения не имеет, и класть его в чужую секцию значило бы связать
+ * локальную работу с сетевой.
+ *
+ * Секция необязательна. Без неё у инстанса просто **нет локального
+ * backend** — это законное состояние, а не ошибка: сетевые действия
+ * работают, локальные отвечают отказом вызова.
+ *
+ * Открытие происходит внутри `PhotonClient.create`: с этой секцией создание
+ * инстанса **обращается к файловой системе** (сети оно по-прежнему не
+ * касается). Отказ открытия по годному пути — `PhotonException` с кодом
+ * `PHOTON_ERR_INTERNAL`.
+ */
+public data class StorageConfig @JvmOverloads constructor(
+    public val path: String? = null,
+) {
+    internal fun toJsonObject(): JsonObject = buildJsonObject {
+        path?.let { put("path", it) }
     }
 }
 

@@ -45,9 +45,14 @@ class InspectorTest {
         assertEquals(701, byName["ACTION_MEDIA_DOWNLOAD"])
         assertEquals(702, byName["ACTION_MEDIA_GET_INFO"])
 
-        // 60 значений, из них одно UNSPECIFIED — 59 реальных кодов.
-        assertEquals(60, action.valueCount)
-        assertEquals(59, action.valueList.count { it.number != 0 })
+        // Локальное действие в том же каноническом каталоге (ADR-064): коды
+        // 800-899 исполняются хранилищем инстанса и на провод не выходят, но
+        // источник кодов остаётся один, и Inspector обязан их показывать.
+        assertEquals(800, byName["ACTION_LOCAL_FEED_PAGE"])
+
+        // 61 значение, из них одно UNSPECIFIED — 60 реальных кодов.
+        assertEquals(61, action.valueCount)
+        assertEquals(60, action.valueList.count { it.number != 0 })
     }
 
     @Test

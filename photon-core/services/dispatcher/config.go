@@ -82,6 +82,16 @@ type Config struct {
 	// реализует ports.Transport, и подключение автоматического выбора
 	// маршрута не потребует правок ни здесь, ни в bindings.
 	Transport ports.Transport
+
+	// StoragePath — путь к локальному хранилищу инстанса (ADR-064 п. 1.2).
+	// Пустая строка означает «локального backend нет»: инстанс законен,
+	// сетевые действия работают, локальные отвечают ErrNoStorage.
+	StoragePath string
+
+	// Storage — шов для подстановки хранилища, ровно как Transport выше.
+	// nil при непустом StoragePath означает «открой adapters/bbolt сам».
+	// Тесты подставляют своё и не трогают файловую систему.
+	Storage ports.Storage
 }
 
 // withDefaults подставляет значения по умолчанию. Идемпотентна.
@@ -127,6 +137,13 @@ type wireConfig struct {
 			ServerName         string `json:"server_name"`
 		} `json:"tls"`
 	} `json:"bridge"`
+
+	// Storage — ОТДЕЛЬНАЯ секция, а не поле внутри bridge (ADR-064 п. 1.2):
+	// локальное хранилище к Bridge отношения не имеет, и класть его в чужую
+	// секцию значило бы связать локальную работу с сетевой.
+	Storage *struct {
+		Path string `json:"path"`
+	} `json:"storage"`
 }
 
 // ParseConfig разбирает config_json границы ABI.
@@ -150,8 +167,15 @@ func ParseConfig(raw []byte) (Config, error) {
 	if err := json.Unmarshal(raw, &wc); err != nil {
 		return Config{}, fmt.Errorf("dispatcher: config_json: %w", err)
 	}
+	storagePath := ""
+	if wc.Storage != nil {
+		storagePath = wc.Storage.Path
+	}
+
 	if wc.Bridge == nil {
-		return Config{}.withDefaults(), nil
+		// Инстанс без Bridge законен и может иметь только локальный backend.
+		cfg := Config{StoragePath: storagePath}.withDefaults()
+		return cfg, nil
 	}
 
 	for _, f := range []struct {
@@ -170,6 +194,7 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 
 	cfg := Config{
+		StoragePath:    storagePath,
 		Endpoint:       ports.Endpoint(wc.Bridge.Endpoint),
 		SessionToken:   wc.Bridge.SessionToken,
 		ConnectTimeout: time.Duration(wc.Bridge.ConnectTimeoutMS) * time.Millisecond,

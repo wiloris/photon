@@ -110,6 +110,13 @@ const (
 	ActionMediaUpload   = int(photonpb.Action_ACTION_MEDIA_UPLOAD)
 	ActionMediaDownload = int(photonpb.Action_ACTION_MEDIA_DOWNLOAD)
 	ActionMediaGetInfo  = int(photonpb.Action_ACTION_MEDIA_GET_INFO)
+
+	// ── LocalFeed (800-899) ──
+	// ЛОКАЛЬНОЕ действие клиента: исполняется хранилищем самого инстанса и
+	// на провод не выходит (ADR-064). Здесь оно объявлено не потому, что
+	// сервер его исполняет, а потому, что Dispatch принимает любое число с
+	// провода и обязан иметь для него ЯВНОЕ правило отказа.
+	ActionLocalFeedPage = int(photonpb.Action_ACTION_LOCAL_FEED_PAGE)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────
