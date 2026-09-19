@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -17,21 +18,31 @@ import (
 )
 
 /*
- * Локальные действия (ADR-064).
+ * Локальные действия (ADR-064, ADR-065).
  *
  * Здесь живёт всё, что отличает локальное действие от сетевого: открытие
  * хранилища инстанса, его закрытие и исполнение кодов диапазона 800-899.
  *
- * Чего здесь НЕТ и по решению ADR-064 быть не должно: записи (Put, Ingest),
- * синхронизации с Bridge, доменной модели. Первый срез — одно действие на
- * чтение, и оно доказывает цепочку целиком.
+ * Прежняя редакция этой шапки говорила, что записи (Put, Ingest) здесь нет и
+ * «по решению ADR-064 быть не должно». Первая половина перестала быть правдой
+ * с ADR-065, вторая была неточна уже тогда: ADR-064 запись не запрещал, он
+ * оставил её следующему решению вместе с вопросом «откуда берутся записи».
+ *
+ * Чего здесь НЕТ и не появляется: синхронизации с Bridge, доменной модели,
+ * планировщика. Действие исполняется либо сессией, либо хранилищем — третьего
+ * рода маршрутизации не заводится (ADR-065 п. 11.2).
  */
 
-// actionLocalFeedPage — код действия «страница локальной ленты».
+// Коды локальных действий.
 //
-// Берётся из канонического enum, а не вписан числом: источник кодов один
+// Берутся из канонического enum, а не вписаны числами: источник кодов один
 // (ADR-025), и расхождение между ним и диспетчером было бы невидимым.
-const actionLocalFeedPage = int32(photonpb.Action_ACTION_LOCAL_FEED_PAGE)
+const (
+	actionLocalFeedPage      = int32(photonpb.Action_ACTION_LOCAL_FEED_PAGE)
+	actionLocalFeedPut       = int32(photonpb.Action_ACTION_LOCAL_FEED_PUT)
+	actionLocalFeedIngest    = int32(photonpb.Action_ACTION_LOCAL_FEED_INGEST)
+	actionLocalFeedGapAnchor = int32(photonpb.Action_ACTION_LOCAL_FEED_GAP_ANCHOR)
+)
 
 // openStorage открывает локальное хранилище по конфигурации.
 //
@@ -109,6 +120,12 @@ func (d *Dispatcher) localAction(ctx context.Context, action int32, payload []by
 	switch action {
 	case actionLocalFeedPage:
 		return feedPage(ctx, feed, payload)
+	case actionLocalFeedPut:
+		return feedPut(ctx, feed, payload)
+	case actionLocalFeedIngest:
+		return feedIngest(ctx, feed, payload)
+	case actionLocalFeedGapAnchor:
+		return feedGapAnchor(ctx, feed, payload)
 	}
 
 	// Код в диапазоне есть, обработчика нет: такое состояние возможно только
@@ -175,4 +192,264 @@ func encodePage(p localfeed.PageResult) ([]byte, error) {
 	b.WriteString(strconv.FormatBool(p.GapAfter))
 	b.WriteByte('}')
 	return b.Bytes(), nil
+}
+
+// ── Действия 801-803: запись и позиция пропуска (ADR-065) ───────────────
+
+/*
+ * Здесь проходит граница домена. Всё, что ниже, принимает УЖЕ
+ * доменно-агностичные записи и утверждения: ни `Post`, ни `create_at`, ни
+ * `update_at` в этом файле нет и быть не может (ADR-065 п. 1).
+ *
+ * Разбор ТИПИЗИРОВАННЫЙ, а не в map[string]any, и это не стилистика:
+ * OrderKey и Version — int64 порядка 1.7e12 (миллисекунды), и разбор через
+ * float64 потерял бы точность молча, без единой ошибки. Поля объявлены int64,
+ * поэтому encoding/json отвергает и дробное, и переполнение сам (ADR-065
+ * п. 2.2).
+ */
+
+// wireRecord — запись в payload. Повторяет localfeed.Record и ничего к нему
+// не добавляет: срез делает существующий метод достижимым, а не проектирует
+// новый.
+//
+// Body — json.RawMessage: тело проходит побайтово и ядром не разбирается
+// (ADR-034). Проверять его на валидность здесь незачем и нечем — payload уже
+// разобран encoding/json, значит любой добравшийся сюда Body валиден по
+// построению. Проверка в localfeed.encode остаётся для вызывающих изнутри
+// ядра.
+type wireRecord struct {
+	ID       string          `json:"id"`
+	OrderKey int64           `json:"order_key"`
+	Version  int64           `json:"version"`
+	Body     json.RawMessage `json:"body"`
+}
+
+// wirePosition — позиция, замороженная ADR-052. Второй формы курсора не
+// вводится ни здесь, ни где-либо ещё.
+type wirePosition struct {
+	OrderKey int64  `json:"order_key"`
+	ID       string `json:"id"`
+}
+
+type feedPutRequest struct {
+	ChannelID string       `json:"channel_id"`
+	Records   []wireRecord `json:"records"`
+}
+
+type feedIngestRequest struct {
+	ChannelID string        `json:"channel_id"`
+	Records   []wireRecord  `json:"records"`
+	Dir       string        `json:"dir"`
+	Anchor    *wirePosition `json:"anchor"`
+	AtEnd     bool          `json:"at_end"`
+}
+
+type feedGapAnchorRequest struct {
+	ChannelID string `json:"channel_id"`
+}
+
+// toRecords переводит записи провода в записи ленты. Ровно перенос полей:
+// решать, что есть идентификатор и порядок, — дело вызывающего.
+func toRecords(in []wireRecord) []localfeed.Record {
+	out := make([]localfeed.Record, 0, len(in))
+	for _, r := range in {
+		out = append(out, localfeed.Record{
+			ID: r.ID, OrderKey: r.OrderKey, Version: r.Version, Body: r.Body,
+		})
+	}
+	return out
+}
+
+// parseDirection — имя направления с провода в localfeed.Direction.
+//
+// Умолчания НЕТ намеренно: пустая строка отвергается наравне с опечаткой.
+// Трактовать "" как "newest" значило бы вернуть ровно тот дефект, который
+// ADR-065 п. 3.7 закрыл в самом localfeed, — неизвестное значение, молча
+// получающее поведение известного.
+//
+// Проверка здесь и проверка в localfeed не дублируют друг друга: у них разные
+// входы (строка провода против Direction) и разные вызывающие. Инвариант
+// localfeed защищает вызывающих ИЗНУТРИ ядра, у которых строки нет вовсе.
+func parseDirection(s string) (localfeed.Direction, error) {
+	switch s {
+	case "newest":
+		return localfeed.DirNewest, nil
+	case "after":
+		return localfeed.DirAfter, nil
+	case "before":
+		return localfeed.DirBefore, nil
+	}
+	return 0, fmt.Errorf("%w: unknown dir %q", session.ErrInvalidPayload, s)
+}
+
+// feedWriteArgErrors — ошибки localfeed, являющиеся ошибкой АРГУМЕНТА, а не
+// сбоем хранилища.
+//
+// Критерий тот же, которым пользуется classTable: есть ли что исправлять
+// вызывающему. У всех семи есть — повторять вызов с тем же payload
+// бессмысленно.
+//
+// Список проверяется на полноту машинно (TestLocalWrite_EveryLocalfeedSentinelIsClassified):
+// новый sentinel в localfeed, не попавший ни сюда, ни в список «не аргумент»,
+// роняет тест. Без этого он уехал бы в ClassInternal молча, и вызывающий
+// пошёл бы искать причину в хранилище вместо своего payload.
+var feedWriteArgErrors = []error{
+	localfeed.ErrEmptyChannel,
+	localfeed.ErrEmptyRecordID,
+	localfeed.ErrAnchorRequired,
+	localfeed.ErrEmptyBlock,
+	localfeed.ErrUnknownDirection,
+	localfeed.ErrAnchorNotAllowed,
+	localfeed.ErrRecordCrossesAnchor,
+}
+
+// wrapFeedWriteError относит ошибку записи к классу исхода вызова.
+//
+// Оборачивание двойным %w сохраняет ОБА: класс берётся из существующей
+// classTable по session.ErrInvalidPayload, а исходный sentinel остаётся
+// доступен errors.Is для того, кто захочет различить причину. Тот же приём,
+// что у session.markLost, — и та же причина: терять исходную ошибку ради
+// класса незачем.
+func wrapFeedWriteError(err error) error {
+	for _, sentinel := range feedWriteArgErrors {
+		if errors.Is(err, sentinel) {
+			return fmt.Errorf("%w: %w", session.ErrInvalidPayload, err)
+		}
+	}
+	return fmt.Errorf("%w: %w", ErrStorageUnavailable, err)
+}
+
+// decodeRequest — разбор payload действия.
+//
+// DisallowUnknownFields НЕ включается: неизвестное поле игнорируется — то же
+// правило, по которому ядро читает config_json (config.go). Отвергать payload
+// из-за поля, которого ядро не знает, значило бы ломать клиента при каждом
+// расширении формы.
+func decodeRequest(payload []byte, dst any) error {
+	if err := json.Unmarshal(payload, dst); err != nil {
+		return fmt.Errorf("%w: %v", session.ErrInvalidPayload, err)
+	}
+	return nil
+}
+
+// feedPut — действие 801. Положить записи, о непрерывности не утверждать.
+func feedPut(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte, error) {
+	var req feedPutRequest
+	if err := decodeRequest(payload, &req); err != nil {
+		return nil, err
+	}
+	if req.ChannelID == "" {
+		return nil, fmt.Errorf("%w: channel_id is required", session.ErrInvalidPayload)
+	}
+
+	recs := toRecords(req.Records)
+	if err := feed.Put(ctx, req.ChannelID, recs); err != nil {
+		return nil, wrapFeedWriteError(err)
+	}
+
+	// stored — столько, сколько прислали: Put пишет каждую запись и версий не
+	// сверяет. Числа Ingest здесь неуместны — у Put их просто нет.
+	data, err := json.Marshal(struct {
+		Stored int `json:"stored"`
+	}{Stored: len(recs)})
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: encode put result: %w", err)
+	}
+	return envelope(session.Response{OK: true, Data: data})
+}
+
+// feedIngest — действие 802. Положить блок и то, что он доказал о полноте.
+func feedIngest(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte, error) {
+	var req feedIngestRequest
+	if err := decodeRequest(payload, &req); err != nil {
+		return nil, err
+	}
+	if req.ChannelID == "" {
+		return nil, fmt.Errorf("%w: channel_id is required", session.ErrInvalidPayload)
+	}
+
+	dir, err := parseDirection(req.Dir)
+	if err != nil {
+		return nil, err
+	}
+
+	blk := localfeed.Block{Records: toRecords(req.Records), Dir: dir, AtEnd: req.AtEnd}
+	if req.Anchor != nil {
+		blk.Anchor = &localfeed.Position{OrderKey: req.Anchor.OrderKey, ID: req.Anchor.ID}
+	}
+
+	res, err := feed.Ingest(ctx, req.ChannelID, blk)
+	if err != nil {
+		return nil, wrapFeedWriteError(err)
+	}
+
+	data, err := encodeIngestResult(res)
+	if err != nil {
+		return nil, err
+	}
+	return envelope(session.Response{OK: true, Data: data})
+}
+
+// encodeIngestResult — все семь счётчиков, без отбора.
+//
+// GapsClosed ЗНАКОВЫЙ: отрицательное значение законно и означает новый
+// пропуск — так выглядит первый шаг возвращения после offline
+// (localfeed.IngestResult). Vanished отдаётся как СИГНАЛ и только: политика
+// удаления закрыта ADR-054 и ADR-060, автоматического удаления нет, и ничего
+// по этому числу не предписывается.
+func encodeIngestResult(r localfeed.IngestResult) ([]byte, error) {
+	data, err := json.Marshal(struct {
+		Stored     int `json:"stored"`
+		Segments   int `json:"segments"`
+		Updated    int `json:"updated"`
+		Unchanged  int `json:"unchanged"`
+		Stale      int `json:"stale"`
+		Vanished   int `json:"vanished"`
+		GapsClosed int `json:"gaps_closed"`
+	}{
+		Stored: r.Stored, Segments: r.Segments, Updated: r.Updated,
+		Unchanged: r.Unchanged, Stale: r.Stale, Vanished: r.Vanished,
+		GapsClosed: r.GapsClosed,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: encode ingest result: %w", err)
+	}
+	return data, nil
+}
+
+// feedGapAnchor — действие 803. Позиция, от которой закрывать верхний пропуск.
+//
+// Производная от сегментов, вычисляемая при каждом вызове: состояние
+// синхронизации хранится только в них, второго источника истины нет
+// (ADR-065 п. 10).
+//
+// «Пропуска нет» — НЕ ошибка и не пустой ответ: это found:false. Отдавать
+// нулевую позицию значило бы предложить вызывающему закрывать пропуск от
+// начала ленты.
+func feedGapAnchor(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte, error) {
+	var req feedGapAnchorRequest
+	if err := decodeRequest(payload, &req); err != nil {
+		return nil, err
+	}
+	if req.ChannelID == "" {
+		return nil, fmt.Errorf("%w: channel_id is required", session.ErrInvalidPayload)
+	}
+
+	pos, found, err := feed.GapAnchor(ctx, req.ChannelID)
+	if err != nil {
+		return nil, wrapFeedWriteError(err)
+	}
+
+	out := struct {
+		Found  bool          `json:"found"`
+		Anchor *wirePosition `json:"anchor,omitempty"`
+	}{Found: found}
+	if found {
+		out.Anchor = &wirePosition{OrderKey: pos.OrderKey, ID: pos.ID}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: encode gap anchor result: %w", err)
+	}
+	return envelope(session.Response{OK: true, Data: data})
 }
