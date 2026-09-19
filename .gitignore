@@ -33,3 +33,11 @@
 # являются исходниками: native там пересобирается задачей buildJniLib.
 /photon-developer-tools/build/
 /photon-developer-tools/.gradle/
+
+# Photon SDK — Gradle (ADR-062, sdk-api.md §7.3). Отдельная сборка со своим
+# корнем, поэтому и свой каталог сборки с кэшем. .kotlin/ добавляется сверх
+# пары выше: его заводит компилятор Kotlin 2.x, и в Developer Tools он не
+# появлялся.
+/photon-sdk/build/
+/photon-sdk/.gradle/
+/photon-sdk/.kotlin/
