@@ -10,6 +10,9 @@
 /photon-bindings/c/photon_test
 /photon-bindings/c/leakcheck_handles
 /photon-bindings/c/leakcheck_strings
+# `go build ./...` в этом каталоге кладёт бинарник по имени модуля. Правила
+# на него не было, и его дважды удаляли руками после обычной проверки сборки.
+/photon-bindings/c/photon-bindings-c
 
 # Каталог сборки bindings. Собирать .so ТОЛЬКО сюда: -buildmode=c-shared
 # кладёт рядом с выходным файлом сгенерённый заголовок, названный по нему, и
@@ -33,6 +36,9 @@
 # являются исходниками: native там пересобирается задачей buildJniLib.
 /photon-developer-tools/build/
 /photon-developer-tools/.gradle/
+# .kotlin/ заводит компилятор Kotlin 2.x — он уже создан в дереве и попал бы
+# в untracked, как только в нём появится первый файл.
+/photon-developer-tools/.kotlin/
 
 # Photon SDK — Gradle (ADR-062, sdk-api.md §7.3). Отдельная сборка со своим
 # корнем, поэтому и свой каталог сборки с кэшем. .kotlin/ добавляется сверх
