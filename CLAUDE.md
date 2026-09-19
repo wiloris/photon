@@ -137,8 +137,8 @@
 
 **JVM-сторона считается своими прогонами, а не этим методом** (у неё другой
 инструмент): `photon-bindings/jvm` — **26** Java + **14** Kotlin + **23**
-события против живого Bridge; `photon-sdk` — **100** (`gradle test`:
-PhotonClient 26, EventParser 17, EventDispatcher 16, PhotonConfig 18,
+события против живого Bridge; `photon-sdk` — **102** (`gradle test`:
+PhotonClient 28, EventParser 17, EventDispatcher 16, PhotonConfig 18,
 ResponseParser 15, ModuleBoundary 8); `photon-developer-tools` — **103** (`gradle
 test`: Network Lab 8, Inspector 8, Logging 7, Performance 7, Storage Lab 14,
 Crypto Lab 12, Plugin Lab 15, Reconnect Lab 19, Dashboard 12; было 30 до
