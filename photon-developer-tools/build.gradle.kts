@@ -102,6 +102,23 @@ val buildCoreLib by tasks.registering(Exec::class) {
     workingDir = cAbiDir
     commandLine("go", "build", "-buildmode=c-shared", "-o", "build/libphoton_core.so", ".")
     inputs.dir(cAbiDir).withPropertyName("cAbiSources")
+    /*
+     * Исходники ЯДРА — тоже вход, и это не педантизм.
+     *
+     * Прежняя редакция объявляла входом только photon-bindings/c, поэтому
+     * правка photon-core задачу не инвалидировала: Gradle оставлял её
+     * UP-TO-DATE, а инструмент и его тесты молча шли против .so, собранной из
+     * прежнего кода. Поймано тестом локальной ленты: действия 801-803
+     * отвечали «unknown action code» при том, что enum их уже содержал.
+     *
+     * Перечислены только файлы, попадающие в сборку (*.go, go.mod, go.sum):
+     * каталог целиком затащил бы в хэш testdata и временные артефакты.
+     */
+    inputs.files(
+        fileTree(File(repoRoot, "photon-core")) {
+            include("**/*.go", "**/go.mod", "**/go.sum")
+        }
+    ).withPropertyName("coreSources")
     outputs.file(File(cAbiDir, "build/libphoton_core.so"))
 }
 
@@ -244,7 +261,16 @@ tasks.named<JavaExec>("run") {
     systemProperty("photon.lab.fixture.sdkscenario", File(nativeDir, "photon-lab-fixture-sdkscenario").absolutePath)
 }
 tasks.test {
-    dependsOn(generateDescriptor)
+    // Нативные библиотеки — предусловие теста локальной ленты: он идёт
+    // настоящим путём Kotlin → JNI → C ABI, а не против подмены. Зависимость
+    // объявлена ЯВНО, хотя compileTestKotlin и так тянет classes: тест, у
+    // которого нет .so, обязан падать на отсутствии файла, а не зависеть от
+    // того, в каком порядке Gradle выстроил задачи.
+    dependsOn(generateDescriptor, buildJniLib)
     systemProperty("photon.descriptor", descriptorFile.absolutePath)
     systemProperty("photon.devtools.src", File(projectDir, "src/main/kotlin/dev/photon/devtools").absolutePath)
+    // Каталог, куда buildJniLib кладёт libphoton_jni.so рядом с
+    // libphoton_core.so. Передаётся явно по той же причине, что и путь
+    // дескриптора: тест не должен угадывать расположение собранного артефакта.
+    systemProperty("photon.native.dir", nativeDir.absolutePath)
 }
