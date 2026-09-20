@@ -112,6 +112,74 @@ public class PhotonClient internal constructor(private val native: NativeSession
         return ResponseParser.parse(native.sendAction(action, payloadJson))
     }
 
+    // ── Локальная лента: 801, 802, 803 (ADR-066) ────────────────────────
+
+    /*
+     * Три типизированных примитива. Действие 800 (страница) СРЕДИ НИХ НЕТ:
+     * оно остаётся доступным через [sendAction], и ADR-066 п. 3.6 говорит об
+     * этом прямо. Цикл догрузки у вызывающего собирается из трёх
+     * типизированных вызовов и одного общего.
+     *
+     * Цикла синхронизации здесь нет и не появляется: он живёт у приложения
+     * (ADR-066 §9). SDK даёт примитивы, последовательность вызовов,
+     * повторение и сходимость — забота вызывающего.
+     */
+
+    /**
+     * Кладёт записи в локальную ленту канала (`ACTION_LOCAL_FEED_PUT`).
+     *
+     * **О непрерывности не утверждает ничего** и сегментов не создаёт: «эти
+     * пять записей» и «эти пять — всё, что было между X и Y» — разные
+     * утверждения, и второе делает [localFeedIngest].
+     *
+     * @throws IllegalArgumentException если `body` какой-либо записи не
+     *   является валидным JSON: payload из него собрать нечем
+     * @throws dev.photon.core.PhotonException если вызов не состоялся — в том
+     *   числе когда у инстанса нет секции `storage` либо блок отвергнут
+     *   инвариантами ядра (ADR-065 п. 3). Причина приходит общим кодом и
+     *   текстом; типизации причин нет (ADR-066 §8)
+     * @throws IllegalStateException если клиент закрыт
+     */
+    public fun localFeedPut(channelId: String, records: List<FeedRecord>): FeedPutResult =
+        LocalFeedCodec.parsePut(
+            sendAction(LocalFeedCodec.ACTION_PUT, LocalFeedCodec.putPayload(channelId, records))
+        )
+
+    /**
+     * Заливает блок и то, что этот блок доказал о полноте
+     * (`ACTION_LOCAL_FEED_INGEST`).
+     *
+     * **Полноту диапазона утверждает вызывающий.** Core проверяет структуру и
+     * внутреннюю непротиворечивость блока, но не истинность утверждения о
+     * том, что сервер вернул диапазон целиком; SDK этого утверждения в
+     * гарантию не превращает. То, что блок собрался в Kotlin, не означает,
+     * что диапазон полон (ADR-066 §10).
+     *
+     * @throws IllegalArgumentException если `body` какой-либо записи не
+     *   является валидным JSON
+     * @throws dev.photon.core.PhotonException если вызов не состоялся
+     * @throws IllegalStateException если клиент закрыт
+     */
+    public fun localFeedIngest(channelId: String, block: FeedBlock): FeedIngestResult =
+        LocalFeedCodec.parseIngest(
+            sendAction(LocalFeedCodec.ACTION_INGEST, LocalFeedCodec.ingestPayload(channelId, block))
+        )
+
+    /**
+     * Позиция, от которой закрывать самый верхний пропуск
+     * (`ACTION_LOCAL_FEED_GAP_ANCHOR`).
+     *
+     * Производная от сегментов, вычисляемая ядром при каждом вызове: своего
+     * состояния SDK не заводит и второго источника истины не создаёт.
+     *
+     * @throws dev.photon.core.PhotonException если вызов не состоялся
+     * @throws IllegalStateException если клиент закрыт
+     */
+    public fun localFeedGapAnchor(channelId: String): FeedGapAnchor =
+        LocalFeedCodec.parseGapAnchor(
+            sendAction(LocalFeedCodec.ACTION_GAP_ANCHOR, LocalFeedCodec.gapAnchorPayload(channelId))
+        )
+
     /**
      * Закрывает клиента. Идемпотентен (§8 L10).
      *

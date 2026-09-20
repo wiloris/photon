@@ -105,7 +105,13 @@ class ModuleBoundaryTest {
 
     @Test
     fun `внутренние типы не попали в публичную поверхность`() {
-        for (internalType in listOf("EventDispatcher", "EventParser", "ResponseParser", "NativeSession", "BridgeSession")) {
+        for (internalType in listOf(
+            "EventDispatcher", "EventParser", "ResponseParser", "NativeSession", "BridgeSession",
+            // ADR-066: кодек ленты — механика, а не поверхность. Список
+            // перечисляет типы поимённо, поэтому новый internal-тип, не
+            // внесённый сюда, остался бы без этой гарантии.
+            "LocalFeedCodec",
+        )) {
             val src = sources.first { it.nameWithoutExtension == internalType || it.readText().contains("class $internalType") }
                 .readText()
             assertTrue(
