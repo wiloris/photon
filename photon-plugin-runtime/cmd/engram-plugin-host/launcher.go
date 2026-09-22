@@ -70,6 +70,14 @@ type Options struct {
 	// вместе — порознь они бесполезны.
 	KeyDir string
 
+	// Manifest — манифест плагина, пришедший ИЗВНЕ, из его пакета (ADR-071).
+	//
+	// nil означает legacy-путь: манифест собирается в коде (pluginManifest).
+	// Когда задан, ИСТОЧНИКОМ ИСТИНЫ для plugin_id и entrypoint является он:
+	// одноимённые поля Options перезаписываются его значениями, а не
+	// соревнуются с ними.
+	Manifest *manifest.Manifest
+
 	// InitIdentity — ЗАЯВЛЕНИЕ о том, что идентичности устройства ещё нет и
 	// её нужно создать (ADR-069 п. 4.1).
 	//
@@ -120,6 +128,31 @@ func Run(ctx context.Context, o Options) (Result, error) {
 
 	if o.Timeout <= 0 {
 		o.Timeout = 15 * time.Second
+	}
+
+	/*
+	 * ── манифест и структурная проверка — ПЕРВЫМИ ──────────────────────────
+	 *
+	 * Порядок здесь и есть содержание ADR-071. Ниже по тексту Run создаёт
+	 * ключевой материал, открывает хранилище, зовёт Migrate и при установке
+	 * пишет строку реестра. Номер миграции не переиспользуется (ADR-068
+	 * §6.1), а удаления namespace в портах нет (ADR-020) — значит негодный
+	 * манифест, проверенный позже, успел бы оставить неоткатываемый след:
+	 * namespace, выведенный из негодного plugin_id, и израсходованный номер.
+	 *
+	 * Validate(m, "") проверяет структуру и НЕ трогает файловую систему —
+	 * это документированное свойство валидатора, а не обход проверки: путь
+	 * проверяется вторым вызовом, когда корень известен.
+	 */
+	m := o.Manifest
+	if m == nil {
+		m = pluginManifest(o)
+	} else {
+		o.PluginID = m.Identity.PluginID
+		o.Entrypoint = m.Runtime.Entrypoint
+	}
+	if err := manifest.Validate(m, ""); err != nil {
+		return res, fmt.Errorf("манифест: %w", err)
 	}
 
 	id := ed25519adapter.New()
@@ -225,9 +258,22 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		return res, fmt.Errorf("grant: %w", err)
 	}
 
+	/*
+	 * ── файловая проверка — ПЕРЕД запуском ─────────────────────────────────
+	 *
+	 * Второй вызов не повторяет первый по смыслу: он отвечает на вопрос
+	 * «исполним ли этот манифест ЗДЕСЬ И СЕЙЧАС» — существует ли entrypoint,
+	 * обычный ли это файл, не уходит ли он за корень после разрешения
+	 * symlink. Ответ верен только для текущего PackageRoot: на Android он
+	 * меняется при каждом обновлении APK (ADR-070 §6.2).
+	 */
+	if err := manifest.Validate(m, o.PackageRoot); err != nil {
+		return res, fmt.Errorf("манифест против пакета: %w", err)
+	}
+
 	// ── запуск ───────────────────────────────────────────────────────────
 	h := host.New(host.Config{
-		Manifest:    pluginManifest(o),
+		Manifest:    m,
 		PackageRoot: o.PackageRoot,
 		Caller:      ports.PublicKey("engram-host:" + o.PluginID),
 		Policy:      policy,
