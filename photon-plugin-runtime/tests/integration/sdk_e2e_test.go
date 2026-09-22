@@ -94,7 +94,7 @@ func echoHandler(t *testing.T) ipc.Handler {
 		switch op {
 		case "storage.get":
 			return json.Marshal(map[string]any{"value": []byte("stored-value")})
-		case "storage.put", "storage.delete", "log.write":
+		case "storage.put", "storage.delete", "log.write", "work.complete":
 			return json.Marshal(map[string]any{})
 		case "storage.list":
 			return json.Marshal(map[string]any{"keys": []string{"a", "b"}})
@@ -237,8 +237,21 @@ func TestE2E_AllCatalogOperations(t *testing.T) {
 		}
 	})
 	t.Run("log.write", func(t *testing.T) {
-		// Единственная операция без права.
+		// Одна из двух операций без права.
 		if err := p.Log(ctx, sdk.LogInfo, "hello"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("work.complete", func(t *testing.T) {
+		// Вторая операция без права (ADR-072). Правами она не
+		// снабжается и в список all выше не попадает намеренно:
+		// сессия открыта с полным набором прав, но доклад о завершении
+		// не требует ни одного из них — проверка того, что он проходит,
+		// ценна именно потому, что права здесь ни при чём.
+		//
+		// Вызов НЕ терминален: сессия после него продолжает жить, и это
+		// видно по тому, что тест завершается штатно, а не обрывом.
+		if err := p.WorkComplete(ctx); err != nil {
 			t.Fatal(err)
 		}
 	})
