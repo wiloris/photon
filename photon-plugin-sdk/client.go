@@ -350,6 +350,10 @@ func (c *client) Log(ctx context.Context, level LogLevel, message string) error 
 	return c.call(ctx, "log.write", logRequest{Level: string(level), Message: message}, nil)
 }
 
+func (c *client) WorkComplete(ctx context.Context) error {
+	return c.call(ctx, "work.complete", nil, nil)
+}
+
 func (c *client) Storage() Storage   { return &storageClient{c: c} }
 func (c *client) Identity() Identity { return &identityClient{c: c} }
 func (c *client) Crypto() Crypto     { return &cryptoClient{c: c} }

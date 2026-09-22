@@ -62,6 +62,19 @@ type Config struct {
 	// права, и молча её терять нельзя.
 	Log func(pluginID, level, message string)
 
+	// OnWorkComplete — плагин доложил, что текущая единица работы
+	// закончена (ADR-072).
+	//
+	// ОТДЕЛЬНЫЙ колбэк, а не уровень журнала: доклад о завершении —
+	// структурный факт жизненного цикла, и смешение его с текстом
+	// сообщений вернуло бы разбор строк, ради устранения которого
+	// операция и вводится.
+	//
+	// Исполнитель НЕ РЕШАЕТ, что делать дальше: он сообщает факт
+	// композиции. Остановка остаётся правом хоста (ADR-072 §3).
+	// nil означает, что слушателя нет — доклад тогда безвреден.
+	OnWorkComplete func(pluginID string)
+
 	// MaxLogBytes ограничивает размер одной записи. 0 — значение по
 	// умолчанию. Ограничение обязательно: без него log.write это DoS через
 	// диск, а права на неё не требуется (§8).
@@ -143,6 +156,9 @@ func (h *Handler) Handle(ctx context.Context, caller ipc.CallerInfo, op string, 
 
 	case "log.write":
 		return h.logWrite(caller, payload)
+
+	case "work.complete":
+		return h.workComplete(caller)
 	}
 
 	// Неизвестная операция. Сессия отсекает те, которых нет в таблице
@@ -374,6 +390,20 @@ func (h *Handler) logWrite(caller ipc.CallerInfo, payload []byte) ([]byte, error
 		req.Message = req.Message[:h.cfg.MaxLogBytes]
 	}
 	h.cfg.Log(caller.PluginID, req.Level, req.Message)
+	return encode(struct{}{})
+}
+
+// workComplete — доклад плагина о завершении единицы работы (ADR-072).
+//
+// Полезной нагрузки нет: сообщать нечего, кроме самого факта. Ответ пустой и
+// успешный — доклад не может быть «отклонён», потому что он ничего не просит.
+//
+// Операция НЕ ТЕРМИНАЛЬНА: сессия продолжается, плагин продолжает работать, и
+// доклад может прийти снова — например, после обработки события.
+func (h *Handler) workComplete(caller ipc.CallerInfo) ([]byte, error) {
+	if h.cfg.OnWorkComplete != nil {
+		h.cfg.OnWorkComplete(caller.PluginID)
+	}
 	return encode(struct{}{})
 }
 

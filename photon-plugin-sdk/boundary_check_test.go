@@ -103,20 +103,22 @@ func TestOperationCatalogCoverage(t *testing.T) {
 		"identity.public_key", "identity.sign", "identity.verify",
 		"crypto.encrypt", "crypto.decrypt",
 		"log.write",
+		"work.complete", // ADR-072
 	}
 
 	// Методы API, каждый — одна операция.
 	apiMethods := map[string]string{
-		"Storage.Get":        "storage.get",
-		"Storage.Put":        "storage.put",
-		"Storage.Delete":     "storage.delete",
-		"Storage.List":       "storage.list",
-		"Identity.PublicKey": "identity.public_key",
-		"Identity.Sign":      "identity.sign",
-		"Identity.Verify":    "identity.verify",
-		"Crypto.Encrypt":     "crypto.encrypt",
-		"Crypto.Decrypt":     "crypto.decrypt",
-		"Plugin.Log":         "log.write",
+		"Storage.Get":         "storage.get",
+		"Storage.Put":         "storage.put",
+		"Storage.Delete":      "storage.delete",
+		"Storage.List":        "storage.list",
+		"Identity.PublicKey":  "identity.public_key",
+		"Identity.Sign":       "identity.sign",
+		"Identity.Verify":     "identity.verify",
+		"Crypto.Encrypt":      "crypto.encrypt",
+		"Crypto.Decrypt":      "crypto.decrypt",
+		"Plugin.Log":          "log.write",
+		"Plugin.WorkComplete": "work.complete",
 	}
 
 	covered := make(map[string]bool, len(apiMethods))

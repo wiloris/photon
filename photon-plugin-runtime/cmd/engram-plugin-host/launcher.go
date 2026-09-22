@@ -114,6 +114,11 @@ type Result struct {
 	// тем, кто её сделал, нечего.
 	SignatureVerified bool
 
+	// Completions — сколько раз плагин доложил о завершении единицы
+	// работы (ADR-072). В отличие от Counts это ЧАСТЬ ОБЩЕГО КОНТРАКТА:
+	// доклад шлёт любой плагин, а не только counter.
+	Completions int
+
 	// Lines — журнал плагина целиком, как он пришёл в Log-колбэк.
 	Lines []string
 
@@ -247,6 +252,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 			return cr.DeriveKey(ctx, keys.Master, domain)
 		},
 		Log: rep.onLog,
+		// Доклад о завершении — отдельный канал, не строка журнала
+		// (ADR-072 §2).
+		OnWorkComplete: rep.onWorkComplete,
 	})
 	if err != nil {
 		return res, fmt.Errorf("executor: %w", err)
@@ -293,21 +301,35 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		_ = h.Stop(stopCtx)
 	}()
 
-	count, err := rep.waitCount(o.Timeout, h.Exited())
-	if err != nil {
-		return res, fmt.Errorf("first report: %w", err)
+	/*
+	 * ── ожидание доклада о завершении (ADR-072) ──────────────────────────
+	 *
+	 * Хост ждёт РОВНО ТОГО, что плагин сообщил сам: work.complete. Прежде
+	 * здесь ждали строку журнала "count:<N>" — формат examples/counter, то
+	 * есть знание об одном плагине в роли контракта платформы.
+	 *
+	 * Ожидание обязательно, и это не приёмка, а синхронизация: без неё STOP
+	 * уходит немедленно после старта и плагин не успевает поработать.
+	 * Измерено: снятие ожидания давало девять детерминированных падений E2E.
+	 */
+	if err := rep.waitComplete(o.Timeout, h.Exited()); err != nil {
+		return res, fmt.Errorf("доклад о завершении: %w", err)
 	}
-	res.Counts = append(res.Counts, count)
 
+	/*
+	 * ── события ──────────────────────────────────────────────────────────
+	 *
+	 * У события подтверждения доставки нет и не заводится: SendEvent только
+	 * доставляет. Подтверждением ОБРАБОТКИ служит следующий work.complete,
+	 * который плагин посылает сам (ADR-072 §6).
+	 */
 	for _, ev := range o.Events {
 		if err := h.SendEvent(ev, nil); err != nil {
 			return res, fmt.Errorf("send event %q: %w", ev, err)
 		}
-		count, err := rep.waitCount(o.Timeout, h.Exited())
-		if err != nil {
-			return res, fmt.Errorf("report after event %q: %w", ev, err)
+		if err := rep.waitComplete(o.Timeout, h.Exited()); err != nil {
+			return res, fmt.Errorf("доклад после события %q: %w", ev, err)
 		}
-		res.Counts = append(res.Counts, count)
 	}
 
 	// ── остановка и разбор ───────────────────────────────────────────────
@@ -323,8 +345,16 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	res.Exit = exit
 	res.Lines = rep.snapshot()
+	res.Counts = rep.counts()
+	res.Completions = rep.completions()
 
-	if sig, ok := rep.signature(); ok {
+	/*
+	 * Проверка подписи — ДИАГНОСТИКА, и она знает формат counter:
+	 * подписанным значением является последний доложенный счётчик. У
+	 * плагина, не пишущего "count:", сверять не с чем, и это не ошибка
+	 * запуска (ADR-072 §8).
+	 */
+	if sig, ok := rep.signature(); ok && len(res.Counts) > 0 {
 		res.Signature = sig
 		last := strconv.Itoa(res.Counts[len(res.Counts)-1])
 
@@ -411,15 +441,31 @@ func pluginManifest(o Options) *manifest.Manifest {
 // передаёт в coreops сам, поэтому канал существует по построению, а не
 // добавлен ради этого среза.
 type reports struct {
-	mu    sync.Mutex
-	lines []string
-	sig   []byte
+	mu     sync.Mutex
+	lines  []string
+	sig    []byte
+	values []int
+	done   int
 
-	counts chan int
+	// complete — доклады о завершении. Буфер на случай, если плагин
+	// доложил раньше, чем хост начал ждать: доклад не теряется.
+	complete chan struct{}
 }
 
 func newReports() *reports {
-	return &reports{counts: make(chan int, 8)}
+	return &reports{complete: make(chan struct{}, 8)}
+}
+
+// onWorkComplete — плагин доложил о завершении единицы работы.
+func (r *reports) onWorkComplete(string) {
+	r.mu.Lock()
+	r.done++
+	r.mu.Unlock()
+
+	select {
+	case r.complete <- struct{}{}:
+	default: // ожидающий отстал — счётчик уже увеличен, факт не потерян
+	}
 }
 
 func (r *reports) onLog(pluginID, level, message string) {
@@ -433,10 +479,9 @@ func (r *reports) onLog(pluginID, level, message string) {
 		if err != nil {
 			return
 		}
-		select {
-		case r.counts <- n:
-		default: // читатель отстал — доклад не теряется, он уже в lines
-		}
+		r.mu.Lock()
+		r.values = append(r.values, n)
+		r.mu.Unlock()
 
 	case strings.HasPrefix(message, "signature:"):
 		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(message, "signature:"))
@@ -449,27 +494,44 @@ func (r *reports) onLog(pluginID, level, message string) {
 	}
 }
 
-var errNoReport = errors.New("плагин не доложил счётчик в отведённое время")
+var errNoReport = errors.New("плагин не доложил о завершении работы в отведённое время")
 
 /*
- * waitCount ждёт доклад — но следит и за ЗАВЕРШЕНИЕМ процесса.
+ * waitComplete ждёт доклад work.complete — но следит и за ЗАВЕРШЕНИЕМ
+ * процесса.
  *
- * Без второго условия отказ плагина выглядел бы как таймаут: упавший
- * процесс докладывает ровно столько же, сколько зависший, и различить их по
- * одному только ожиданию нельзя. Первая редакция так и делала — и проверка
- * «без storage.write запуск обязан не пройти» честно падала, но тратила на
- * это все десять секунд, сообщая при этом не ту причину.
+ * Без второго условия отказ плагина выглядел бы как таймаут: упавший процесс
+ * докладывает ровно столько же, сколько зависший, и различить их по одному
+ * только ожиданию нельзя. Первая редакция так и делала — и проверка «без
+ * storage.write запуск обязан не пройти» честно падала, но тратила на это
+ * весь таймаут, сообщая при этом не ту причину.
  */
-func (r *reports) waitCount(timeout time.Duration, exited <-chan host.ExitStatus) (int, error) {
+func (r *reports) waitComplete(timeout time.Duration, exited <-chan host.ExitStatus) error {
 	select {
-	case n := <-r.counts:
-		return n, nil
+	case <-r.complete:
+		return nil
 	case st := <-exited:
-		return 0, fmt.Errorf("плагин завершился до доклада: %v (код %d, err=%v)",
+		return fmt.Errorf("плагин завершился до доклада: %v (код %d, err=%v)",
 			st.Kind, st.Code, st.Err)
 	case <-time.After(timeout):
-		return 0, errNoReport
+		return errNoReport
 	}
+}
+
+// counts — снимок значений "count:", диагностика.
+func (r *reports) counts() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]int, len(r.values))
+	copy(out, r.values)
+	return out
+}
+
+// completions — сколько докладов о завершении пришло.
+func (r *reports) completions() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.done
 }
 
 func (r *reports) signature() ([]byte, bool) {
