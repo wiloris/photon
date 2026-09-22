@@ -224,3 +224,61 @@ func TestADR072_CompletionIsNotTerminal(t *testing.T) {
 		t.Fatalf("завершение %v, ожидалось clean_stop", res.Exit.Kind)
 	}
 }
+
+// TestADR073_RequestedDoesNotGrant — манифест сам по себе прав не выдаёт.
+//
+// Плагин объявляет в манифесте `permissions.requested: [storage.write]` — и
+// это НИЧЕГО ему не даёт: права выдаёт вызывающий (ADR-073 §2.1). Проверяются
+// обе половины утверждения одним плагином и одним манифестом, отличается
+// только то, что передал вызывающий.
+//
+// Проверяется СОСТОЯНИЕ ХРАНИЛИЩА, а не текст ошибки: реализация, выводящая
+// granted из манифеста, дала бы успешный запуск и записи на диске — и отличить
+// её по сообщению было бы нельзя.
+func TestADR073_RequestedDoesNotGrant(t *testing.T) {
+	// ── половина 1: манифест просит, вызывающий не даёт ──────────────────
+	dir := t.TempDir()
+	root, entry := buildSlowwork(t, dir)
+	db := filepath.Join(dir, "engram.db")
+
+	m := slowworkManifest(entry)
+	if len(m.Permissions.Requested) == 0 {
+		t.Fatal("манифест обязан просить право — иначе проверять нечего")
+	}
+
+	_, err := Run(context.Background(), Options{
+		Manifest:     m,
+		DBPath:       db,
+		PackageRoot:  root,
+		Grants:       nil, // вызывающий не выдал НИЧЕГО
+		InitIdentity: true,
+		Install:      true,
+		Timeout:      20 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("запуск прошёл без выданных прав — manifest.requested выдал право сам")
+	}
+	if n := countKeys(t, db, pluginNamespace(slowworkID)); n != 0 {
+		t.Fatalf("в хранилище %d записей при пустых grants — право пришло из манифеста", n)
+	}
+
+	// ── половина 2: тот же манифест, право выдано вызывающим ─────────────
+	dir2 := t.TempDir()
+	root2, entry2 := buildSlowwork(t, dir2)
+	db2 := filepath.Join(dir2, "engram.db")
+
+	if _, err := Run(context.Background(), Options{
+		Manifest:     slowworkManifest(entry2),
+		DBPath:       db2,
+		PackageRoot:  root2,
+		Grants:       []string{"storage.write"}, // решение вызывающего
+		InitIdentity: true,
+		Install:      true,
+		Timeout:      20 * time.Second,
+	}); err != nil {
+		t.Fatalf("запуск с выданным правом: %v", err)
+	}
+	if n := countKeys(t, db2, pluginNamespace(slowworkID)); n != slowworkWrites {
+		t.Fatalf("в хранилище %d записей, ожидалось %d", n, slowworkWrites)
+	}
+}
