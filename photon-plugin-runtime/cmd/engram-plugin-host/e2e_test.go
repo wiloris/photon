@@ -53,13 +53,14 @@ func TestE2E_FullPath(t *testing.T) {
 	root, entry := buildCounter(t, dir)
 
 	res, err := Run(context.Background(), Options{
-		DBPath:      filepath.Join(dir, "engram.db"),
-		PackageRoot: root,
-		Entrypoint:  entry,
-		PluginID:    testPluginID,
-		Grants:      grantList(fullGrants),
-		Install:     true,
-		Timeout:     20 * time.Second,
+		DBPath:       filepath.Join(dir, "engram.db"),
+		PackageRoot:  root,
+		Entrypoint:   entry,
+		PluginID:     testPluginID,
+		Grants:       grantList(fullGrants),
+		InitIdentity: true, // свежий каталог: device.key ещё нет (ADR-069 п. 4.1)
+		Install:      true,
+		Timeout:      20 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -105,8 +106,12 @@ func TestE2E_StatePersistsAcrossRestarts(t *testing.T) {
 			Entrypoint:  entry,
 			PluginID:    testPluginID,
 			Grants:      grantList(fullGrants),
-			Install:     true,
-			Timeout:     20 * time.Second,
+			// Инициализация ровно на первом запуске: дальше device.key уже
+			// есть, и повторная попытка — отказ (ADR-069 п. 4.2). Три
+			// запуска подряд проходят только при ОДНОЙ инициализации.
+			InitIdentity: run == 0,
+			Install:      true,
+			Timeout:      20 * time.Second,
 		})
 		if err != nil {
 			t.Fatalf("запуск №%d: %v", run+1, err)
@@ -126,23 +131,27 @@ func TestE2E_SeparateStorageStartsFromScratch(t *testing.T) {
 	dir := t.TempDir()
 	root, entry := buildCounter(t, dir)
 
-	opts := func(db string) Options {
+	// initIdentity — параметром, а не полем по умолчанию: хранилища разные, а
+	// каталог ключей один (он выводится из пути базы, а обе базы лежат в dir).
+	// Значит инициализация здесь ровно одна — при первом запуске.
+	opts := func(db string, initIdentity bool) Options {
 		return Options{
-			DBPath:      db,
-			PackageRoot: root,
-			Entrypoint:  entry,
-			PluginID:    testPluginID,
-			Grants:      grantList(fullGrants),
-			Install:     true,
-			Timeout:     20 * time.Second,
+			DBPath:       db,
+			PackageRoot:  root,
+			Entrypoint:   entry,
+			PluginID:     testPluginID,
+			Grants:       grantList(fullGrants),
+			InitIdentity: initIdentity,
+			Install:      true,
+			Timeout:      20 * time.Second,
 		}
 	}
 
-	first, err := Run(context.Background(), opts(filepath.Join(dir, "a.db")))
+	first, err := Run(context.Background(), opts(filepath.Join(dir, "a.db"), true))
 	if err != nil {
 		t.Fatalf("первое хранилище: %v", err)
 	}
-	second, err := Run(context.Background(), opts(filepath.Join(dir, "b.db")))
+	second, err := Run(context.Background(), opts(filepath.Join(dir, "b.db"), false))
 	if err != nil {
 		t.Fatalf("второе хранилище: %v", err)
 	}
@@ -166,13 +175,14 @@ func TestE2E_DataReachesTheFile(t *testing.T) {
 	db := filepath.Join(dir, "engram.db")
 
 	if _, err := Run(context.Background(), Options{
-		DBPath:      db,
-		PackageRoot: root,
-		Entrypoint:  entry,
-		PluginID:    testPluginID,
-		Grants:      grantList(fullGrants),
-		Install:     true,
-		Timeout:     20 * time.Second,
+		DBPath:       db,
+		PackageRoot:  root,
+		Entrypoint:   entry,
+		PluginID:     testPluginID,
+		Grants:       grantList(fullGrants),
+		InitIdentity: true, // свежий каталог: device.key ещё нет (ADR-069 п. 4.1)
+		Install:      true,
+		Timeout:      20 * time.Second,
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -198,14 +208,15 @@ func TestE2E_EventTriggersReport(t *testing.T) {
 	root, entry := buildCounter(t, dir)
 
 	res, err := Run(context.Background(), Options{
-		DBPath:      filepath.Join(dir, "engram.db"),
-		PackageRoot: root,
-		Entrypoint:  entry,
-		PluginID:    testPluginID,
-		Grants:      grantList(fullGrants),
-		Events:      []string{"engram.counter.report", "engram.counter.report"},
-		Install:     true,
-		Timeout:     20 * time.Second,
+		DBPath:       filepath.Join(dir, "engram.db"),
+		PackageRoot:  root,
+		Entrypoint:   entry,
+		PluginID:     testPluginID,
+		Grants:       grantList(fullGrants),
+		Events:       []string{"engram.counter.report", "engram.counter.report"},
+		InitIdentity: true, // свежий каталог: device.key ещё нет (ADR-069 п. 4.1)
+		Install:      true,
+		Timeout:      20 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -240,9 +251,10 @@ func TestE2E_MissingPermissionStopsTheOperation(t *testing.T) {
 		Entrypoint:  entry,
 		PluginID:    testPluginID,
 		// identity.sign НЕ выдан.
-		Grants:  []string{"storage.read", "storage.write"},
-		Install: true,
-		Timeout: 20 * time.Second,
+		Grants:       []string{"storage.read", "storage.write"},
+		InitIdentity: true, // свежий каталог: device.key ещё нет (ADR-069 п. 4.1)
+		Install:      true,
+		Timeout:      20 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -275,13 +287,14 @@ func TestE2E_StorageDeniedBreaksTheCounter(t *testing.T) {
 	root, entry := buildCounter(t, dir)
 
 	_, err := Run(context.Background(), Options{
-		DBPath:      filepath.Join(dir, "engram.db"),
-		PackageRoot: root,
-		Entrypoint:  entry,
-		PluginID:    testPluginID,
-		Grants:      []string{"storage.read"},
-		Install:     true,
-		Timeout:     10 * time.Second,
+		DBPath:       filepath.Join(dir, "engram.db"),
+		PackageRoot:  root,
+		Entrypoint:   entry,
+		PluginID:     testPluginID,
+		Grants:       []string{"storage.read"},
+		InitIdentity: true, // свежий каталог: device.key ещё нет (ADR-069 п. 4.1)
+		Install:      true,
+		Timeout:      10 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("без storage.write запуск завершился успешно — запись прошла без права")

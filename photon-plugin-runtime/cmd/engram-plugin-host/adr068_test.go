@@ -33,6 +33,12 @@ func runOnce(t *testing.T, o Options) Result {
 	return res
 }
 
+// baseOptions — опции ОБЫЧНОГО запуска.
+//
+// Признак инициализации сюда не входит намеренно (ADR-069 п. 4.2): его
+// ставит вызывающий, и ровно на первый запуск в данном каталоге ключей.
+// Единообразный помощник здесь молча делал бы повторную инициализацию,
+// которая теперь отказ.
 func baseOptions(root, entry, db string) Options {
 	return Options{
 		DBPath:      db,
@@ -58,7 +64,9 @@ func TestADR068_KeyMaterialSurvivesRestart(t *testing.T) {
 	root, entry := buildCounter(t, dir)
 	db := filepath.Join(dir, "engram.db")
 
-	first := runOnce(t, baseOptions(root, entry, db))
+	firstOpts := baseOptions(root, entry, db)
+	firstOpts.InitIdentity = true // каталог пуст: идентичности ещё нет
+	first := runOnce(t, firstOpts)
 
 	device1 := mustRead(t, filepath.Join(dir, deviceKeyFile))
 	master1 := mustRead(t, filepath.Join(dir, masterKeyFile))
@@ -94,7 +102,9 @@ func TestADR068_KeyFilesArePrivate(t *testing.T) {
 	root, entry := buildCounter(t, dir)
 	db := filepath.Join(dir, "engram.db")
 
-	runOnce(t, baseOptions(root, entry, db))
+	initOpts := baseOptions(root, entry, db)
+	initOpts.InitIdentity = true
+	runOnce(t, initOpts)
 
 	for _, name := range []string{deviceKeyFile, masterKeyFile} {
 		info, err := os.Stat(filepath.Join(dir, name))
@@ -131,7 +141,9 @@ func TestADR068_PluginGetsOwnNamespace(t *testing.T) {
 	root, entry := buildCounter(t, dir)
 	db := filepath.Join(dir, "engram.db")
 
-	runOnce(t, baseOptions(root, entry, db))
+	initOpts := baseOptions(root, entry, db)
+	initOpts.InitIdentity = true
+	runOnce(t, initOpts)
 
 	buckets := bucketNames(t, db)
 
@@ -161,6 +173,10 @@ func TestADR068_InstallIsExplicit(t *testing.T) {
 
 	o := baseOptions(root, entry, db)
 	o.Install = false
+	// Инициализация нужна уже здесь: ключи читаются РАНЬШЕ хранилища
+	// (launcher.go), и без неё запуск отказал бы по другой причине — тест
+	// измерял бы не то, что назван измерять.
+	o.InitIdentity = true
 
 	_, err := Run(context.Background(), o)
 	if err == nil {
@@ -174,6 +190,9 @@ func TestADR068_InstallIsExplicit(t *testing.T) {
 	runOnce(t, baseOptions(root, entry, db))
 
 	o.Install = false
+	// Идентичность создана предыдущими запусками: повторная инициализация
+	// теперь отказ, и обычному запуску она не нужна.
+	o.InitIdentity = false
 	if _, err := Run(context.Background(), o); err != nil {
 		t.Fatalf("установленный плагин не запустился без флага установки: %v", err)
 	}
@@ -221,6 +240,7 @@ func TestADR068_MigrationHealsAfterCrashWindow(t *testing.T) {
 	// починить недостающий namespace сам.
 	o := baseOptions(root, entry, db)
 	o.Install = false
+	o.InitIdentity = true // хранилище трогали напрямую, ключей ещё нет
 	res := runOnce(t, o)
 
 	if len(res.Counts) != 1 || res.Counts[0] != 1 {

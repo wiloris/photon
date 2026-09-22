@@ -70,6 +70,19 @@ type Options struct {
 	// вместе — порознь они бесполезны.
 	KeyDir string
 
+	// InitIdentity — ЗАЯВЛЕНИЕ о том, что идентичности устройства ещё нет и
+	// её нужно создать (ADR-069 п. 4.1).
+	//
+	// Это НЕ ensure: с существующим device.key запуск отказывает (п. 4.2).
+	// Повторное создание существующей идентичности либо заменило бы ключ,
+	// либо промолчало — а молчание на вопрос «создавать ли идентичность» и
+	// есть дефект, ради которого ADR-069 написан.
+	//
+	// Асимметрия с Install намеренна: повторная установка установленного
+	// плагина не меняет ничего, повторное создание идентичности безобидным
+	// быть не может.
+	InitIdentity bool
+
 	// Install — регистрировать плагин, если он ещё не установлен.
 	//
 	// УСТАНОВКА — СОБЫТИЕ ЯВНОЕ (ADR-068 п. 5, п. 6.2). Запуск
@@ -117,7 +130,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	if keyDir == "" {
 		keyDir = filepath.Dir(o.DBPath)
 	}
-	keys, err := loadOrCreateKeys(ctx, keyDir, id, cr)
+	keys, err := loadOrCreateKeys(ctx, keyDir, id, cr, o.InitIdentity)
 	if err != nil {
 		return res, err
 	}

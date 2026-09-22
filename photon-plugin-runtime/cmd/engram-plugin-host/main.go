@@ -33,6 +33,9 @@ func main() {
 		keyDir  = flag.String("keys", "", "каталог ключевого материала; по умолчанию — каталог хранилища")
 		install = flag.Bool("install", false,
 			"зарегистрировать плагин, если он ещё не установлен (ADR-068 п. 6.2: установка — событие явное)")
+		initIdentity = flag.Bool("init", false,
+			"создать идентичность устройства, если её ещё не было (ADR-069). "+
+				"С существующим device.key — ошибка: это операция создания, а не ensure")
 	)
 	flag.Parse()
 
@@ -52,14 +55,15 @@ func main() {
 		DBPath: *db,
 		// Каталог плагина становится PackageRoot: host склеивает его с
 		// Entrypoint и делает рабочим каталогом процесса.
-		PackageRoot: filepath.Dir(abs),
-		Entrypoint:  filepath.Base(abs),
-		PluginID:    *pluginID,
-		Grants:      splitList(*grants),
-		Events:      splitList(*events),
-		Timeout:     *timeout,
-		KeyDir:      *keyDir,
-		Install:     *install,
+		PackageRoot:  filepath.Dir(abs),
+		Entrypoint:   filepath.Base(abs),
+		PluginID:     *pluginID,
+		Grants:       splitList(*grants),
+		Events:       splitList(*events),
+		Timeout:      *timeout,
+		KeyDir:       *keyDir,
+		InitIdentity: *initIdentity,
+		Install:      *install,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "запуск плагина: %v\n", err)
