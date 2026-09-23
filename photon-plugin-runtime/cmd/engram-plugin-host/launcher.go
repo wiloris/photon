@@ -133,7 +133,22 @@ type Result struct {
 	Lines []string
 
 	// Exit — чем закончился процесс плагина.
+	//
+	// Осмысленно ТОЛЬКО при ExitKnown. Нулевое значение ExitKind есть
+	// ExitCleanStop, поэтому незаполненный Exit утверждал бы «штатная
+	// остановка, код 0» — ровно противоположное правде на пути, где статус
+	// не получен вовсе.
 	Exit host.ExitStatus
+
+	// ExitKnown — получен ли статус завершения.
+	//
+	// Поле существует, потому что «неизвестно» и «clean_stop» неразличимы
+	// в самом ExitStatus. Ложь тут дороже пропуска: при таймауте плагин жив
+	// или завис, и сообщать о его штатной остановке нельзя.
+	//
+	// false бывает на двух путях: отказ до запуска процесса и ожидание
+	// доклада, истёкшее раньше завершения плагина.
+	ExitKnown bool
 }
 
 // WorkReport — один доклад плагина о завершении единицы работы (ADR-074).
@@ -148,8 +163,7 @@ type WorkReport struct {
 
 // Run выполняет один полный цикл: открыть хранилище, выдать права, запустить
 // плагин, дождаться докладов, остановить, проверить подпись.
-func Run(ctx context.Context, o Options) (Result, error) {
-	var res Result
+func Run(ctx context.Context, o Options) (res Result, err error) {
 
 	if o.Timeout <= 0 {
 		o.Timeout = 15 * time.Second
@@ -259,6 +273,20 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	// ── доклады плагина ──────────────────────────────────────────────────
 	rep := newReports()
 
+	/*
+	 * Накопленное доходит до вызывающего НА ЛЮБОМ пути, включая ошибку.
+	 *
+	 * Прежде Result заполнялся только после успешного Wait, и два десятка
+	 * ранних возвратов отдавали нулевую структуру: упавший плагин уносил с
+	 * собой и свой журнал, и свои доклады, и типизированную причину
+	 * завершения — при том что всё это было собрано.
+	 *
+	 * Порядок defer'ов здесь работает в нашу пользу: h.Stop регистрируется
+	 * ниже, а значит выполнится РАНЬШЕ (LIFO), и снимок захватит в том числе
+	 * строки, написанные плагином при остановке.
+	 */
+	defer rep.fillInto(&res)
+
 	exec, err := coreops.New(coreops.Config{
 		Storage: st,
 		// Namespace ПЛАГИНА, а не общий на всех (ADR-068 п. 4.1):
@@ -359,15 +387,16 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		return res, fmt.Errorf("stop: %w", err)
 	}
 
-	exit, err := h.Wait(stopCtx)
-	if err != nil {
-		return res, fmt.Errorf("wait: %w", err)
+	exit, waitErr := h.Wait(stopCtx)
+	if waitErr != nil {
+		return res, fmt.Errorf("wait: %w", waitErr)
 	}
-	res.Exit = exit
-	res.Lines = rep.snapshot()
-	res.Counts = rep.counts()
-	res.Completions = rep.completions()
-	res.Reports = rep.workReports()
+
+	// Тем же путём, что и статус упавшего плагина: один писатель, одно
+	// место. Ручного копирования полей здесь больше нет — их переносит
+	// defer выше, и на успешном пути он отработает так же, как на любом
+	// другом.
+	rep.setExit(exit)
 
 	/*
 	 * Проверка подписи — ДИАГНОСТИКА, и она знает формат counter:
@@ -375,9 +404,12 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	 * плагина, не пишущего "count:", сверять не с чем, и это не ошибка
 	 * запуска (ADR-072 §8).
 	 */
-	if sig, ok := rep.signature(); ok && len(res.Counts) > 0 {
+	// Счётчики берутся У REP, а не из res: res.Counts заполняет defer, и на
+	// этой строке он ещё не отработал.
+	counts := rep.counts()
+	if sig, ok := rep.signature(); ok && len(counts) > 0 {
 		res.Signature = sig
-		last := strconv.Itoa(res.Counts[len(res.Counts)-1])
+		last := strconv.Itoa(counts[len(counts)-1])
 
 		// Проверка идёт по ДОМЕННО-РАЗДЕЛЁННОМУ входу, а не по сырому
 		// значению: именно его подписал coreops (ADR-037). Первая редакция
@@ -474,6 +506,17 @@ type reports struct {
 	// complete — доклады о завершении. Буфер на случай, если плагин
 	// доложил раньше, чем хост начал ждать: доклад не теряется.
 	complete chan struct{}
+
+	// exit/exitKnown — статус завершения, полученный ОДИН раз.
+	//
+	// Живёт здесь, потому что host.Exited() — канал на одну выдачу: он
+	// буферизован на единицу и закрывается сразу после отправки. Кто
+	// прочитал статус, тот им и владеет; второе чтение вернёт нулевое
+	// значение, то есть ЛОЖНЫЙ clean_stop с кодом 0 (измерено). Поэтому
+	// восстановить статус повторным чтением или повторным Wait нельзя —
+	// его нужно сохранить в момент получения.
+	exit      host.ExitStatus
+	exitKnown bool
 }
 
 func newReports() *reports {
@@ -521,6 +564,40 @@ func (r *reports) onLog(pluginID, level, message string) {
 	}
 }
 
+// setExit запоминает статус завершения.
+//
+// ЕДИНСТВЕННЫЙ писатель, и вызывается ровно из двух мест: ветка exited в
+// waitComplete и успешный путь после h.Wait. Оба — первое и единственное
+// чтение канала на своём пути.
+func (r *reports) setExit(st host.ExitStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.exit = st
+	r.exitKnown = true
+}
+
+// fillInto переносит накопленное в Result.
+//
+// Вызывается ОДНИМ defer'ом из Run, а не присваиваниями у каждого возврата.
+// Причина не в краткости: возвратов в Run два десятка, и правка, требующая
+// помнить о заполнении на каждом новом пути, продержится до первого нового
+// пути. Раньше так и было — данные доходили только после успешного Wait, а
+// два десятка ранних возвратов отдавали нулевой Result.
+//
+// Signature и SignatureVerified НЕ трогаются: их пишет сам Run, и defer
+// выполняется позже.
+func (r *reports) fillInto(res *Result) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	res.Lines = append([]string(nil), r.lines...)
+	res.Counts = append([]int(nil), r.values...)
+	res.Reports = append([]WorkReport(nil), r.work...)
+	res.Completions = len(r.work)
+	res.Exit = r.exit
+	res.ExitKnown = r.exitKnown
+}
+
 var errNoReport = errors.New("плагин не доложил о завершении работы в отведённое время")
 
 /*
@@ -538,6 +615,9 @@ func (r *reports) waitComplete(timeout time.Duration, exited <-chan host.ExitSta
 	case <-r.complete:
 		return nil
 	case st := <-exited:
+		// Статус сохраняется ДО возврата ошибки: это единственное его
+		// извлечение, и форматирование в текст его не сохраняет.
+		r.setExit(st)
 		return fmt.Errorf("плагин завершился до доклада: %v (код %d, err=%v)",
 			st.Kind, st.Code, st.Err)
 	case <-time.After(timeout):
@@ -579,12 +659,4 @@ func (r *reports) signature() ([]byte, bool) {
 	out := make([]byte, len(r.sig))
 	copy(out, r.sig)
 	return out, true
-}
-
-func (r *reports) snapshot() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, len(r.lines))
-	copy(out, r.lines)
-	return out
 }

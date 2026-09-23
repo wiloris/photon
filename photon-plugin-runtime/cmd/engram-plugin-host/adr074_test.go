@@ -64,6 +64,16 @@ func reporterManifest(entry string) *manifest.Manifest {
 // runReporter запускает фикстуру с заданной спецификацией докладов.
 func runReporter(t *testing.T, spec, eventSpec string, events []string) (Result, error) {
 	t.Helper()
+	return runReporterTimeout(t, spec, eventSpec, events, 30*time.Second)
+}
+
+// runReporterTimeout — то же с явным пределом ожидания доклада.
+//
+// Отдельный параметр нужен проверкам таймаута: ждать там положено МЕНЬШЕ, и
+// подгонять под них общий предел значило бы сделать остальные тесты
+// чувствительными к скорости машины.
+func runReporterTimeout(t *testing.T, spec, eventSpec string, events []string, timeout time.Duration) (Result, error) {
+	t.Helper()
 
 	t.Setenv("REPORTER_SPEC", spec)
 	t.Setenv("REPORTER_EVENT_SPEC", eventSpec)
@@ -79,7 +89,7 @@ func runReporter(t *testing.T, spec, eventSpec string, events []string) (Result,
 		Events:       events,
 		InitIdentity: true,
 		Install:      true,
-		Timeout:      30 * time.Second,
+		Timeout:      timeout,
 	})
 }
 
@@ -147,6 +157,11 @@ func TestADR074_T3_FailureIsAnApplicationResultNotAProcessFailure(t *testing.T) 
 	}
 	if res.Exit.Code != 0 {
 		t.Fatalf("код выхода %d, ожидался 0", res.Exit.Code)
+	}
+	// Статус ПОЛУЧЕН, а не оставлен нулевым: иначе clean_stop выше был бы
+	// нулевым значением ExitKind, а не утверждением о плагине.
+	if !res.ExitKnown {
+		t.Fatal("ExitKnown = false: clean_stop оказался нулевым значением, а не полученным статусом")
 	}
 }
 
