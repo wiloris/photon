@@ -26,11 +26,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wiloris/photon-core/adapters/aesgcm"
 	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
 	ed25519adapter "github.com/wiloris/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon-core/adapters/pion"
 	"github.com/wiloris/photon-core/ports"
 
 	"github.com/wiloris/photon-plugin-runtime/coreops"
@@ -38,6 +40,15 @@ import (
 	"github.com/wiloris/photon-plugin-runtime/manifest"
 	"github.com/wiloris/photon-plugin-runtime/permissions"
 )
+
+// p2pEstablishTimeout — потолок согласования P2P в этой композиции.
+//
+// СТРОГО меньше ipc.DefaultRequestTimeout (30 с) — инвариант ADR-076 §7.7:
+// ожидание установления обязано кончаться причиной со стороны P2P, а не
+// дедлайном IPC, иначе плагин не отличит «собеседник не дошёл» от «истёк срок
+// запроса». coreops проверяет это же неравенство при конструировании, так что
+// нарушение здесь падало бы при запуске, а не в рантайме.
+const p2pEstablishTimeout = 20 * time.Second
 
 // Options — всё, что launcher не может решить за вызывающего.
 type Options struct {
@@ -287,6 +298,50 @@ func Run(ctx context.Context, o Options) (res Result, err error) {
 	 */
 	defer rep.fillInto(&res)
 
+	/*
+	 * ── P2P ──────────────────────────────────────────────────────────────
+	 *
+	 * Композиция продакшн-хоста, предусмотренная ADR-076 §4. Адаптер
+	 * строится ВСЕГДА: он не открывает ни одного сокета до первого
+	 * согласования (ICE-агент создаётся на вызов), а доступ к домену
+	 * решает право p2p.connect, не наличие адаптера.
+	 *
+	 * Личность та же, что у всего остального: ключ устройства (ADR-021,
+	 * ADR-069). Отдельной P2P-личности не заводится — handshake ADR-041
+	 * подтверждает именно её.
+	 *
+	 * STUN/TURN не задаются: адрес сервера — параметр развёртывания, а не
+	 * этого среза, и без него согласование работает на host-кандидатах.
+	 */
+	devicePub, err := id.PublicKeyOf(ctx, keys.Device)
+	if err != nil {
+		return res, fmt.Errorf("публичный ключ устройства: %w", err)
+	}
+	p2pAdapter, err := pion.New(pion.Config{
+		Identity: id,
+		Self:     ports.IdentityPair{Public: devicePub, Private: keys.Device},
+		// Строго меньше ipc.DefaultRequestTimeout — инвариант ADR-076 §7.7.
+		// Значение то же, что умолчание coreops: держать здесь ДРУГОЕ число
+		// значило бы завести вторую истину о том же сроке.
+		EstablishTimeout: p2pEstablishTimeout,
+	})
+	if err != nil {
+		return res, fmt.Errorf("p2p: %w", err)
+	}
+	defer p2pAdapter.Close()
+
+	// Событие доставляется плагину через его же сессию IPC. Хост к этому
+	// моменту ещё не создан, поэтому ссылка берётся отложенно: coreops
+	// зовёт колбэк только во время работы плагина, когда хост уже есть.
+	var hostRef atomic.Pointer[host.Host]
+	emitEvent := func(pluginID, eventType string, payload []byte) error {
+		h := hostRef.Load()
+		if h == nil {
+			return errors.New("host is not running")
+		}
+		return h.SendEvent(eventType, payload)
+	}
+
 	exec, err := coreops.New(coreops.Config{
 		Storage: st,
 		// Namespace ПЛАГИНА, а не общий на всех (ADR-068 п. 4.1):
@@ -303,6 +358,10 @@ func Run(ctx context.Context, o Options) (res Result, err error) {
 		// Доклад о завершении — отдельный канал, не строка журнала
 		// (ADR-072 §2).
 		OnWorkComplete: rep.onWorkComplete,
+
+		P2P:                 p2pAdapter,
+		EmitEvent:           emitEvent,
+		P2PEstablishTimeout: p2pEstablishTimeout,
 	})
 	if err != nil {
 		return res, fmt.Errorf("executor: %w", err)
@@ -336,6 +395,7 @@ func Run(ctx context.Context, o Options) (res Result, err error) {
 		Authorizer:  permissions.NewAuthorizer(policy),
 		Handler:     exec,
 	})
+	hostRef.Store(h)
 
 	if err := h.Start(ctx); err != nil {
 		return res, fmt.Errorf("start: %w", err)
