@@ -196,6 +196,19 @@ type Session struct {
 	inflight map[uint64]context.CancelFunc
 	closeErr error
 
+	// idle закрыт, ПОКА inflight пуст, и открыт, пока есть хотя бы один
+	// запрос в полёте.
+	//
+	// Нужен ровно для одного: STOP не должен опередить ответ на запрос,
+	// который уже исполняется. Канал, а не sync.Cond, потому что ожидание
+	// обязано прерываться по context — у Cond этого нет.
+	//
+	// Инвариант держится в трёх местах и только в них: registerInflight
+	// (0 → 1 открывает), unregisterInflight (1 → 0 закрывает) и closeWith
+	// (закрывает безусловно, иначе ожидающий Stop повис бы на закрытой
+	// сессии).
+	idle chan struct{}
+
 	events chan *Message
 	done   chan struct{}
 	// closeOnce гарантирует, что done закрывается ровно один раз.
@@ -226,9 +239,14 @@ func New(cfg Config) *Session {
 	if cfg.HandshakeTimeout <= 0 {
 		cfg.HandshakeTimeout = 10 * time.Second
 	}
+	// idle создаётся ЗАКРЫТЫМ: запросов ещё нет, и ждать нечего.
+	idle := make(chan struct{})
+	close(idle)
+
 	return &Session{
 		cfg:      cfg,
 		inflight: make(map[uint64]context.CancelFunc),
+		idle:     idle,
 		events:   make(chan *Message, cfg.EventQueueSize),
 		done:     make(chan struct{}),
 	}
@@ -469,14 +487,45 @@ func (s *Session) registerInflight(id uint64, cancel context.CancelFunc) bool {
 	if _, exists := s.inflight[id]; exists {
 		return false // повторное использование активного request_id
 	}
+	if len(s.inflight) == 0 {
+		s.idle = make(chan struct{}) // простой кончился
+	}
 	s.inflight[id] = cancel
 	return true
 }
 
+// unregisterInflight снимает запрос с учёта.
+//
+// Вызывается ОТЛОЖЕННО из handleRequest, то есть ПОСЛЕ того, как ответ уже
+// записан. Отсюда и следует нужное свойство: «inflight пуст» тождественно
+// «на все принятые запросы ответы отправлены».
 func (s *Session) unregisterInflight(id uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.inflight[id]; !ok {
+		return // уже снят закрытием сессии
+	}
 	delete(s.inflight, id)
+	if len(s.inflight) == 0 {
+		close(s.idle)
+	}
+}
+
+// awaitInflight ждёт, пока все принятые запросы не получат ответ.
+//
+// Ограничено ctx вызывающего: зависший плагин не должен превращать штатную
+// остановку в вечное ожидание. По истечении ctx поведение прежнее — STOP
+// уходит всё равно.
+func (s *Session) awaitInflight(ctx context.Context) {
+	s.mu.Lock()
+	idle := s.idle
+	s.mu.Unlock()
+
+	select {
+	case <-idle:
+	case <-ctx.Done():
+	case <-s.done:
+	}
 }
 
 func (s *Session) cancelRequest(id uint64) {
@@ -526,7 +575,25 @@ func (s *Session) eventLoop() {
 }
 
 // Stop инициирует штатную остановку (docs/ipc.md, раздел 9).
+// Stop отправляет STOP — но НЕ РАНЬШЕ, чем исполняющиеся запросы получат
+// ответы.
+//
+// Гарантия общая для любого REQUEST, а не частный случай какой-то операции:
+//
+//	REQUEST → Handle → RESPONSE записан → запрос снят с учёта → STOP
+//
+// Без ожидания порядок зависел от того, кто первым возьмёт writeMu, и STOP
+// мог опередить ответ: плагин получал остановку раньше ответа на собственный
+// запрос, закрывал сессию и считал ДОСТАВЛЕННЫЙ вызов недоставленным.
+// Измерено на Android — два одинаковых запуска дали код выхода 0 и 4.
+//
+// Остаточное окно названо прямо: запрос, ПРИНЯТЫЙ после того, как ожидание
+// завершилось, снова может не успеть получить ответ. Закрывать его значило бы
+// отвергать новые запросы во время остановки, то есть менять семантику приёма,
+// а не порядок записи. Для решения о сроке жизни плагина это уже решено:
+// остановку запросил хост, и продолжать работу плагину незачем.
 func (s *Session) Stop(ctx context.Context) error {
+	s.awaitInflight(ctx)
 	return s.write(&Message{Type: MsgStop})
 }
 
@@ -565,6 +632,13 @@ func (s *Session) closeWith(cause error) error {
 			cancels = append(cancels, c)
 		}
 		s.inflight = make(map[uint64]context.CancelFunc)
+		// Разбудить ожидающий Stop: на закрытой сессии ответов уже не
+		// будет, и ждать их незачем.
+		select {
+		case <-s.idle:
+		default:
+			close(s.idle)
+		}
 		s.mu.Unlock()
 
 		close(s.done)
