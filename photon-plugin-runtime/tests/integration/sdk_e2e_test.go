@@ -251,7 +251,7 @@ func TestE2E_AllCatalogOperations(t *testing.T) {
 		//
 		// Вызов НЕ терминален: сессия после него продолжает жить, и это
 		// видно по тому, что тест завершается штатно, а не обрывом.
-		if err := p.WorkComplete(ctx); err != nil {
+		if err := p.WorkComplete(ctx, sdk.WorkSuccess, nil); err != nil {
 			t.Fatal(err)
 		}
 	})

@@ -189,7 +189,11 @@ func report(ctx context.Context, p sdk.Plugin, n int) error {
 	 * STOP от хоста. Для доклада по событию вызов повторяется — единица
 	 * работы у counter ровно одна на доклад.
 	 */
-	if err := p.WorkComplete(ctx); err != nil {
+	// WorkSuccess и пустая нагрузка — прежнее поведение, записанное явно
+	// (ADR-074): счётчик свой результат по-прежнему отдаёт строкой журнала
+	// "count:", которая остаётся ДИАГНОСТИКОЙ композиции, а не контрактом.
+	// Переводить counter на структурную нагрузку — не задача этого среза.
+	if err := p.WorkComplete(ctx, sdk.WorkSuccess, nil); err != nil {
 		return fmt.Errorf("work complete: %w", err)
 	}
 	return nil

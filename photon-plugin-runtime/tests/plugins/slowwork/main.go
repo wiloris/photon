@@ -108,7 +108,7 @@ func handleEvent(ctx context.Context, p sdk.Plugin) error {
 	if err := p.Storage().Put(ctx, namespace, afterEventKey, []byte("1")); err != nil {
 		return fmt.Errorf("put %s: %w", afterEventKey, err)
 	}
-	return p.WorkComplete(ctx)
+	return p.WorkComplete(ctx, sdk.WorkSuccess, nil)
 }
 
 func work(ctx context.Context, p sdk.Plugin) error {
@@ -127,7 +127,7 @@ func work(ctx context.Context, p sdk.Plugin) error {
 	 * Права на него не требуется, и это проверяется самим тестом: плагину
 	 * выдан лишь storage.write, а identity.*, crypto.* и storage.read — нет.
 	 */
-	return p.WorkComplete(ctx)
+	return p.WorkComplete(ctx, sdk.WorkSuccess, nil)
 }
 
 func fail(code int, what string, err error) {

@@ -119,11 +119,31 @@ type Result struct {
 	// доклад шлёт любой плагин, а не только counter.
 	Completions int
 
+	// Reports — доклады целиком, В ПОРЯДКЕ ПОСТУПЛЕНИЯ (ADR-074).
+	//
+	// СПИСОК, А НЕ ПОСЛЕДНЕЕ ЗНАЧЕНИЕ. work.complete не является
+	// состоянием «последний результат»: каждый доклад самостоятелен и не
+	// заменяет предыдущий (ADR-074 §10). Поле вида `LastPayload []byte`
+	// ввело бы семантику last-write-wins, которой в контракте нет, —
+	// композиции, которой нужен последний доклад, придётся взять его
+	// отсюда и отвечать за это правило самой.
+	Reports []WorkReport
+
 	// Lines — журнал плагина целиком, как он пришёл в Log-колбэк.
 	Lines []string
 
 	// Exit — чем закончился процесс плагина.
 	Exit host.ExitStatus
+}
+
+// WorkReport — один доклад плагина о завершении единицы работы (ADR-074).
+//
+// Payload НЕПРОЗРАЧЕН: launcher его не разбирает и ни одного имени поля внутри
+// не знает. Он лишь доносит байты до вызывающего в том же виде, в каком их
+// отправил плагин, — разбор принадлежит потребителю (ADR-074 §3, §6).
+type WorkReport struct {
+	Status  coreops.WorkStatus
+	Payload []byte
 }
 
 // Run выполняет один полный цикл: открыть хранилище, выдать права, запустить
@@ -347,6 +367,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	res.Lines = rep.snapshot()
 	res.Counts = rep.counts()
 	res.Completions = rep.completions()
+	res.Reports = rep.workReports()
 
 	/*
 	 * Проверка подписи — ДИАГНОСТИКА, и она знает формат counter:
@@ -445,7 +466,10 @@ type reports struct {
 	lines  []string
 	sig    []byte
 	values []int
-	done   int
+
+	// work — доклады о завершении, в порядке поступления. СПИСОК, а не
+	// счётчик и не последнее значение: см. Result.Reports.
+	work []WorkReport
 
 	// complete — доклады о завершении. Буфер на случай, если плагин
 	// доложил раньше, чем хост начал ждать: доклад не теряется.
@@ -456,10 +480,13 @@ func newReports() *reports {
 	return &reports{complete: make(chan struct{}, 8)}
 }
 
-// onWorkComplete — плагин доложил о завершении единицы работы.
-func (r *reports) onWorkComplete(string) {
+// onWorkComplete — плагин доложил о завершении единицы работы и о её исходе.
+func (r *reports) onWorkComplete(_ string, status coreops.WorkStatus, payload []byte) {
+	// Копия: байты принадлежат разбору запроса в coreops, и удерживать
+	// чужую память дольше вызова launcher не вправе. Копирование сохраняет
+	// и nil — пустой доклад остаётся пустым, а не становится []byte{}.
 	r.mu.Lock()
-	r.done++
+	r.work = append(r.work, WorkReport{Status: status, Payload: append([]byte(nil), payload...)})
 	r.mu.Unlock()
 
 	select {
@@ -531,7 +558,16 @@ func (r *reports) counts() []int {
 func (r *reports) completions() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.done
+	return len(r.work)
+}
+
+// workReports — снимок докладов в порядке поступления.
+func (r *reports) workReports() []WorkReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]WorkReport, len(r.work))
+	copy(out, r.work)
+	return out
 }
 
 func (r *reports) signature() ([]byte, bool) {

@@ -350,8 +350,31 @@ func (c *client) Log(ctx context.Context, level LogLevel, message string) error 
 	return c.call(ctx, "log.write", logRequest{Level: string(level), Message: message}, nil)
 }
 
-func (c *client) WorkComplete(ctx context.Context) error {
-	return c.call(ctx, "work.complete", nil, nil)
+// WorkComplete reports the outcome of a unit of work (ADR-074).
+//
+// Both checks below are local and deliberate duplicates of the runtime's
+// own: the runtime validates independently because the SDK runs inside
+// an untrusted process and cannot be believed (ADR-031). Checking here
+// too is what turns "the frame was rejected and the session is gone"
+// into a plain error the plugin author can act on, before a single byte
+// reaches the channel.
+//
+// A nil return means the REPORT WAS DELIVERED — including when status is
+// WorkFailure. An error means it was not (ADR-074 §4.1); the failure of
+// the work itself is carried by status, never by this return value.
+func (c *client) WorkComplete(ctx context.Context, status WorkStatus, payload []byte) error {
+	switch status {
+	case WorkSuccess, WorkFailure:
+	default:
+		return fmt.Errorf("%w: unknown work status %q", ErrInvalidRequest, status)
+	}
+	if len(payload) > MaxWorkPayloadBytes {
+		// Rejected, never truncated: a silently shortened payload is a
+		// plausible-looking wrong answer, which is worse than no answer.
+		return fmt.Errorf("%w: work payload of %d bytes exceeds the %d byte limit",
+			ErrInvalidRequest, len(payload), MaxWorkPayloadBytes)
+	}
+	return c.call(ctx, "work.complete", workCompleteRequest{Status: status, Payload: payload}, nil)
 }
 
 func (c *client) Storage() Storage   { return &storageClient{c: c} }

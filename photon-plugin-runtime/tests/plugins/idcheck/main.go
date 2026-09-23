@@ -76,7 +76,7 @@ func main() {
 	if err := p.Storage().Put(ctx, namespace, resultKey, []byte(okValue)); err != nil {
 		fail(4, "put result", err)
 	}
-	if err := p.WorkComplete(ctx); err != nil {
+	if err := p.WorkComplete(ctx, sdk.WorkSuccess, nil); err != nil {
 		fail(5, "work complete", err)
 	}
 

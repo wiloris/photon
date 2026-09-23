@@ -22,6 +22,19 @@ type logRequest struct {
 	Message string `json:"message"`
 }
 
+// workCompleteRequest — доклад о завершении (ADR-074 §4).
+//
+// Payload объявлен []byte: encoding/json кодирует его в base64 — ровно
+// так же, как Value у storagePutRequest. Механизм не новый, и предел
+// (MaxWorkPayloadBytes) проверяется по СЫРЫМ байтам, до кодирования.
+//
+// omitempty у обоих полей: пустой доклад обязан быть неотличим от
+// доклада старого плагина, не знавшего про эти поля (ADR-074 §12).
+type workCompleteRequest struct {
+	Status  WorkStatus `json:"status,omitempty"`
+	Payload []byte     `json:"payload,omitempty"`
+}
+
 type storageGetRequest struct {
 	Namespace string `json:"namespace"`
 	Key       string `json:"key"`
