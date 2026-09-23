@@ -35,8 +35,8 @@ type session struct {
 	nextID   uint16
 	closed   bool
 
-	bidi chan *sctp.Stream
-	uni  chan *sctp.Stream
+	bidi chan streamPair
+	uni  chan streamPair
 
 	onClose func() // снимает сессию с учёта у адаптера
 }
@@ -46,8 +46,8 @@ func newSession(expected ports.PublicKey, onClose func()) *session {
 		peerExpected: expected,
 		ready:        make(chan struct{}),
 		failed:       make(chan struct{}),
-		bidi:         make(chan *sctp.Stream, 8),
-		uni:          make(chan *sctp.Stream, 8),
+		bidi:         make(chan streamPair, 8),
+		uni:          make(chan streamPair, 8),
 		onClose:      onClose,
 		// Идентификаторы потоков: инициатор чётные, отвечающий нечётные —
 		// иначе обе стороны заняли бы один и тот же id. Начальное значение
@@ -121,29 +121,29 @@ func (s *session) RemoteEndpoint() ports.Endpoint {
 }
 
 func (s *session) OpenStream(ctx context.Context) (ports.Stream, error) {
-	st, err := s.open(ctx, dirBidi)
+	p, err := s.open(ctx, dirBidi)
 	if err != nil {
 		return nil, err
 	}
-	return &stream{s: st}, nil
+	return &stream{p: p}, nil
 }
 
 func (s *session) OpenUniStream(ctx context.Context) (ports.SendStream, error) {
-	st, err := s.open(ctx, dirUni)
+	p, err := s.open(ctx, dirUni)
 	if err != nil {
 		return nil, err
 	}
-	return &sendStream{s: st}, nil
+	return &sendStream{p: p}, nil
 }
 
-func (s *session) open(ctx context.Context, dir byte) (*sctp.Stream, error) {
+func (s *session) open(ctx context.Context, dir byte) (streamPair, error) {
 	if err := s.await(ctx); err != nil {
-		return nil, err
+		return streamPair{}, err
 	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return nil, ports.ErrSessionFailed
+		return streamPair{}, ports.ErrSessionFailed
 	}
 	id := s.nextID
 	s.nextID += 2
@@ -152,45 +152,45 @@ func (s *session) open(ctx context.Context, dir byte) (*sctp.Stream, error) {
 
 	st, err := assoc.OpenStream(id, sctp.PayloadTypeWebRTCBinary)
 	if err != nil {
-		return nil, fmt.Errorf("pion: open stream: %w", err)
+		return streamPair{}, fmt.Errorf("pion: open stream: %w", err)
 	}
 	if err := writeDirection(st, dir); err != nil {
 		_ = st.Close()
-		return nil, err
+		return streamPair{}, err
 	}
-	return st, nil
+	return newStreamPair(st, assoc.MaxMessageSize()), nil
 }
 
 func (s *session) AcceptStream(ctx context.Context) (ports.Stream, error) {
-	st, err := s.accept(ctx, s.bidi)
+	p, err := s.accept(ctx, s.bidi)
 	if err != nil {
 		return nil, err
 	}
-	return &stream{s: st}, nil
+	return &stream{p: p}, nil
 }
 
 func (s *session) AcceptUniStream(ctx context.Context) (ports.RecvStream, error) {
-	st, err := s.accept(ctx, s.uni)
+	p, err := s.accept(ctx, s.uni)
 	if err != nil {
 		return nil, err
 	}
-	return &recvStream{s: st}, nil
+	return &recvStream{p: p}, nil
 }
 
-func (s *session) accept(ctx context.Context, q chan *sctp.Stream) (*sctp.Stream, error) {
+func (s *session) accept(ctx context.Context, q chan streamPair) (streamPair, error) {
 	if err := s.await(ctx); err != nil {
-		return nil, err
+		return streamPair{}, err
 	}
 	select {
-	case st, ok := <-q:
+	case p, ok := <-q:
 		if !ok {
-			return nil, ports.ErrSessionFailed
+			return streamPair{}, ports.ErrSessionFailed
 		}
-		return st, nil
+		return p, nil
 	case <-s.failed:
-		return nil, s.failure()
+		return streamPair{}, s.failure()
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return streamPair{}, ctx.Err()
 	}
 }
 
@@ -209,7 +209,8 @@ func (s *session) acceptLoop() {
 			}
 			return
 		}
-		dir, derr := readDirection(st)
+		pair := newStreamPair(st, s.assoc.MaxMessageSize())
+		dir, derr := readDirection(pair.r)
 		if derr != nil {
 			// Неизвестное направление отвергает ПОТОК, не соединение.
 			_ = st.Close()
@@ -220,7 +221,7 @@ func (s *session) acceptLoop() {
 			q = s.uni
 		}
 		select {
-		case q <- st:
+		case q <- pair:
 		case <-s.failed:
 			_ = st.Close()
 			return
