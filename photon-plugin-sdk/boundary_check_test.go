@@ -104,6 +104,33 @@ func TestOperationCatalogCoverage(t *testing.T) {
 		"crypto.encrypt", "crypto.decrypt",
 		"log.write",
 		"work.complete", // ADR-072
+		// ADR-076: домен внесён в каталог на условии 4 из шести,
+		// метода в SDK ещё нет — см. pendingAPI ниже.
+		"p2p.create_offer", "p2p.accept_offer", "p2p.complete",
+		"p2p.peer", "p2p.send", "p2p.close",
+	}
+
+	// pendingAPI — операции, внесённые в каталог, но сознательно не имеющие
+	// метода SDK.
+	//
+	// Исключение существует потому, что порядок добавления домена
+	// (sdk-boundary.md) требует вносить операции в документ и в таблицу
+	// runtime ОДНОВРЕМЕННО — на условии 4, когда исполнителя по условию 5 ещё
+	// нет. Без этого списка тест пришлось бы либо ослабить, либо сделать
+	// ложным: его собственный комментарий обещает сверку с разделом 3, а
+	// раздел 3 эти операции уже содержит.
+	//
+	// Исключение обязано быть ВРЕМЕННЫМ и проверяемым, поэтому оно сужено с
+	// двух сторон: операция здесь обязана быть в каталоге (иначе исключение
+	// переживёт саму операцию), и появление метода SDK обязано убрать её
+	// отсюда (проверяется ниже).
+	pendingAPI := map[string]bool{
+		"p2p.create_offer": true,
+		"p2p.accept_offer": true,
+		"p2p.complete":     true,
+		"p2p.peer":         true,
+		"p2p.send":         true,
+		"p2p.close":        true,
 	}
 
 	// Методы API, каждый — одна операция.
@@ -131,9 +158,32 @@ func TestOperationCatalogCoverage(t *testing.T) {
 	}
 
 	for _, op := range catalog {
-		if !covered[op] {
-			t.Fatalf("catalog operation %q has no API method — either add the method "+
-				"or remove the operation from sdk-boundary.md", op)
+		if covered[op] {
+			if pendingAPI[op] {
+				t.Fatalf("operation %q has an API method but is still listed as pending — "+
+					"remove it from pendingAPI", op)
+			}
+			continue
+		}
+		if pendingAPI[op] {
+			continue // метод появится вместе с условием 5 (ADR-076 §8)
+		}
+		t.Fatalf("catalog operation %q has no API method — either add the method "+
+			"or remove the operation from sdk-boundary.md", op)
+	}
+
+	// Исключение не должно пережить операцию, ради которой заведено.
+	for op := range pendingAPI {
+		found := false
+		for _, c := range catalog {
+			if c == op {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("operation %q listed as pending but absent from the catalog — "+
+				"the exemption outlived the operation", op)
 		}
 	}
 
