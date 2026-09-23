@@ -196,6 +196,7 @@ func (h *Host) Start(ctx context.Context) error {
 	conn, wait, kill, applied, err := h.cfg.Spawner.Spawn(ctx, entrypoint, h.cfg.Isolation, spec)
 	if err != nil {
 		h.cfg.Authorizer.UnregisterCaller(h.cfg.Caller)
+		h.closeHandlerSessions()
 		h.mu.Lock()
 		h.running = false
 		h.mu.Unlock()
@@ -273,6 +274,15 @@ func (h *Host) run(ctx context.Context, session *ipc.Session, wait func() error)
 	waitErr := wait()
 
 	h.cfg.Authorizer.UnregisterCaller(h.cfg.Caller)
+
+	// Ресурсы с временем жизни, принадлежащие ЭТОМУ плагину, освобождаются
+	// здесь: через эту точку проходит ЛЮБОЕ завершение уже запущенного
+	// плагина — штатная остановка, нарушение протокола, крах процесса.
+	//
+	// Проверка интерфейсом, а не импортом coreops: Handler остаётся
+	// интерфейсом по построению, и host не обязан знать, кто его реализует.
+	// Обработчику, которому нечего освобождать, этот метод просто не нужен.
+	h.closeHandlerSessions()
 
 	h.mu.Lock()
 	h.running = false
@@ -486,6 +496,17 @@ func (h *Host) Wait(ctx context.Context) (ExitStatus, error) {
 // Exited возвращает канал завершения — для supervisor, который следит
 // за несколькими экземплярами.
 func (h *Host) Exited() <-chan ExitStatus { return h.exitCh }
+
+// closeHandlerSessions освобождает ресурсы обработчика, принадлежащие этому
+// плагину (ADR-076 §3.8).
+//
+// Сессия, пережившая плагина, была бы утечкой сокетов и ICE-агентов, а
+// собеседник ждал бы ответа от того, кого уже нет.
+func (h *Host) closeHandlerSessions() {
+	if closer, ok := h.cfg.Handler.(interface{ ClosePluginSessions(pluginID string) }); ok {
+		closer.ClosePluginSessions(h.cfg.Manifest.Identity.PluginID)
+	}
+}
 
 func (h *Host) reportExit(st ExitStatus) {
 	h.exitOnce.Do(func() {

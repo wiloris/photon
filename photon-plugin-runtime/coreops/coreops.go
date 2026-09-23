@@ -18,6 +18,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+
+	"time"
 
 	"github.com/wiloris/photon-core/ports"
 	"github.com/wiloris/photon-plugin-runtime/ipc"
@@ -85,6 +88,32 @@ type Config struct {
 	// умолчанию. Ограничение обязательно: без него log.write это DoS через
 	// диск, а права на неё не требуется (§8).
 	MaxLogBytes int
+
+	// P2P — прямые соединения (ADR-076). НЕОБЯЗАТЕЛЕН.
+	//
+	// nil означает композицию без P2P, и это нормальный случай, а не
+	// ошибка: все шесть операций домена отвечают UNSUPPORTED, как
+	// неизвестная операция (ADR-076 §7.6). Хост, не раздающий P2P, обязан
+	// отвечать «такой операции у меня нет», а не падать и не молчать.
+	P2P ports.P2P
+
+	// EmitEvent доставляет событие плагину (MsgEvent, Runtime → Plugin).
+	//
+	// Обязателен, КОГДА задан P2P: без него принятые кадры некуда девать, и
+	// канал молча стал бы односторонним. Возвращённая ошибка значима —
+	// очередь событий отбрасывает при переполнении, и это приводит к
+	// закрытию сессии с reason slow_consumer (ADR-076 §7.3), а не к
+	// молчаливой потере сообщения.
+	EmitEvent func(pluginID, eventType string, payload []byte) error
+
+	// P2PEstablishTimeout — потолок ожидания установления на стороне
+	// исполнителя. 0 — значение по умолчанию.
+	//
+	// Обязан быть СТРОГО меньше ipc.DefaultRequestTimeout — инвариант
+	// ADR-076 §7.7, проверяется в New. Фактический срок каждого ожидания
+	// дополнительно выводится из дедлайна самого запроса (см. p2p.go), так
+	// что инвариант держится и при нестандартном RequestTimeout.
+	P2PEstablishTimeout time.Duration
 }
 
 const defaultMaxLogBytes = 4096
@@ -117,6 +146,10 @@ const maxWorkPayloadBytes = 64 << 10
 // плагин: идентичность приходит параметром каждого вызова (ADR-036).
 type Handler struct {
 	cfg Config
+
+	// p2p — реестр P2P-сессий. Принадлежит runtime (ADR-076 §3.8): у
+	// плагина только непрозрачная строка handle.
+	p2p *p2pRegistry
 }
 
 var _ ipc.Handler = (*Handler)(nil)
@@ -146,7 +179,24 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.MaxLogBytes <= 0 {
 		cfg.MaxLogBytes = defaultMaxLogBytes
 	}
-	return &Handler{cfg: cfg}, nil
+	// P2P необязателен; но если он задан, композиция обязана быть полной.
+	if cfg.P2P != nil {
+		if cfg.EmitEvent == nil {
+			return nil, errors.New("coreops: EmitEvent is required when P2P is configured")
+		}
+		if cfg.P2PEstablishTimeout <= 0 {
+			cfg.P2PEstablishTimeout = defaultP2PEstablishTimeout
+		}
+		// Инвариант ADR-076 §7.7, проверенный при конструировании, а не
+		// оставленный на внимательность композиции: ожидание установления
+		// обязано кончаться причиной со стороны P2P, а не дедлайном IPC.
+		if cfg.P2PEstablishTimeout >= ipc.DefaultRequestTimeout {
+			return nil, fmt.Errorf(
+				"coreops: P2PEstablishTimeout (%s) must be strictly less than ipc.DefaultRequestTimeout (%s)",
+				cfg.P2PEstablishTimeout, ipc.DefaultRequestTimeout)
+		}
+	}
+	return &Handler{cfg: cfg, p2p: newP2PRegistry()}, nil
 }
 
 // Handle — см. ipc.Handler.
@@ -189,6 +239,22 @@ func (h *Handler) Handle(ctx context.Context, caller ipc.CallerInfo, op string, 
 
 	case "work.complete":
 		return h.workComplete(caller, payload)
+
+	// p2p.* — ADR-076. Config.P2P == nil даёт UNSUPPORTED внутри каждой
+	// ветки: композиция без P2P нормальна, и отличать её от неизвестной
+	// операции плагину незачем (§7.6).
+	case "p2p.create_offer":
+		return h.p2pCreateOffer(ctx, caller, payload)
+	case "p2p.accept_offer":
+		return h.p2pAcceptOffer(ctx, caller, payload)
+	case "p2p.complete":
+		return h.p2pComplete(ctx, caller, payload)
+	case "p2p.peer":
+		return h.p2pPeer(ctx, caller, payload)
+	case "p2p.send":
+		return h.p2pSend(ctx, caller, payload)
+	case "p2p.close":
+		return h.p2pClose(ctx, caller, payload)
 	}
 
 	// Неизвестная операция. Сессия отсекает те, которых нет в таблице
