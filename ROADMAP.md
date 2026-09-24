@@ -110,7 +110,16 @@ Compile-time проверка соответствия интерфейсу (п�
 **Реализация:**
 
 - [x] `adapters/googleoidc` — реализация `IdentityProvider` для Google: JWT/JWKS-верификация, только стандартная библиотека (без внешних зависимостей — тот же принцип, что `adapters/ed25519`)
-- [x] Account Service (`services/account`, поверх `Storage`+`Identity`+`IdentityProvider`, без нового порта под сам сервис — см. ADR-017/018) — `LoginOrRegister`, `PhotonID` присваивается при создании (ADR-024: точка реализации ADR-018 наступила)
+- [x] Account Service (`services/account`, поверх `Storage`+`Identity`+`IdentityProvider`, без нового порта под сам сервис — см. ADR-017/018) — `LoginOrRegister`, `PhotonID` присваивается при создании (ADR-024: точка реализации ADR-018 наступила).
+      **Галочка относится к КОДУ пакета, а не к продуктовой функции, и читать
+      её иначе нельзя** (уточнено аудитом 2026-09-24): пакет реализован и
+      покрыт 18 тестами, но **не импортируется ни одним production-путём** —
+      ни `services/dispatcher`, ни C ABI, ни Bridge о нём не знают.
+      **Поиска пользователя по `PhotonID` не существует**: экспортируемой
+      функции lookup нет (есть приватная `loadAccount`), действия в
+      `photon.proto` нет, в Bridge нет, в SDK нет, в Android нет.
+      `searchUsers` (205) ищет пользователей Mattermost, а не Photon ID.
+      Тесты доказывают внутреннюю корректность, а не доступность
 - [x] Device Registry (`DeviceID`, `PublicKey`, `Device Name`, `CreatedAt`, `LastSeen`) — `photon.devices`/`photon.devices.by_pubkey`
 - [x] Регистрация устройства (`RegisterDevice`, привязка нового `PublicKey` к аккаунту)
 - [x] Отзыв устройства (`RevokeDevice` — атомарно из обоих namespace, покрыто тестом на согласованность)
@@ -2406,7 +2415,17 @@ JVM-jar, и он **не самодостаточен**: `.so` в него не �
 
 ---
 
-### Phase 19 — ENSTOR 🔲
+### Phase 19 — ENSTOR 🟡
+
+**Статус исправлен аудитом 2026-09-24: 🔲 было неверно.** ENSTOR существует
+отдельным репозиторием (`~/projects/enstor`, `36712e4`) — подписанный каталог
+расширений и installer-плагин, — а поток установки расширения работает в
+ENGRAM Android (`0ec57fd`). Прежняя отметка «не начата» описывала состояние
+до появления обоих и устарела молча: репозиторий лежит вне дерева `photon`,
+и ни один здешний прогон его не видит.
+
+**Вне дерева `photon`** — как ENGRAM Android и Wallet (ADR-067). Счётчики и
+тесты ENSTOR этим файлом не отслеживаются.
 
 - [ ] Раздел Plugins
 - [ ] Раздел Extensions

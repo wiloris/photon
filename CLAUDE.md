@@ -20,7 +20,7 @@
 0. `CURRENT_TASK.md` — над чем идёт работа прямо сейчас. Читать первым.
 1. `ROADMAP.md` — 25 фаз со статусами. Источник истины о том, что сделано.
 2. `ARCHITECTURE.md` — как всё устроено вместе.
-3. `DECISIONS.md` — **64 ADR**. Не перечитывать целиком: смотреть те, что
+3. `DECISIONS.md` — **76 ADR**. Не перечитывать целиком: смотреть те, что
    упомянуты в коде и спецификациях.
 4. `REPOSITORY.md` — структура репозиториев.
 5. `IMPLEMENTATION_LOG.md` в каждом реализованном пакете — почему решения приняты
@@ -127,18 +127,23 @@ Phase 12: инварианты T2 в `services/localfeed` (ADR-065 п. 3.6–3.9
 исполнение действий 801–803 и классификация их ошибок в
 `services/dispatcher`. Редакция до этого измерения называла **422** — цифра
 относилась к состоянию до коммитов `1c0c4bd`, `5c01a02` и `6fa6b1d` и
-устарела вместе с ними),
-`photon-plugin-runtime` **249** (было 223 → 229 с `cmd/devtools-runtime`: 6
+устарела вместе с ними → **485** — измерено 2026-09-24: 13 тестов
+`photon-core/p2pmsg` (ADR-075), 13 в `tests/p2pslice` и 3 регрессии в
+`adapters/pion` на дефекты, найденные двухпроцессным acceptance),
+`photon-plugin-runtime` **350** (было 223 → 229 с `cmd/devtools-runtime`: 6
 тестов Plugin Lab настоящими процессами, ADR-057 → 236 со сквозными
 сценариями на настоящем `coreops`, B4a → 249 с Plugin Lab на настоящем
 `coreops`, B4b: 13 тестов `cmd/devtools-runtime`; из них 11 — E2E
 `tests/integration` против настоящего runtime, и 33 — настоящие процессы через
 `tests/lifecycle`: 26 Phase 11 и 7 `sdkscenario`; обе группы входят в те же
-249, не считаются дважды),
-`photon-plugin-sdk` **4** (`TestADR031_NoForbiddenImports`,
-`TestADR031_NoModuleDependencies`, `TestOperationCatalogCoverage`,
-`TestReentrantCall_HandlerBlockingCallReturnsErrInsteadOfHanging` — добавлен
-при работе над Phase 11, см. ROADMAP.md).
+249, не считаются дважды; → **350** — измерено 2026-09-24, прирост дал
+ADR-076: исполнитель `p2p.*` в `coreops`, машинные проверки каталога в
+`ipc`, фикстуры `p2pguard` и `p2pdial` с acceptance условий 6A и 6B),
+`photon-plugin-sdk` **8** (измерено 2026-09-24; редакция называла **4** и
+перечисляла их поимённо — с тех пор добавились тесты `work.complete`
+(ADR-074) и реентерабельности, а `TestOperationCatalogCoverage` получил
+`pendingAPI` для домена `p2p.*`, у которого методов SDK нет по решению
+ADR-076).
 
 **JVM-сторона считается своими прогонами, а не этим методом** (у неё другой
 инструмент): `photon-bindings/jvm` — **26** Java + **14** Kotlin + **23**
