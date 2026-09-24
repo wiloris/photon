@@ -14,6 +14,12 @@ func (p *Plugin) initRouter() *mux.Router {
 	// /action — без middleware, авторизация через session_token внутри envelope
 	router.HandleFunc("/api/v1/action", p.HandleAction).Methods(http.MethodPost)
 
+	// /auth/google — тоже без middleware, но по другой причине: до входа у
+	// клиента нет ни пользователя, ни сессии, и заголовку Mattermost-User-ID
+	// взяться неоткуда (ADR-078 §2.4). Отдельный контракт, а не конверт
+	// действий: тот требует session_token, которого здесь ещё не существует.
+	router.HandleFunc("/api/v1/auth/google", p.HandleGoogleAuth).Methods(http.MethodPost)
+
 	// остальные роуты — с проверкой Mattermost-User-ID
 	authed := router.PathPrefix("/api/v1").Subrouter()
 	authed.Use(p.MattermostAuthorizationRequired)

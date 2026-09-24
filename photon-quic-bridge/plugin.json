@@ -24,6 +24,13 @@
         "type": "bool",
         "default": false,
         "help_text": "Включить подробное логирование QUIC-событий и хуков."
+      },
+      {
+        "key": "GoogleClientID",
+        "display_name": "Google OAuth Client ID",
+        "type": "text",
+        "default": "",
+        "help_text": "OAuth client ID, чей audience обязан нести Google ID token. Пустое значение отключает вход ENGRAM (ADR-078)."
       }
     ]
   }

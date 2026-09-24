@@ -16,6 +16,16 @@ type configuration struct {
 
 	// ClientBufferSize — размер буфера событий на одного SSE-клиента.
 	ClientBufferSize int `json:"ClientBufferSize"`
+
+	// GoogleClientID — OAuth client ID, чей audience обязан нести ID token
+	// (ADR-078 §2.2). Единственный источник — эта конфигурация; второго
+	// механизма не заводится.
+	//
+	// Пустое значение означает ОТКАЗ входа, а не отключение проверки
+	// audience: адаптер при пустом clientID сверку пропускает
+	// (googleoidc.go:136), и на серверной границе регистрации это приняло бы
+	// токен, выпущенный для чужого приложения.
+	GoogleClientID string `json:"GoogleClientID"`
 }
 
 func (c *configuration) Clone() *configuration {

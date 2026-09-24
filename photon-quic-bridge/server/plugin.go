@@ -23,6 +23,10 @@ type Plugin struct {
 	// kvstore is the client used to read/write KV records for this plugin.
 	kvstore kvstore.KVStore
 
+	// googleVerifier — проверяющий Google ID token, пересобираемый при
+	// смене GoogleClientID (ADR-078 §2.2).
+	googleVerifier verifierCache
+
 	// client is the Mattermost server API client.
 	client *pluginapi.Client
 
