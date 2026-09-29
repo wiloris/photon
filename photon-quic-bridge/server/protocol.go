@@ -74,6 +74,9 @@ const (
 	ActionSendDirectMessage  = int(photonpb.Action_ACTION_SEND_DIRECT_MESSAGE)
 	ActionListDirectMessages = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES)
 
+	// Входящие: список разговоров 1:1 (ADR-084).
+	ActionListDirectConversations = int(photonpb.Action_ACTION_LIST_DIRECT_CONVERSATIONS)
+
 	// ── ChannelResource (300-399) ─────────────────────────────────────────────
 	ActionListChannels             = int(photonpb.Action_ACTION_LIST_CHANNELS)
 	ActionGetChannelMembers        = int(photonpb.Action_ACTION_GET_CHANNEL_MEMBERS)
