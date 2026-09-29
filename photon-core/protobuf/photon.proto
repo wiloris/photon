@@ -98,7 +98,7 @@ enum Action {
   ACTION_TOGGLE_LIKE         = 113;
   ACTION_GET_POST_SOCIAL_INFO = 114;
 
-  // ── UserResource (200-212) ──────────────────────────────────────
+  // ── UserResource (200-214) ──────────────────────────────────────
   ACTION_GET_ME            = 200;
   ACTION_GET_USER          = 201;
   ACTION_GET_USERS         = 202;
@@ -116,6 +116,12 @@ enum Action {
   // только каноническая форма — 9 цифр (ADR-018).
   ACTION_GET_MY_PHOTON_PROFILE = 211;
   ACTION_FIND_BY_PHOTON_ID     = 212;
+
+  // Личные сообщения по PhotonID (ADR-082). Собеседник — только PhotonID;
+  // личный канал Mattermost разрешает сервер, его id и имя наружу не
+  // выходят. Доставка — опросом 214 с курсором after.
+  ACTION_SEND_DIRECT_MESSAGE   = 213;
+  ACTION_LIST_DIRECT_MESSAGES  = 214;
 
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
@@ -257,7 +263,7 @@ message PhotonRequest {
   Resource resource = 2;
 
   oneof payload {
-    // ── UserResource (200-212) ────────────────────────── field numbers 200-212
+    // ── UserResource (200-214) ────────────────────────── field numbers 200-214
     GetUserPayload      get_user       = 201;
     GetUsersPayload     get_users      = 202;
     GetUserPayload      get_status     = 203; // reuse — just needs user_id
@@ -269,6 +275,8 @@ message PhotonRequest {
     UploadAvatarPayload upload_avatar  = 209;
     GetUserPayload      get_avatar     = 210; // reuse
     FindByPhotonIdPayload find_by_photon_id = 212; // 211 — без payload
+    SendDirectMessagePayload  send_direct_message  = 213;
+    ListDirectMessagesPayload list_direct_messages = 214;
 
     // ── PostResource (100-114) ────────────────────────── field numbers 100-114
     CreatePostPayload   create_post      = 100;
@@ -338,13 +346,15 @@ message PhotonResponse {
   int32  code  = 3; // internal error code, 0 = success
 
   oneof data {
-    // ── UserResource responses ────────────────────────── field numbers 200-212
+    // ── UserResource responses ────────────────────────── field numbers 200-214
     User           user         = 201;
     UsersResponse  users        = 202;
     StatusResponse status       = 203;
     AvatarResponse avatar       = 210;
     PhotonProfile  my_photon_profile = 211;
     PhotonProfile  photon_profile    = 212;
+    SentDirectMessage      sent_direct_message = 213;
+    DirectMessagesResponse direct_messages     = 214;
 
     // ── PostResource responses ────────────────────────── field numbers 100-114
     Post                post          = 100;
@@ -543,6 +553,20 @@ message FindByPhotonIdPayload {
   string photon_id = 1;
 }
 
+// ADR-082 §3.4: text — до 16383 рун, непустой; хранится без изменений.
+message SendDirectMessagePayload {
+  string to_photon_id = 1;
+  string text         = 2;
+}
+
+// ADR-082 §3.6: after — id сообщения ЭТОГО разговора, выдача строго после
+// него; limit 1..200, по умолчанию 60 (числа REST Mattermost).
+message ListDirectMessagesPayload {
+  string with_photon_id = 1;
+  string after          = 2;
+  int32  limit          = 3;
+}
+
 // ── UserResource responses ────────────────────────────────────────────────────
 
 message UsersResponse {
@@ -565,6 +589,24 @@ message AvatarResponse {
 message PhotonProfile {
   string photon_id    = 1;
   string display_name = 2;
+}
+
+// Публичное сообщение (ADR-082 §3.2). id — непрозрачный курсор; mm_user_id,
+// id и имя канала сюда не входят НАМЕРЕННО.
+message DirectMessage {
+  string id               = 1;
+  string author_photon_id = 2;
+  string text             = 3;
+  int64  created_at       = 4; // миллисекунды Unix
+}
+
+message SentDirectMessage {
+  DirectMessage message = 1;
+}
+
+// По возрастанию времени.
+message DirectMessagesResponse {
+  repeated DirectMessage messages = 1;
 }
 
 // ── PostResource payloads ─────────────────────────────────────────────────────
