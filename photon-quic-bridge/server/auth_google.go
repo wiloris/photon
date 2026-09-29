@@ -44,6 +44,17 @@ const (
 // (ADR-077 §2.7); здесь Props — подтверждение принадлежности, не источник.
 const photonIDProp = "photon_id"
 
+// engramAuthService — способ входа пользователя Mattermost, созданного
+// ENGRAM-входом (ADR-080). AuthData = photon_id, пароля нет.
+//
+// Mattermost проверяет пароль у всякого пользователя с пустым AuthService
+// (app/users createUser), поэтому без этого CreateUser отказывает. Непустой
+// AuthService закрывает вход паролем, сброс и смену пароля, а ни один
+// провайдер SSO Mattermost так не называется — пару (AuthData, service) он
+// не найдёт. Google Subject сюда не попадает: он ключ внешней личности в
+// реестре (ADR-023), а не атрибут пользователя Mattermost.
+const engramAuthService = "engram"
+
 type authRequest struct {
 	IDToken string `json:"id_token"`
 }
@@ -219,11 +230,17 @@ func handleGoogleAuth(ctx context.Context, r *http.Request, d authDeps) (int, au
 //
 // Ищет по детерминированному login_name, а не по email. Возвращает пустой код
 // при успехе.
+//
+// Пользователь создаётся без пароля, со способом входа ENGRAM (ADR-080):
+// AuthData — выделенный реестром photon_id, а не Google Subject.
 func ensureMattermostUser(d authDeps, account AccountRecord, email string) (string, string) {
+	authData := account.PhotonID
 	created, appErr := d.users.CreateUser(&model.User{
-		Username: account.LoginName,
-		Email:    email,
-		Props:    model.StringMap{photonIDProp: account.PhotonID},
+		Username:    account.LoginName,
+		Email:       email,
+		AuthService: engramAuthService,
+		AuthData:    &authData,
+		Props:       model.StringMap{photonIDProp: account.PhotonID},
 	})
 	if appErr == nil {
 		return created.Id, ""
@@ -240,9 +257,12 @@ func ensureMattermostUser(d authDeps, account AccountRecord, email string) (stri
 
 	// Пространство имён engram-<9 цифр> зарезервировано за реестром, но это
 	// соглашение, а не запрет со стороны Mattermost. Найденный тёзка
-	// принимается своим ТОЛЬКО по маркеру; несовпадение — аномалия, а не
-	// повод связать: молчаливая связка отдала бы чужой аккаунт.
-	if existing.Props[photonIDProp] != account.PhotonID {
+	// принимается своим ТОЛЬКО по маркеру и способу входа ENGRAM (ADR-080 §4);
+	// несовпадение — аномалия, а не повод связать: молчаливая связка отдала
+	// бы чужой аккаунт.
+	if existing.Props[photonIDProp] != account.PhotonID ||
+		existing.AuthService != engramAuthService ||
+		existing.AuthData == nil || *existing.AuthData != account.PhotonID {
 		d.logger("[Photon][Auth] username collision with foreign user",
 			"login_name", account.LoginName)
 		return "", errCodeMattermostUserError
