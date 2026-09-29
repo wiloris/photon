@@ -47,12 +47,42 @@ const legacyDefaultPluginID = "dev.engram.counter"
 
 func main() {
 	o, err := parseArgs(os.Args[1:])
+
+	/*
+	 * Прежний файл результата убирается ДО ЛЮБЫХ ПОБОЧНЫХ ЭФФЕКТОВ — и до
+	 * отказа по аргументам тоже (ADR-085 §2.4 п. 1): иначе негодный запуск
+	 * оставил бы на месте результат прошлого, и потребитель прочёл бы его
+	 * как нынешний. Не удалось убрать — плагин не запускается.
+	 */
+	if o.ResultOut != "" {
+		if cerr := clearResult(o.ResultOut); cerr != nil {
+			fmt.Fprintln(os.Stderr, cerr)
+			os.Exit(2)
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 
 	res, err := Run(context.Background(), o)
+
+	/*
+	 * Файл результата пишется НА ОБОИХ ПУТЯХ: ошибка хоста — тоже результат
+	 * (ADR-085 §2.4 п. 3). Не удалось записать — сообщить host.ok уже
+	 * некуда: причина идёт в stderr, код выхода 1, файла нет (п. 5).
+	 */
+	if o.ResultOut != "" {
+		if werr := writeResult(o.ResultOut, buildResult(o.PluginID, res, err)); werr != nil {
+			fmt.Fprintf(os.Stderr, "файл результата: %v\n", werr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "запуск плагина: %v\n", err)
+			}
+			printDiagnostics(os.Stderr, o, res)
+			os.Exit(1)
+		}
+	}
+
 	if err != nil {
 		/*
 		 * Диагностика печатается И НА ПУТИ ОШИБКИ.
@@ -131,8 +161,16 @@ func printDiagnostics(w io.Writer, o Options, res Result) {
  * не оформление. Внутри main() они проверялись бы запуском процесса и
  * разбором его stderr.
  */
-func parseArgs(args []string) (Options, error) {
+func parseArgs(args []string) (o Options, err error) {
 	fs := flag.NewFlagSet("engram-plugin-host", flag.ContinueOnError)
+
+	// -result-out переживает ЛЮБОЙ отказ разбора после fs.Parse: main обязан
+	// убрать прежний файл результата и тогда, когда аргументы негодны
+	// (ADR-085 §2.4 п. 1). Отложенное присваивание — единственное место,
+	// которое не надо помнить у каждого из возвратов ниже.
+	resultOut := fs.String("result-out", "",
+		"файл результата для вызывающего приложения (ADR-085); без флага не пишется")
+	defer func() { o.ResultOut = *resultOut }()
 
 	var (
 		db           = fs.String("db", "", "файл хранилища bbolt (обязателен)")
@@ -173,7 +211,7 @@ func parseArgs(args []string) (Options, error) {
 		return Options{}, errors.New("нужен -db")
 	}
 
-	o := Options{
+	o = Options{
 		DBPath:       *db,
 		Grants:       splitList(*grants),
 		Events:       splitList(*events),
