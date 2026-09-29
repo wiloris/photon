@@ -346,9 +346,8 @@ func (r *AccountRegistry) Lookup(provider, subject string) (AccountRecord, bool,
 
 // OwnerOfPhotonID отвечает, кем занят идентификатор.
 //
-// Диагностическая операция: доказывает, что резерв существует и не
-// освобождается. Поиском пользователя по PhotonID не является — его
-// ADR-077 не вводит.
+// Сам по себе поиском пользователя не является: резерв может быть
+// осиротевшим либо ещё не связанным. Поиск — FindByPhotonID (ADR-081).
 func (r *AccountRegistry) OwnerOfPhotonID(photonID string) (pidOwner, bool, error) {
 	raw, appErr := r.kv.KVGet(pidKey(photonID))
 	if appErr != nil {
@@ -362,6 +361,27 @@ func (r *AccountRegistry) OwnerOfPhotonID(photonID string) (pidOwner, bool, erro
 		return pidOwner{}, false, err
 	}
 	return owner, true, nil
+}
+
+// FindByPhotonID — поиск аккаунта по PhotonID (ADR-081 §2.2).
+//
+// Идёт по обратной связи pid: → (Provider, Subject) → acct: и возвращает
+// запись, только если она связана с пользователем Mattermost и её photon_id
+// совпадает с искомым. Осиротевший резерв, запись до linked и расхождение
+// pid:↔acct: — «не найдено» (found=false), без различения (§2.3).
+func (r *AccountRegistry) FindByPhotonID(photonID string) (AccountRecord, bool, error) {
+	owner, found, err := r.OwnerOfPhotonID(photonID)
+	if err != nil || !found {
+		return AccountRecord{}, false, err
+	}
+	rec, found, err := r.Lookup(owner.Provider, owner.Subject)
+	if err != nil || !found {
+		return AccountRecord{}, false, err
+	}
+	if rec.PhotonID != photonID || rec.State != StateLinked || rec.MMUserID == "" {
+		return AccountRecord{}, false, nil
+	}
+	return rec, true, nil
 }
 
 // jsonMarshal — тонкая обёртка, чтобы тесты собирали запись тем же

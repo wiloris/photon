@@ -11,7 +11,8 @@ import (
 // Actions: 200=GetMe, 201=GetUser, 202=GetUsers, 203=GetUserStatus,
 //
 //	204=GetUserProfile, 205=SearchUsers, 206=GetUsersByIds,
-//	207=PatchMe, 208=SetStatus, 209=UploadAvatar, 210=GetUserAvatar
+//	207=PatchMe, 208=SetStatus, 209=UploadAvatar, 210=GetUserAvatar,
+//	211=GetMyPhotonProfile, 212=FindByPhotonID (ADR-081, photon_profile.go)
 type UserHandler struct {
 	plugin *Plugin
 }
@@ -40,6 +41,10 @@ func (h *UserHandler) Handle(userID string, action int, raw json.RawMessage) Res
 		return h.uploadAvatar(userID, raw)
 	case ActionGetUserAvatar:
 		return h.getUserAvatar(userID, raw)
+	case ActionGetMyPhotonProfile:
+		return getMyPhotonProfile(h.profileDeps(), userID)
+	case ActionFindByPhotonID:
+		return findByPhotonID(h.profileDeps(), userID, raw)
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("UserResource: unknown action %d", action)}
 	}

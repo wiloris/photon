@@ -66,6 +66,10 @@ const (
 	ActionUploadAvatar   = int(photonpb.Action_ACTION_UPLOAD_AVATAR)
 	ActionGetUserAvatar  = int(photonpb.Action_ACTION_GET_USER_AVATAR)
 
+	// Профиль и поиск по PhotonID (ADR-081).
+	ActionGetMyPhotonProfile = int(photonpb.Action_ACTION_GET_MY_PHOTON_PROFILE)
+	ActionFindByPhotonID     = int(photonpb.Action_ACTION_FIND_BY_PHOTON_ID)
+
 	// ── ChannelResource (300-399) ─────────────────────────────────────────────
 	ActionListChannels             = int(photonpb.Action_ACTION_LIST_CHANNELS)
 	ActionGetChannelMembers        = int(photonpb.Action_ACTION_GET_CHANNEL_MEMBERS)

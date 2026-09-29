@@ -432,6 +432,9 @@ var rules = map[int]rule{
 	ActionSetStatus:      {objNone, isSelf()},
 	ActionUploadAvatar:   {objNone, isSelf()},
 	ActionGetUserAvatar:  {objUser, permSys(model.PermissionViewMembers)},
+	// ADR-081 §2.1: свой профиль — как getMe; поиск — как searchUsers.
+	ActionGetMyPhotonProfile: {objNone, authenticated()},
+	ActionFindByPhotonID:     {objNone, permSys(model.PermissionViewMembers)},
 
 	// ── ChannelResource ──
 	ActionListChannels:      {objTeam, permTeam(model.PermissionViewTeam)},
