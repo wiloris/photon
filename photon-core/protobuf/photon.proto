@@ -98,7 +98,7 @@ enum Action {
   ACTION_TOGGLE_LIKE         = 113;
   ACTION_GET_POST_SOCIAL_INFO = 114;
 
-  // ── UserResource (200-214) ──────────────────────────────────────
+  // ── UserResource (200-215) ──────────────────────────────────────
   ACTION_GET_ME            = 200;
   ACTION_GET_USER          = 201;
   ACTION_GET_USERS         = 202;
@@ -122,6 +122,10 @@ enum Action {
   // выходят. Доставка — опросом 214 с курсором after.
   ACTION_SEND_DIRECT_MESSAGE   = 213;
   ACTION_LIST_DIRECT_MESSAGES  = 214;
+
+  // Входящие: список существующих разговоров 1:1 (ADR-084). Источник
+  // списка, а не окончательная модель переписки.
+  ACTION_LIST_DIRECT_CONVERSATIONS = 215;
 
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
@@ -263,7 +267,7 @@ message PhotonRequest {
   Resource resource = 2;
 
   oneof payload {
-    // ── UserResource (200-214) ────────────────────────── field numbers 200-214
+    // ── UserResource (200-215) ────────────────────────── field numbers 200-215
     GetUserPayload      get_user       = 201;
     GetUsersPayload     get_users      = 202;
     GetUserPayload      get_status     = 203; // reuse — just needs user_id
@@ -277,6 +281,7 @@ message PhotonRequest {
     FindByPhotonIdPayload find_by_photon_id = 212; // 211 — без payload
     SendDirectMessagePayload  send_direct_message  = 213;
     ListDirectMessagesPayload list_direct_messages = 214;
+    ListDirectConversationsPayload list_direct_conversations = 215;
 
     // ── PostResource (100-114) ────────────────────────── field numbers 100-114
     CreatePostPayload   create_post      = 100;
@@ -346,7 +351,7 @@ message PhotonResponse {
   int32  code  = 3; // internal error code, 0 = success
 
   oneof data {
-    // ── UserResource responses ────────────────────────── field numbers 200-214
+    // ── UserResource responses ────────────────────────── field numbers 200-215
     User           user         = 201;
     UsersResponse  users        = 202;
     StatusResponse status       = 203;
@@ -355,6 +360,7 @@ message PhotonResponse {
     PhotonProfile  photon_profile    = 212;
     SentDirectMessage      sent_direct_message = 213;
     DirectMessagesResponse direct_messages     = 214;
+    DirectConversationsResponse direct_conversations = 215;
 
     // ── PostResource responses ────────────────────────── field numbers 100-114
     Post                post          = 100;
@@ -567,6 +573,11 @@ message ListDirectMessagesPayload {
   int32  limit          = 3;
 }
 
+// ADR-084: limit 1..200, по умолчанию 60.
+message ListDirectConversationsPayload {
+  int32 limit = 1;
+}
+
 // ── UserResource responses ────────────────────────────────────────────────────
 
 message UsersResponse {
@@ -607,6 +618,19 @@ message SentDirectMessage {
 // По возрастанию времени.
 message DirectMessagesResponse {
   repeated DirectMessage messages = 1;
+}
+
+// Разговор 1:1 (ADR-084). Собеседник — только PhotonID; id и имя канала
+// Mattermost сюда не входят НАМЕРЕННО. Разговор с собой: peer_photon_id —
+// собственный PhotonID.
+message DirectConversation {
+  string        peer_photon_id = 1;
+  DirectMessage last_message   = 2;
+}
+
+// По убыванию last_message.created_at.
+message DirectConversationsResponse {
+  repeated DirectConversation conversations = 1;
 }
 
 // ── PostResource payloads ─────────────────────────────────────────────────────
