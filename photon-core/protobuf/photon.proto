@@ -98,7 +98,7 @@ enum Action {
   ACTION_TOGGLE_LIKE         = 113;
   ACTION_GET_POST_SOCIAL_INFO = 114;
 
-  // ── UserResource (200-210) ──────────────────────────────────────
+  // ── UserResource (200-212) ──────────────────────────────────────
   ACTION_GET_ME            = 200;
   ACTION_GET_USER          = 201;
   ACTION_GET_USERS         = 202;
@@ -110,6 +110,12 @@ enum Action {
   ACTION_SET_STATUS        = 208;
   ACTION_UPLOAD_AVATAR     = 209;
   ACTION_GET_USER_AVATAR   = 210;
+
+  // Профиль и поиск по PhotonID (ADR-081). Истина — реестр аккаунтов
+  // Bridge (ADR-077), а не зеркала в пользователе Mattermost. На проводе
+  // только каноническая форма — 9 цифр (ADR-018).
+  ACTION_GET_MY_PHOTON_PROFILE = 211;
+  ACTION_FIND_BY_PHOTON_ID     = 212;
 
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
@@ -251,7 +257,7 @@ message PhotonRequest {
   Resource resource = 2;
 
   oneof payload {
-    // ── UserResource (200-210) ────────────────────────── field numbers 200-210
+    // ── UserResource (200-212) ────────────────────────── field numbers 200-212
     GetUserPayload      get_user       = 201;
     GetUsersPayload     get_users      = 202;
     GetUserPayload      get_status     = 203; // reuse — just needs user_id
@@ -262,6 +268,7 @@ message PhotonRequest {
     SetStatusPayload    set_status     = 208;
     UploadAvatarPayload upload_avatar  = 209;
     GetUserPayload      get_avatar     = 210; // reuse
+    FindByPhotonIdPayload find_by_photon_id = 212; // 211 — без payload
 
     // ── PostResource (100-114) ────────────────────────── field numbers 100-114
     CreatePostPayload   create_post      = 100;
@@ -331,11 +338,13 @@ message PhotonResponse {
   int32  code  = 3; // internal error code, 0 = success
 
   oneof data {
-    // ── UserResource responses ────────────────────────── field numbers 200-210
+    // ── UserResource responses ────────────────────────── field numbers 200-212
     User           user         = 201;
     UsersResponse  users        = 202;
     StatusResponse status       = 203;
     AvatarResponse avatar       = 210;
+    PhotonProfile  my_photon_profile = 211;
+    PhotonProfile  photon_profile    = 212;
 
     // ── PostResource responses ────────────────────────── field numbers 100-114
     Post                post          = 100;
@@ -528,6 +537,12 @@ message UploadAvatarPayload {
   bytes image_bytes = 1;
 }
 
+// Точный поиск по PhotonID (ADR-081). photon_id — ровно 9 цифр;
+// представление «000 000 000» живёт только на клиенте.
+message FindByPhotonIdPayload {
+  string photon_id = 1;
+}
+
 // ── UserResource responses ────────────────────────────────────────────────────
 
 message UsersResponse {
@@ -543,6 +558,13 @@ message StatusResponse {
 message AvatarResponse {
   string user_id    = 1;
   bytes  image_bytes = 2;
+}
+
+// Минимальный публичный профиль (ADR-081 §2.5). Email, Subject,
+// mm_user_id и login_name сюда не входят НАМЕРЕННО.
+message PhotonProfile {
+  string photon_id    = 1;
+  string display_name = 2;
 }
 
 // ── PostResource payloads ─────────────────────────────────────────────────────
