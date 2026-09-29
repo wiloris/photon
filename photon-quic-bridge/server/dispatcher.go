@@ -38,9 +38,11 @@ func NewDispatcher(p *Plugin) *Dispatcher {
 	// выключенной на другом.
 	mediaSvcInstance := NewMediaService(store).
 		WithLiveness(postLivenessOracle(p.API, p.API))
+	z := newAuthz(p.API, store)
+	z.accounts = NewAccountRegistry(p.API) // objDirectPeer, ADR-082
 	return &Dispatcher{
 		plugin:       p,
-		authz:        newAuthz(p.API, store),
+		authz:        z,
 		post:         &PostHandler{plugin: p, media: mediaSvcInstance},
 		user:         &UserHandler{plugin: p},
 		channel:      &ChannelHandler{plugin: p},

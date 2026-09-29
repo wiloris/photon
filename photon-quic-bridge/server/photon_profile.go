@@ -66,28 +66,40 @@ func isCanonicalPhotonID(s string) bool {
 
 func profileFail(code string) Response { return Response{OK: false, Error: code} }
 
-// getMyPhotonProfile — Action 211.
-func getMyPhotonProfile(d profileDeps, callerID string) Response {
-	user, appErr := d.users.GetUser(callerID)
+// ownPhotonID — собственный PhotonID вызывающего, подтверждённый реестром
+// (ADR-081 §2.2; им же пользуется ADR-082 §3.3). found=false — у
+// вызывающего PhotonID нет либо зеркало указывает не на него; err — сбой.
+func ownPhotonID(registry photonAccountFinder, users profileUserAPI, callerID string) (string, *model.User, bool, error) {
+	user, appErr := users.GetUser(callerID)
 	if appErr != nil {
-		d.logger("[Photon][Profile] GetUser failed (own profile)", "error", appErr.Error())
-		return profileFail(errProfileLookupFailed)
+		return "", nil, false, appErr
 	}
 	// Подсказка из зеркала; пользователь, созданный не ENGRAM-входом,
 	// PhotonID не имеет.
 	if user.AuthService != engramAuthService || user.AuthData == nil || !isCanonicalPhotonID(*user.AuthData) {
-		return profileFail(errPhotonIDNotFound)
+		return "", user, false, nil
 	}
 	photonID := *user.AuthData
-
-	rec, found, err := d.registry.FindByPhotonID(photonID)
+	rec, found, err := registry.FindByPhotonID(photonID)
 	if err != nil {
-		d.logger("[Photon][Profile] registry failure (own profile)", "error", err.Error())
-		return profileFail(errProfileLookupFailed)
+		return "", user, false, err
 	}
 	// Зеркало указывает на запись, связанную не с вызывающим, — зеркалу не
-	// верим (ADR-081 §2.2).
+	// верим.
 	if !found || rec.MMUserID != callerID {
+		return "", user, false, nil
+	}
+	return photonID, user, true, nil
+}
+
+// getMyPhotonProfile — Action 211.
+func getMyPhotonProfile(d profileDeps, callerID string) Response {
+	photonID, user, found, err := ownPhotonID(d.registry, d.users, callerID)
+	if err != nil {
+		d.logger("[Photon][Profile] own profile lookup failed", "error", err.Error())
+		return profileFail(errProfileLookupFailed)
+	}
+	if !found {
 		return profileFail(errPhotonIDNotFound)
 	}
 	return Response{OK: true, Data: profileOf(photonID, user, true)}

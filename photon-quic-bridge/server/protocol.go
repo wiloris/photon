@@ -70,6 +70,10 @@ const (
 	ActionGetMyPhotonProfile = int(photonpb.Action_ACTION_GET_MY_PHOTON_PROFILE)
 	ActionFindByPhotonID     = int(photonpb.Action_ACTION_FIND_BY_PHOTON_ID)
 
+	// Личные сообщения по PhotonID (ADR-082).
+	ActionSendDirectMessage  = int(photonpb.Action_ACTION_SEND_DIRECT_MESSAGE)
+	ActionListDirectMessages = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES)
+
 	// ── ChannelResource (300-399) ─────────────────────────────────────────────
 	ActionListChannels             = int(photonpb.Action_ACTION_LIST_CHANNELS)
 	ActionGetChannelMembers        = int(photonpb.Action_ACTION_GET_CHANNEL_MEMBERS)

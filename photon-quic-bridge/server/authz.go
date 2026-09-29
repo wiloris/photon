@@ -39,6 +39,10 @@ type authzAPI interface {
 
 type authz struct {
 	api authzAPI
+	// accounts — реестр для резолва objDirectPeer (ADR-082). nil там, где
+	// личные сообщения не разрешаются (push-роутер): тогда objDirectPeer
+	// отказывает, а не паникует.
+	accounts photonAccountFinder
 	// media — авторитетный индекс для резолва objMedia (ADR-048 §7).
 	// Может быть nil там, где медийные объекты не разрешаются (push-роутер):
 	// тогда objMedia отказывает, а не паникует — отказ по умолчанию, §7.2.
@@ -66,6 +70,7 @@ const (
 	objWall                     // user_id → канал стены
 	objMember                   // channel_id + user_id
 	objMedia                    // media_id → канал через MediaStore
+	objDirectPeer               // to_photon_id | with_photon_id → личный канал с собеседником (ADR-082 §3.7)
 )
 
 // objectRef — разрешённый объект. Заполняется resolve, читается policy.
@@ -93,6 +98,8 @@ type payloadFields struct {
 	Name         string `json:"name"`
 	Key          string `json:"key"`
 	IsPrivate    bool   `json:"is_private"`
+	ToPhotonID   string `json:"to_photon_id"`
+	WithPhotonID string `json:"with_photon_id"`
 }
 
 func (z *authz) channelByID(id string) (*model.Channel, error) {
@@ -251,6 +258,43 @@ func (z *authz) resolve(kind objectKind, subject string, raw json.RawMessage) (o
 		}
 		o.channel = ch
 		return o, nil
+
+	case objDirectPeer:
+		// Личный канал вызывающего с собеседником, найденный БЕЗ создания
+		// (ADR-082 §3.7). Негодный или несуществующий PhotonID — объекта нет,
+		// и это не отказ: защищать нечего, а различимый ответ
+		// (invalid_photon_id, photon_id_not_found) даёт обработчик по
+		// ADR-082 §3.8. Сбой реестра или Mattermost — отказ (§7.2).
+		if z.accounts == nil {
+			return o, errForbidden
+		}
+		peerID := p.ToPhotonID
+		if peerID == "" {
+			peerID = p.WithPhotonID
+		}
+		if !isCanonicalPhotonID(peerID) {
+			return o, nil
+		}
+		rec, found, err := z.accounts.FindByPhotonID(peerID)
+		if err != nil {
+			return o, errForbidden
+		}
+		if !found {
+			return o, nil
+		}
+		o.target, o.isSelf = rec.MMUserID, rec.MMUserID == subject
+		ch, appErr := z.api.GetChannelByName("", model.GetDMNameFromIds(subject, rec.MMUserID), false)
+		if appErr != nil {
+			if appErr.StatusCode == 404 {
+				return o, nil // канала ещё нет
+			}
+			return o, errForbidden
+		}
+		if ch == nil || ch.Type != model.ChannelTypeDirect {
+			return o, errForbidden
+		}
+		o.channel = ch
+		return o, nil
 	}
 	return o, errForbidden
 }
@@ -371,6 +415,17 @@ func ifPrivate(private, public policy) policy {
 	}
 }
 
+// ifChannel — объект, который может ещё не существовать (личный канал до
+// первого сообщения, ADR-082 §3.7): есть канал — решает then, нет — otherwise.
+func ifChannel(then, otherwise policy) policy {
+	return func(z *authz, s string, o objectRef) bool {
+		if o.channel != nil {
+			return then(z, s, o)
+		}
+		return otherwise(z, s, o)
+	}
+}
+
 func allOf(ps ...policy) policy {
 	return func(z *authz, s string, o objectRef) bool {
 		for _, p := range ps {
@@ -435,6 +490,12 @@ var rules = map[int]rule{
 	// ADR-081 §2.1: свой профиль — как getMe; поиск — как searchUsers.
 	ActionGetMyPhotonProfile: {objNone, authenticated()},
 	ActionFindByPhotonID:     {objNone, permSys(model.PermissionViewMembers)},
+	// ADR-082 §3.7: отправка — право создать личный канал и, если он уже
+	// есть, писать в него; чтение — readC, а канала нет — читать нечего.
+	ActionSendDirectMessage: {objDirectPeer, allOf(
+		permSys(model.PermissionCreateDirectChannel),
+		ifChannel(permChan(model.PermissionCreatePost), authenticated()))},
+	ActionListDirectMessages: {objDirectPeer, ifChannel(readC(), authenticated())},
 
 	// ── ChannelResource ──
 	ActionListChannels:      {objTeam, permTeam(model.PermissionViewTeam)},
