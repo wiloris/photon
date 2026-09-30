@@ -575,6 +575,17 @@ var rules = map[int]rule{
 	ActionLocalFeedPut:       {objNone, notServedHere()},
 	ActionLocalFeedIngest:    {objNone, notServedHere()},
 	ActionLocalFeedGapAnchor: {objNone, notServedHere()},
+	ActionLocalFeedCatalog:   {objNone, notServedHere()},
+	ActionLocalFeedCursor:    {objNone, notServedHere()},
+
+	// ── Outbox (ADR-093): локальная очередь клиента, отказ всегда ──
+	ActionOutboxEnqueue:  {objNone, notServedHere()},
+	ActionOutboxLease:    {objNone, notServedHere()},
+	ActionOutboxComplete: {objNone, notServedHere()},
+	ActionOutboxFail:     {objNone, notServedHere()},
+	ActionOutboxRetry:    {objNone, notServedHere()},
+	ActionOutboxCancel:   {objNone, notServedHere()},
+	ActionOutboxList:     {objNone, notServedHere()},
 
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},

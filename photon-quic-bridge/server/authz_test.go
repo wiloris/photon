@@ -286,3 +286,31 @@ func TestAuthzChannelTypeSelectors(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
+
+// TestAuthzLocalActionsAlwaysDenied — ADR-064 п. 2.5, ADR-093, ADR-095.
+// Сотня 800-899 — локальные действия клиента: сервер их не исполняет, и
+// код, пришедший по сети, — ошибка клиента либо атака. Отказ — для любого
+// субъекта (A — system_admin) и любого payload, в том числе такого, который
+// удовлетворил бы правилу «сам себе». Коды берутся из enum, а не списком:
+// новый локальный код без правила отказа роняет этот тест, а не проходит
+// под чужим правилом.
+func TestAuthzLocalActionsAlwaysDenied(t *testing.T) {
+	z := newFixture()
+	n := 0
+	for code := range photonpb.Action_name {
+		if code < 800 || code > 899 {
+			continue
+		}
+		n++
+		for _, subject := range []string{uA, uB, "user-without-grants"} {
+			for _, payload := range []any{
+				map[string]string{},
+				map[string]string{"user_id": subject, "channel_id": cPub, "queue": "q", "op_id": "x"},
+			} {
+				require.ErrorIs(t, z.authorize(subject, int(code), pl(t, payload)), errForbidden,
+					"локальный код %d (%s) обязан отклоняться для %s", code, photonpb.Action_name[code], subject)
+			}
+		}
+	}
+	require.Equal(t, 13, n, "в сотне 800-899 ожидалось 13 кодов (800-812)")
+}

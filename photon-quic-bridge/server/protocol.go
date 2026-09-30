@@ -138,6 +138,18 @@ const (
 	ActionLocalFeedPut       = int(photonpb.Action_ACTION_LOCAL_FEED_PUT)
 	ActionLocalFeedIngest    = int(photonpb.Action_ACTION_LOCAL_FEED_INGEST)
 	ActionLocalFeedGapAnchor = int(photonpb.Action_ACTION_LOCAL_FEED_GAP_ANCHOR)
+
+	// Каталог и курсор локальной ленты (ADR-095), исходящие операции
+	// (ADR-093). Тоже локальные: объявлены ради явного правила отказа.
+	ActionLocalFeedCatalog = int(photonpb.Action_ACTION_LOCAL_FEED_CATALOG)
+	ActionLocalFeedCursor  = int(photonpb.Action_ACTION_LOCAL_FEED_CURSOR)
+	ActionOutboxEnqueue    = int(photonpb.Action_ACTION_OUTBOX_ENQUEUE)
+	ActionOutboxLease      = int(photonpb.Action_ACTION_OUTBOX_LEASE)
+	ActionOutboxComplete   = int(photonpb.Action_ACTION_OUTBOX_COMPLETE)
+	ActionOutboxFail       = int(photonpb.Action_ACTION_OUTBOX_FAIL)
+	ActionOutboxRetry      = int(photonpb.Action_ACTION_OUTBOX_RETRY)
+	ActionOutboxCancel     = int(photonpb.Action_ACTION_OUTBOX_CANCEL)
+	ActionOutboxList       = int(photonpb.Action_ACTION_OUTBOX_LIST)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────
