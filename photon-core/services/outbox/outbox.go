@@ -382,12 +382,23 @@ func (s *Store) Complete(ctx context.Context, opID string) (Op, bool, error) {
 	})
 }
 
+// ── `sent` поглощает поздние исходы (docs/local-actions.md) ─────────────
+//
+// Sent установлен подтверждением сервера и сильнее любого позднего исхода:
+// FailTransient, FailPermanent, Retry и повторный Complete на Sent — no-op
+// (changed = false) без ошибки. Штатная гонка: ответ на отправку потерян,
+// вызывающий сообщает временный отказ, а синхронизация уже подтвердила тот
+// же op_id. Cancel на Sent — ошибка: отменить доставленное нельзя.
+
 // FailTransient — временный отказ (сеть, 5xx, «в процессе»): операция
 // возвращается в Pending и остаётся головой — очередь ждёт её, иначе
 // порядок нарушится при восстановлении связи (ADR-093 §2.3). retryAt —
 // когда вызывающий собирается повторить; Core его хранит, но не исполняет.
 func (s *Store) FailTransient(ctx context.Context, opID, reason string, retryAt time.Time) (Op, bool, error) {
 	return s.transition(ctx, opID, func(op Op, _ int64) (Op, bool, error) {
+		if op.State == Sent {
+			return op, false, nil // sent поглощает поздние исходы
+		}
 		if op.State != Pending && op.State != Sending {
 			return op, false, fmt.Errorf("%w: %s is %s", ErrStateConflict, opID, op.State)
 		}
@@ -405,10 +416,8 @@ func (s *Store) FailTransient(ctx context.Context, opID, reason string, retryAt 
 func (s *Store) FailPermanent(ctx context.Context, opID, reason string) (Op, bool, error) {
 	return s.transition(ctx, opID, func(op Op, _ int64) (Op, bool, error) {
 		switch op.State {
-		case Failed:
+		case Failed, Sent: // Sent поглощает поздние исходы
 			return op, false, nil
-		case Sent:
-			return op, false, fmt.Errorf("%w: %s is already sent", ErrStateConflict, opID)
 		}
 		op.State, op.LeaseUntil, op.RetryAt, op.LastError = Failed, 0, 0, reason
 		return op, true, nil
@@ -420,7 +429,7 @@ func (s *Store) FailPermanent(ctx context.Context, opID, reason string) (Op, boo
 func (s *Store) Retry(ctx context.Context, opID string) (Op, bool, error) {
 	return s.transition(ctx, opID, func(op Op, _ int64) (Op, bool, error) {
 		switch op.State {
-		case Pending:
+		case Pending, Sent: // Sent поглощает поздние исходы
 			return op, false, nil
 		case Failed:
 			op.State, op.RetryAt = Pending, 0

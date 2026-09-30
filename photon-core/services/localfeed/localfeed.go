@@ -23,8 +23,10 @@
 //	Core гарантирует внутреннюю согласованность принятого утверждения, но не
 //	истинность утверждения Caller о полноте серверного диапазона.
 //
-//	Состояние синхронизации хранится только в существующих сегментах;
-//	GapAnchor является производной и не является вторым источником истины.
+//	Состояние полноты хранится только в существующих сегментах; GapAnchor
+//	является производной и не является вторым источником истины. Курсор
+//	сервера — позиция продолжения запроса; утверждений о полноте он не
+//	несёт. (Формулировка ADR-065 §4 в редакции ADR-095 п. 2.1.)
 //
 // Практическое следствие первой: Ingest проверяет структуру блока и его
 // внутреннюю непротиворечивость (п. 3.6–3.9) — и только. Что якорь был тем
@@ -45,6 +47,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/wiloris/photon-core/ports"
 )
@@ -57,6 +60,23 @@ const Namespace = "photon.localfeed"
 const SchemaVersion = 1
 
 var ErrEmptyChannel = errors.New("localfeed: channel id is required")
+
+// ErrInvalidChannelID — идентификатор канала содержит байт 0x00 (ADR-095
+// п. 2.8, инвариант 3.11). 0x00 — разделитель ключа записи
+// (<channel> 0x00 …), и ключи каталога начинаются с него: канал с этим
+// байтом делил бы префикс с соседним каналом и с каталогом.
+var ErrInvalidChannelID = errors.New("localfeed: channel id must not contain 0x00")
+
+// validChannel — единая проверка идентификатора канала для всех операций.
+func validChannel(channelID string) error {
+	if channelID == "" {
+		return ErrEmptyChannel
+	}
+	if strings.IndexByte(channelID, 0x00) >= 0 {
+		return ErrInvalidChannelID
+	}
+	return nil
+}
 
 // ErrEmptyRecordID — запись без идентификатора (ADR-065 п. 3.6).
 //
@@ -215,8 +235,8 @@ func positionFromKey(pfx, k []byte) (Position, error) {
 // разные утверждения, и Put второго сделать не может, потому что не знает
 // запроса, породившего записи.
 func (s *Store) Put(ctx context.Context, channelID string, recs []Record) error {
-	if channelID == "" {
-		return ErrEmptyChannel
+	if err := validChannel(channelID); err != nil {
+		return err
 	}
 	if err := validateRecords(recs); err != nil {
 		return err
@@ -315,8 +335,8 @@ type IngestOptions struct {
 // IngestWith — Ingest плюс курсор синхронизации и чужая работа в той же
 // транзакции (IngestOptions).
 func (s *Store) IngestWith(ctx context.Context, channelID string, b Block, opt IngestOptions) (IngestResult, error) {
-	if channelID == "" {
-		return IngestResult{}, ErrEmptyChannel
+	if err := validChannel(channelID); err != nil {
+		return IngestResult{}, err
 	}
 	if err := validateRecords(b.Records); err != nil {
 		return IngestResult{}, err
@@ -473,8 +493,8 @@ type PageResult struct {
 // утверждать пропуск там, где о полноте ничего не известно, значило бы
 // выдумывать знание.
 func (s *Store) Page(ctx context.Context, channelID string, afterKey int64, afterID string, limit int) (PageResult, error) {
-	if channelID == "" {
-		return PageResult{}, ErrEmptyChannel
+	if err := validChannel(channelID); err != nil {
+		return PageResult{}, err
 	}
 	if limit <= 0 {
 		limit = 30
@@ -569,6 +589,9 @@ func segmentIndex(segs []Segment, p Position) int {
 
 // Count — сколько записей канала лежит локально.
 func (s *Store) Count(ctx context.Context, channelID string) (int, error) {
+	if err := validChannel(channelID); err != nil {
+		return 0, err
+	}
 	n := 0
 	err := s.st.View(ctx, func(tx ports.ReadTx) error {
 		return tx.ForEachPrefix(Namespace, prefix(channelID), func([]byte, []byte) error {

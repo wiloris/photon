@@ -29,10 +29,8 @@ import (
 //	0x00 'c' <channel>      запись каталога
 //
 // Ключ каталога начинается с 0x00 и потому не пересекается с ключами
-// канала: они начинаются с непустого идентификатора канала
-// (ErrEmptyChannel). Канал, идентификатор которого сам начинается с 0x00,
-// с каталогом пересёкся бы — как любой канал с 0x00 внутри уже пересекается
-// с соседним по префиксу; такие идентификаторы не поддерживаются.
+// канала: идентификатор канала непуст (ErrEmptyChannel) и байта 0x00 не
+// содержит (ErrInvalidChannelID, ADR-095 п. 2.8).
 
 // ErrEmptyCursor — курсор задан, но пуст. «Очистить курсор» и «не менять
 // курсор» — разные намерения; второе выражается nil, первого нет.
@@ -112,8 +110,8 @@ func (s *Store) Catalog(ctx context.Context) ([]CatalogEntry, error) {
 // Cursor — сохранённый курсор синхронизации канала. found = false — курсора
 // ещё не было: синхронизация начинается без него.
 func (s *Store) Cursor(ctx context.Context, channelID string) ([]byte, bool, error) {
-	if channelID == "" {
-		return nil, false, ErrEmptyChannel
+	if err := validChannel(channelID); err != nil {
+		return nil, false, err
 	}
 	var (
 		out   []byte

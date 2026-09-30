@@ -307,15 +307,51 @@ func TestDuplicateCompletion(t *testing.T) {
 	if err != nil || changed || second.State != Sent || second.UpdatedAt != first.UpdatedAt {
 		t.Fatalf("повторное подтверждение обязано быть no-op: %+v changed=%v err=%v", second, changed, err)
 	}
-	// Отправленную нельзя ни отказать, ни отменить.
-	if _, _, err := r.q.FailPermanent(ctx, a.OpID, "x"); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("FailPermanent после sent: %v", err)
-	}
-	if _, _, err := r.q.FailTransient(ctx, a.OpID, "x", time.Time{}); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("FailTransient после sent: %v", err)
-	}
+	// Отменить доставленную нельзя — это ошибка, вызывающий обязан узнать.
 	if err := r.q.Cancel(ctx, a.OpID); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("Cancel после sent: %v", err)
+	}
+}
+
+// sent поглощает поздние исходы (docs/local-actions.md): ответ на отправку
+// потерян, синхронизация подтвердила тот же op_id, а вызывающий следом
+// сообщает отказ или повтор. Ни ошибки, ни изменения.
+func TestSentAbsorbsLateOutcomes(t *testing.T) {
+	r := newRig(t)
+	a := mustEnqueue(t, r.q, "q", "a")
+	b := mustEnqueue(t, r.q, "q", "b")
+	mustLease(t, r.q, "q")
+	// Синхронизация подтвердила a, пока ответ на отправку был в пути.
+	if res, err := r.q.Confirm(ctx, []string{a.OpID}); err != nil || res.Confirmed != 1 {
+		t.Fatalf("Confirm: %+v %v", res, err)
+	}
+	sent, _ := r.q.Get(ctx, a.OpID)
+
+	late := []struct {
+		name string
+		call func() (Op, bool, error)
+	}{
+		{"FailTransient", func() (Op, bool, error) {
+			return r.q.FailTransient(ctx, a.OpID, "timeout", r.clk.now().Add(time.Second))
+		}},
+		{"FailPermanent", func() (Op, bool, error) { return r.q.FailPermanent(ctx, a.OpID, "forbidden") }},
+		{"Retry", func() (Op, bool, error) { return r.q.Retry(ctx, a.OpID) }},
+		{"Complete", func() (Op, bool, error) { return r.q.Complete(ctx, a.OpID) }},
+	}
+	for _, c := range late {
+		op, changed, err := c.call()
+		if err != nil || changed || op.State != Sent {
+			t.Fatalf("%s на sent: state=%s changed=%v err=%v — ожидался no-op без ошибки", c.name, op.State, changed, err)
+		}
+	}
+	after, _ := r.q.Get(ctx, a.OpID)
+	if after.State != Sent || after.UpdatedAt != sent.UpdatedAt || after.LastError != sent.LastError ||
+		after.Attempts != sent.Attempts || after.RetryAt != sent.RetryAt {
+		t.Fatalf("поздние исходы изменили операцию: %+v → %+v", sent, after)
+	}
+	// Голова ушла дальше: следующая операция выдаётся.
+	if got := mustLease(t, r.q, "q"); got.OpID != b.OpID {
+		t.Fatalf("после sent выдана %s, ожидалась %s", got.OpID, b.OpID)
 	}
 }
 

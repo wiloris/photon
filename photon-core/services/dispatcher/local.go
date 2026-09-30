@@ -14,6 +14,7 @@ import (
 	"github.com/wiloris/photon-core/ports"
 	photonpb "github.com/wiloris/photon-core/protobuf"
 	"github.com/wiloris/photon-core/services/localfeed"
+	"github.com/wiloris/photon-core/services/outbox"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -42,7 +43,23 @@ const (
 	actionLocalFeedPut       = int32(photonpb.Action_ACTION_LOCAL_FEED_PUT)
 	actionLocalFeedIngest    = int32(photonpb.Action_ACTION_LOCAL_FEED_INGEST)
 	actionLocalFeedGapAnchor = int32(photonpb.Action_ACTION_LOCAL_FEED_GAP_ANCHOR)
+	actionLocalFeedCatalog   = int32(photonpb.Action_ACTION_LOCAL_FEED_CATALOG)
+	actionLocalFeedCursor    = int32(photonpb.Action_ACTION_LOCAL_FEED_CURSOR)
+	actionOutboxEnqueue      = int32(photonpb.Action_ACTION_OUTBOX_ENQUEUE)
+	actionOutboxLease        = int32(photonpb.Action_ACTION_OUTBOX_LEASE)
+	actionOutboxComplete     = int32(photonpb.Action_ACTION_OUTBOX_COMPLETE)
+	actionOutboxFail         = int32(photonpb.Action_ACTION_OUTBOX_FAIL)
+	actionOutboxRetry        = int32(photonpb.Action_ACTION_OUTBOX_RETRY)
+	actionOutboxCancel       = int32(photonpb.Action_ACTION_OUTBOX_CANCEL)
+	actionOutboxList         = int32(photonpb.Action_ACTION_OUTBOX_LIST)
 )
+
+// storageSchemaVersion — версия схемы хранилища инстанса. Версия — файла, а
+// не namespace: миграции bbolt идут одним списком (ADR-010).
+//
+//	1 — photon.localfeed (ADR-064)
+//	2 — photon.outbox (ADR-093 §2.8)
+const storageSchemaVersion = 2
 
 // openStorage открывает локальное хранилище по конфигурации.
 //
@@ -63,13 +80,24 @@ func openStorage(cfg Config) (ports.Storage, bool, error) {
 	// Migration): порт namespace не создаёт, и абстрагировать создание
 	// bucket'а через ports было бы выдумыванием общего там, где его нет.
 	// Диспетчер уже строит конкретный adapters/quic — см. newQUICTransport.
-	st, err := bboltadapter.New(cfg.StoragePath, []bboltadapter.Migration{{
-		Version: localfeed.SchemaVersion,
-		Up: func(tx *bolt.Tx) error {
-			_, e := tx.CreateBucketIfNotExists([]byte(localfeed.Namespace))
-			return e
+	st, err := bboltadapter.New(cfg.StoragePath, []bboltadapter.Migration{
+		{
+			Version: localfeed.SchemaVersion,
+			Up: func(tx *bolt.Tx) error {
+				_, e := tx.CreateBucketIfNotExists([]byte(localfeed.Namespace))
+				return e
+			},
 		},
-	}})
+		{
+			// Файл v1 (только лента) поднимается до v2 при следующем
+			// открытии; данные ленты не трогаются.
+			Version: 2,
+			Up: func(tx *bolt.Tx) error {
+				_, e := tx.CreateBucketIfNotExists([]byte(outbox.Namespace))
+				return e
+			},
+		},
+	})
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: open %s: %v", ErrStorageUnavailable, cfg.StoragePath, err)
 	}
@@ -82,12 +110,30 @@ func openStorage(cfg Config) (ports.Storage, bool, error) {
 // namespace здесь закрыт и известен — один. Вопрос §11.2 core-operations.md
 // («кто зовёт Migrate, когда список плагинов не известен заранее») этим не
 // закрывается и не затрагивается.
-func prepareFeed(ctx context.Context, st ports.Storage) (*localfeed.Store, error) {
+func prepareFeed(ctx context.Context, st ports.Storage) (*localfeed.Store, *outbox.Store, error) {
 	feed := localfeed.New(st, nil)
 	if err := feed.Prepare(ctx); err != nil {
-		return nil, fmt.Errorf("%w: migrate: %v", ErrStorageUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: migrate: %v", ErrStorageUnavailable, err)
 	}
-	return feed, nil
+	// Очередь исходящих — в том же файле (ADR-093 §2.8): подтверждение
+	// отправки ложится одной транзакцией с блоком ленты (ADR-095 п. 2.3).
+	if err := st.Migrate(ctx, storageSchemaVersion); err != nil {
+		return nil, nil, fmt.Errorf("%w: migrate: %v", ErrStorageUnavailable, err)
+	}
+	// Migrate без зарегистрированной миграции v2 (хранилище, подставленное
+	// через Config.Storage со своим списком) проходит молча и namespace не
+	// создаёт. Узнать об этом на первом действии очереди — поздно и
+	// невнятно; проверяется здесь, и инстанс не создаётся.
+	if err := st.View(ctx, func(tx ports.ReadTx) error {
+		_, err := tx.Get(outbox.Namespace, []byte{0})
+		if errors.Is(err, ports.ErrNotFound) {
+			return nil
+		}
+		return err
+	}); err != nil {
+		return nil, nil, fmt.Errorf("%w: namespace %s: %v", ErrStorageUnavailable, outbox.Namespace, err)
+	}
+	return feed, outbox.New(st), nil
 }
 
 // ── Действие 800: страница локальной ленты ──────────────────────────────
@@ -110,7 +156,7 @@ type feedPageRequest struct {
 // (ADR-038, ADR-064 п. 2.4).
 func (d *Dispatcher) localAction(ctx context.Context, action int32, payload []byte) ([]byte, error) {
 	d.mu.Lock()
-	feed := d.feed
+	feed, box := d.feed, d.box
 	d.mu.Unlock()
 
 	if feed == nil {
@@ -123,9 +169,16 @@ func (d *Dispatcher) localAction(ctx context.Context, action int32, payload []by
 	case actionLocalFeedPut:
 		return feedPut(ctx, feed, payload)
 	case actionLocalFeedIngest:
-		return feedIngest(ctx, feed, payload)
+		return feedIngest(ctx, feed, box, payload)
 	case actionLocalFeedGapAnchor:
 		return feedGapAnchor(ctx, feed, payload)
+	case actionLocalFeedCatalog:
+		return feedCatalog(ctx, feed)
+	case actionLocalFeedCursor:
+		return feedCursor(ctx, feed, payload)
+	case actionOutboxEnqueue, actionOutboxLease, actionOutboxComplete, actionOutboxFail,
+		actionOutboxRetry, actionOutboxCancel, actionOutboxList:
+		return outboxAction(ctx, box, action, payload)
 	}
 
 	// Код в диапазоне есть, обработчика нет: такое состояние возможно только
@@ -145,7 +198,9 @@ func feedPage(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byt
 
 	page, err := feed.Page(ctx, req.ChannelID, req.AfterKey, req.AfterID, req.Limit)
 	if err != nil {
-		return nil, fmt.Errorf("%w: page: %v", ErrStorageUnavailable, err)
+		// Та же классификация, что у записи: негодный channel_id (ADR-095
+		// п. 2.8) — ошибка аргумента, а не сбой хранилища.
+		return nil, wrapFeedWriteError(err)
 	}
 
 	data, err := encodePage(page)
@@ -242,6 +297,11 @@ type feedIngestRequest struct {
 	Dir       string        `json:"dir"`
 	Anchor    *wirePosition `json:"anchor"`
 	AtEnd     bool          `json:"at_end"`
+
+	// ADR-095 п. 2.4. Cursor — указатель: «поле отсутствует» (курсор не
+	// меняется) и «пустая строка» (ошибка аргумента) — разные случаи.
+	Cursor   *string  `json:"cursor"`
+	Confirms []string `json:"confirms"`
 }
 
 type feedGapAnchorRequest struct {
@@ -302,6 +362,7 @@ var feedWriteArgErrors = []error{
 	localfeed.ErrAnchorNotAllowed,
 	localfeed.ErrRecordCrossesAnchor,
 	localfeed.ErrEmptyCursor,
+	localfeed.ErrInvalidChannelID,
 }
 
 // wrapFeedWriteError относит ошибку записи к классу исхода вызова.
@@ -359,8 +420,10 @@ func feedPut(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte
 	return envelope(session.Response{OK: true, Data: data})
 }
 
-// feedIngest — действие 802. Положить блок и то, что он доказал о полноте.
-func feedIngest(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte, error) {
+// feedIngest — действие 802. Положить блок и то, что он доказал о полноте;
+// с ADR-095 — ещё курсор сервера и подтверждения исходящих, всё одной
+// транзакцией (IngestWith + outbox.ConfirmTx).
+func feedIngest(ctx context.Context, feed *localfeed.Store, box *outbox.Store, payload []byte) ([]byte, error) {
 	var req feedIngestRequest
 	if err := decodeRequest(payload, &req); err != nil {
 		return nil, err
@@ -379,12 +442,25 @@ func feedIngest(ctx context.Context, feed *localfeed.Store, payload []byte) ([]b
 		blk.Anchor = &localfeed.Position{OrderKey: req.Anchor.OrderKey, ID: req.Anchor.ID}
 	}
 
-	res, err := feed.Ingest(ctx, req.ChannelID, blk)
+	var opt localfeed.IngestOptions
+	if req.Cursor != nil {
+		opt.Cursor = []byte(*req.Cursor)
+	}
+	var confirmed outbox.ConfirmResult
+	if len(req.Confirms) > 0 {
+		opt.Also = func(tx ports.WriteTx) error {
+			var err error
+			confirmed, err = box.ConfirmTx(tx, req.Confirms)
+			return err
+		}
+	}
+
+	res, err := feed.IngestWith(ctx, req.ChannelID, blk, opt)
 	if err != nil {
 		return nil, wrapFeedWriteError(err)
 	}
 
-	data, err := encodeIngestResult(res)
+	data, err := encodeIngestResult(res, confirmed)
 	if err != nil {
 		return nil, err
 	}
@@ -398,19 +474,23 @@ func feedIngest(ctx context.Context, feed *localfeed.Store, payload []byte) ([]b
 // (localfeed.IngestResult). Vanished отдаётся как СИГНАЛ и только: политика
 // удаления закрыта ADR-054 и ADR-060, автоматического удаления нет, и ничего
 // по этому числу не предписывается.
-func encodeIngestResult(r localfeed.IngestResult) ([]byte, error) {
+//
+// confirms присутствует всегда (ADR-095 п. 2.5): без поля confirms в payload
+// — нули, чтобы форма ответа не зависела от формы запроса.
+func encodeIngestResult(r localfeed.IngestResult, c outbox.ConfirmResult) ([]byte, error) {
 	data, err := json.Marshal(struct {
-		Stored     int `json:"stored"`
-		Segments   int `json:"segments"`
-		Updated    int `json:"updated"`
-		Unchanged  int `json:"unchanged"`
-		Stale      int `json:"stale"`
-		Vanished   int `json:"vanished"`
-		GapsClosed int `json:"gaps_closed"`
+		Stored     int                  `json:"stored"`
+		Segments   int                  `json:"segments"`
+		Updated    int                  `json:"updated"`
+		Unchanged  int                  `json:"unchanged"`
+		Stale      int                  `json:"stale"`
+		Vanished   int                  `json:"vanished"`
+		GapsClosed int                  `json:"gaps_closed"`
+		Confirms   outbox.ConfirmResult `json:"confirms"`
 	}{
 		Stored: r.Stored, Segments: r.Segments, Updated: r.Updated,
 		Unchanged: r.Unchanged, Stale: r.Stale, Vanished: r.Vanished,
-		GapsClosed: r.GapsClosed,
+		GapsClosed: r.GapsClosed, Confirms: c,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: encode ingest result: %w", err)

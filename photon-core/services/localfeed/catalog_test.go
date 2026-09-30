@@ -257,3 +257,28 @@ func TestOverlapWindowAnchorMergesWithoutCrossing(t *testing.T) {
 		t.Fatalf("якорь-водяной знак с записями окна: err = %v, ожидался ErrRecordCrossesAnchor", err)
 	}
 }
+
+// Инвариант 3.11 (ADR-095 п. 2.8): channel_id с 0x00 отвергается каждой
+// операцией, а не только записью.
+func TestChannelWithNulRejectedEverywhere(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	const ch = "a\x00b"
+	checks := map[string]error{}
+	checks["Put"] = s.Put(ctx, ch, []Record{rec("x", 1)})
+	_, checks["IngestWith"] = s.IngestWith(ctx, ch, newestBlock(rec("x", 1)), IngestOptions{})
+	_, checks["Page"] = s.Page(ctx, ch, 0, "", 10)
+	_, checks["Count"] = s.Count(ctx, ch)
+	_, checks["Segments"] = s.Segments(ctx, ch)
+	_, _, checks["GapAnchor"] = s.GapAnchor(ctx, ch)
+	_, _, checks["Watermark"] = s.Watermark(ctx, ch)
+	_, _, checks["Cursor"] = s.Cursor(ctx, ch)
+	for op, err := range checks {
+		if !errors.Is(err, ErrInvalidChannelID) {
+			t.Fatalf("%s с 0x00 в channel_id: %v", op, err)
+		}
+	}
+	if cat, _ := s.Catalog(ctx); len(cat) != 0 {
+		t.Fatalf("канал с 0x00 попал в каталог: %v", cat)
+	}
+}

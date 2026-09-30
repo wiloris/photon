@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/wiloris/photon-core/services/localfeed"
+	"github.com/wiloris/photon-core/services/outbox"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -65,6 +66,22 @@ var known = map[string]error{
 	"ErrAnchorNotAllowed":    localfeed.ErrAnchorNotAllowed,
 	"ErrRecordCrossesAnchor": localfeed.ErrRecordCrossesAnchor,
 	"ErrEmptyCursor":         localfeed.ErrEmptyCursor,
+	"ErrInvalidChannelID":    localfeed.ErrInvalidChannelID,
+
+	// Исходящие (ADR-093, docs/local-actions.md).
+	"ErrInvalidQueue":  outbox.ErrInvalidQueue,
+	"ErrInvalidBody":   outbox.ErrInvalidBody,
+	"ErrInvalidLease":  outbox.ErrInvalidLease,
+	"ErrUnknownOp":     outbox.ErrUnknownOp,
+	"ErrStateConflict": outbox.ErrStateConflict,
+}
+
+// resultNotError — sentinel'ы, которые наружу выходят РЕЗУЛЬТАТОМ действия,
+// а не ошибкой вызова (807: {"leased":false,"reason":…}). В classTable их
+// нет намеренно; что они не утекают ошибкой — TestOutbox_LeaseOutcomesAreResults.
+var resultNotError = map[string]error{
+	"ErrQueueEmpty": outbox.ErrQueueEmpty,
+	"ErrHeadLeased": outbox.ErrHeadLeased,
 }
 
 func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
@@ -78,8 +95,12 @@ func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
 	names = append(names, sentinelNames(t, "../localfeed/localfeed.go")...)
 	names = append(names, sentinelNames(t, "../localfeed/segments.go")...)
 	names = append(names, sentinelNames(t, "../localfeed/catalog.go")...)
+	names = append(names, sentinelNames(t, "../outbox/outbox.go")...)
 
 	for _, name := range names {
+		if _, isResult := resultNotError[name]; isResult {
+			continue
+		}
 		err, ok := known[name]
 		if !ok {
 			t.Fatalf("sentinel %s объявлен в исходниках, но не известен этому тесту.\n"+
@@ -96,6 +117,11 @@ func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
 	inSource := map[string]bool{}
 	for _, n := range names {
 		inSource[n] = true
+	}
+	for name := range resultNotError {
+		if !inSource[name] {
+			t.Fatalf("resultNotError содержит %s, которого нет в исходниках", name)
+		}
 	}
 	for name := range known {
 		if !inSource[name] {
@@ -201,6 +227,12 @@ func TestClassifyLocalfeedSentinels(t *testing.T) {
 		{"якорь при newest", localfeed.ErrAnchorNotAllowed, ClassInvalidArgument},
 		{"запись не по ту сторону якоря", localfeed.ErrRecordCrossesAnchor, ClassInvalidArgument},
 		{"пустой курсор", localfeed.ErrEmptyCursor, ClassInvalidArgument},
+		{"channel_id с 0x00", localfeed.ErrInvalidChannelID, ClassInvalidArgument},
+		{"неверная очередь", outbox.ErrInvalidQueue, ClassInvalidArgument},
+		{"тело не JSON", outbox.ErrInvalidBody, ClassInvalidArgument},
+		{"аренда без срока", outbox.ErrInvalidLease, ClassInvalidArgument},
+		{"неизвестный op_id", outbox.ErrUnknownOp, ClassInvalidArgument},
+		{"запрещённый переход", outbox.ErrStateConflict, ClassInvalidArgument},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,6 +275,7 @@ func TestClassifyWrappedFeedErrorKeepsSentinel(t *testing.T) {
 		localfeed.ErrAnchorNotAllowed,
 		localfeed.ErrRecordCrossesAnchor,
 		localfeed.ErrEmptyCursor,
+		localfeed.ErrInvalidChannelID,
 	} {
 		wrapped := wrapFeedWriteError(sentinel)
 		if !errors.Is(wrapped, sentinel) {

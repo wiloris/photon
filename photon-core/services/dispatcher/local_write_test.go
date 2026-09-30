@@ -485,6 +485,7 @@ func TestLocalWrite_EveryLocalfeedSentinelIsClassified(t *testing.T) {
 		"ErrAnchorNotAllowed":    true,
 		"ErrRecordCrossesAnchor": true,
 		"ErrEmptyCursor":         true,
+		"ErrInvalidChannelID":    true,
 	}
 
 	var names []string

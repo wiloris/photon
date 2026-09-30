@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/wiloris/photon-core/services/localfeed"
+	"github.com/wiloris/photon-core/services/outbox"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -126,6 +127,18 @@ var classTable = []struct {
 	{localfeed.ErrAnchorNotAllowed, ClassInvalidArgument},
 	{localfeed.ErrRecordCrossesAnchor, ClassInvalidArgument},
 	{localfeed.ErrEmptyCursor, ClassInvalidArgument},
+	{localfeed.ErrInvalidChannelID, ClassInvalidArgument},
+
+	// Исходящие (ADR-093, docs/local-actions.md). Все пять — ошибки
+	// вызывающего: неверная очередь, тело, срок аренды; op_id, которого нет;
+	// переход, запрещённый текущим состоянием. ErrQueueEmpty и ErrHeadLeased
+	// сюда НЕ входят: это штатные исходы аренды, и наружу они выходят
+	// результатом 807 ({"leased":false,"reason":…}), а не ошибкой.
+	{outbox.ErrInvalidQueue, ClassInvalidArgument},
+	{outbox.ErrInvalidBody, ClassInvalidArgument},
+	{outbox.ErrInvalidLease, ClassInvalidArgument},
+	{outbox.ErrUnknownOp, ClassInvalidArgument},
+	{outbox.ErrStateConflict, ClassInvalidArgument},
 
 	// Потоковая передача. Все четыре — ошибки АРГУМЕНТА или КАДРА, а не
 	// связи: повторять вызов с теми же параметрами бессмысленно, и класс

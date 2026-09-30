@@ -15,6 +15,7 @@ import (
 	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
 	"github.com/wiloris/photon-core/ports"
 	"github.com/wiloris/photon-core/services/localfeed"
+	"github.com/wiloris/photon-core/services/outbox"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -41,13 +42,7 @@ func (s *countingStorage) Close(ctx context.Context) error {
 // openTestStorage — настоящее bbolt во временном каталоге теста.
 func openTestStorage(t *testing.T) ports.Storage {
 	t.Helper()
-	st, err := bboltadapter.New(filepath.Join(t.TempDir(), "feed.db"), []bboltadapter.Migration{{
-		Version: localfeed.SchemaVersion,
-		Up: func(tx *bolt.Tx) error {
-			_, e := tx.CreateBucketIfNotExists([]byte(localfeed.Namespace))
-			return e
-		},
-	}})
+	st, err := bboltadapter.New(filepath.Join(t.TempDir(), "feed.db"), testMigrations())
 	if err != nil {
 		t.Fatalf("открытие хранилища: %v", err)
 	}
@@ -277,5 +272,20 @@ func TestLocalAction_InvalidPayloadRejected(t *testing.T) {
 		if !errors.Is(err, session.ErrInvalidPayload) {
 			t.Fatalf("payload %s: ошибка = %v, ожидался ErrInvalidPayload", bad, err)
 		}
+	}
+}
+
+// testMigrations — тот же список, что строит openStorage: лента (v1) и
+// очередь исходящих (v2, ADR-093 §2.8).
+func testMigrations() []bboltadapter.Migration {
+	return []bboltadapter.Migration{
+		{Version: localfeed.SchemaVersion, Up: func(tx *bolt.Tx) error {
+			_, e := tx.CreateBucketIfNotExists([]byte(localfeed.Namespace))
+			return e
+		}},
+		{Version: 2, Up: func(tx *bolt.Tx) error {
+			_, e := tx.CreateBucketIfNotExists([]byte(outbox.Namespace))
+			return e
+		}},
 	}
 }

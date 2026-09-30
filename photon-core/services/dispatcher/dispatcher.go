@@ -22,6 +22,7 @@ import (
 
 	"github.com/wiloris/photon-core/ports"
 	"github.com/wiloris/photon-core/services/localfeed"
+	"github.com/wiloris/photon-core/services/outbox"
 	"github.com/wiloris/photon-core/services/session"
 )
 
@@ -50,6 +51,7 @@ type Dispatcher struct {
 	// правилу, что ownTransport выше.
 	st         ports.Storage
 	feed       *localfeed.Store
+	box        *outbox.Store // исходящие (ADR-093), тот же файл, что feed
 	ownStorage bool
 
 	// ctx живёт столько же, сколько инстанс. Отмена — единственный способ
@@ -106,14 +108,14 @@ func New(cfg Config) (*Dispatcher, error) {
 		return nil, err
 	}
 	if st != nil {
-		feed, ferr := prepareFeed(d.ctx, st)
+		feed, box, ferr := prepareFeed(d.ctx, st)
 		if ferr != nil {
 			if own {
 				_ = st.Close(context.Background())
 			}
 			return nil, ferr
 		}
-		d.st, d.feed, d.ownStorage = st, feed, own
+		d.st, d.feed, d.box, d.ownStorage = st, feed, box, own
 	}
 
 	if cfg.Endpoint == "" {

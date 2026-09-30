@@ -318,6 +318,9 @@ func applyBlock(segs []Segment, b Block, recs []Record) ([]Segment, error) {
 
 // Segments — копия списка сегментов канала, свежие первыми.
 func (s *Store) Segments(ctx context.Context, channelID string) ([]Segment, error) {
+	if err := validChannel(channelID); err != nil {
+		return nil, err
+	}
 	var segs []Segment
 	err := s.st.View(ctx, func(tx ports.ReadTx) error {
 		var e error
@@ -345,8 +348,8 @@ func (s *Store) GapAnchor(ctx context.Context, channelID string) (Position, bool
 // Watermark — самая свежая локальная позиция. Отвечает на другой вопрос, чем
 // GapAnchor: «докуда я дочитал сверху», а не «откуда закрывать дыру».
 func (s *Store) Watermark(ctx context.Context, channelID string) (Position, bool, error) {
-	if channelID == "" {
-		return Position{}, false, ErrEmptyChannel
+	if err := validChannel(channelID); err != nil {
+		return Position{}, false, err
 	}
 	var (
 		pos   Position
