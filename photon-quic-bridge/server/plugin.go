@@ -58,18 +58,12 @@ type Plugin struct {
 	// работают. Пишется один раз в OnActivate до начала обслуживания.
 	dmStore    dmStore
 	dmStoreErr error
-
-	// engramTeam — id команды engram, в которую вход обязательно добавляет
-	// пользователя ENGRAM (engram_team.go). Находится или создаётся в
-	// OnActivate; вход её только ищет.
-	engramTeam engramTeam
 }
 
 // OnActivate is invoked when the plugin is activated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 	p.initDMv2()
-	p.initEngramTeam()
 	p.kvstore = kvstore.NewKVStore(p.client)
 	p.commandClient = command.NewCommandHandler(p.client)
 	p.router = p.initRouter()
@@ -153,18 +147,4 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		)
 	}
 	return response, nil
-}
-
-// initEngramTeam — команда engram при активации: найти, а если нет — создать
-// (Type=I, AllowOpenInvite=false, Email="", AllowedDomains=""). Отказ не
-// останавливает плагин: остальные функции Bridge от команды не зависят, а
-// вход до исправления честно отвечает engram_team_unavailable.
-func (p *Plugin) initEngramTeam() {
-	team, err := ensureEngramTeam(p.API)
-	if err != nil {
-		p.API.LogError("[Photon] engram team is not ready — ENGRAM sign-in will be refused", "error", err.Error())
-		return
-	}
-	p.engramTeam.set(team.Id)
-	p.API.LogInfo("[Photon] engram team ready", "team_id", team.Id)
 }
