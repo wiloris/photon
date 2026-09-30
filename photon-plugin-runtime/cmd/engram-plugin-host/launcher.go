@@ -110,6 +110,10 @@ type Options struct {
 	// новый номер миграции вместо отказа.
 	Install bool
 
+	// InitIdentityOnly — режим -init-identity (ADR-086 §4.1): только создать
+	// device.key в KeyDir. Run в этом режиме не вызывается вовсе.
+	InitIdentityOnly bool
+
 	// ResultOut — путь файла результата для вызывающего приложения
 	// (ADR-085). Читает его ТОЛЬКО CLI: Run о файле не знает, и результат
 	// из него не зависит.

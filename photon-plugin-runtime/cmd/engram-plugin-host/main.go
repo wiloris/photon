@@ -47,6 +47,9 @@ const legacyDefaultPluginID = "dev.engram.counter"
 
 func main() {
 	o, err := parseArgs(os.Args[1:])
+	if err == nil && o.InitIdentityOnly {
+		os.Exit(runInitIdentity(o.KeyDir))
+	}
 
 	/*
 	 * Прежний файл результата убирается ДО ЛЮБЫХ ПОБОЧНЫХ ЭФФЕКТОВ — и до
@@ -190,6 +193,9 @@ func parseArgs(args []string) (o Options, err error) {
 		initIdentity = fs.Bool("init", false,
 			"создать идентичность устройства, если её ещё не было (ADR-069). "+
 				"С существующим device.key — ошибка: это операция создания, а не ensure")
+		initIdentityOnly = fs.Bool("init-identity", false,
+			"ТОЛЬКО создать device.key в -keys и завершиться: без хранилища, без плагина, "+
+				"без master.key (ADR-086 §4.1). Коды: 0 создан, 3 уже есть, 1 ошибка, 2 аргументы")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -200,12 +206,28 @@ func parseArgs(args []string) (o Options, err error) {
 	// флаги, а VisitAll — все. Сравнение с "" заданности не показывает:
 	// `-id ""` и отсутствие флага дают одно значение, и правило «совпасть
 	// обязан» стало бы тождественно истинным (ADR-071, Source of truth).
-	idSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "id" {
-			idSet = true
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	idSet := set["id"]
+
+	/*
+	 * Режим -init-identity (ADR-086 §4.1) — отдельное событие, а не вариант
+	 * запуска плагина: всё, что относится к плагину, с ним несовместимо.
+	 * Совместное указание — отказ, а не «лишнее проигнорируем»: молча
+	 * отброшенный -manifest выглядел бы запуском, которого не было.
+	 */
+	if *initIdentityOnly {
+		for _, name := range []string{"db", "plugin", "manifest", "package-root", "id", "grants",
+			"events", "install", "init", "result-out"} {
+			if set[name] {
+				return Options{}, fmt.Errorf("-init-identity несовместим с -%s: он не запускает плагин (ADR-086)", name)
+			}
 		}
-	})
+		if *keyDir == "" {
+			return Options{}, errors.New("-init-identity требует -keys: каталог ключей не выводится из хранилища, которого в этом режиме нет")
+		}
+		return Options{InitIdentityOnly: true, KeyDir: *keyDir}, nil
+	}
 
 	if *db == "" {
 		return Options{}, errors.New("нужен -db")

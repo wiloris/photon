@@ -64,6 +64,12 @@ import (
  * создании явно.
  */
 
+// errDeviceKeyExists — явная инициализация встретила существующую
+// идентичность (ADR-069 §4.2). Отдельное значение нужно режиму
+// -init-identity: «уже есть» и «испорчен» он сообщает разными кодами
+// выхода (ADR-086 §4.1), а текст ошибки для этого не годится.
+var errDeviceKeyExists = errors.New("инициализация не заменяет идентичность устройства")
+
 const (
 	deviceKeyFile = "device.key"
 	masterKeyFile = "master.key"
@@ -144,9 +150,7 @@ func loadDeviceKey(path string, initialize bool, gen func() ([]byte, error)) ([]
 	raw, err := readKeyFile(path)
 	switch {
 	case err == nil && initialize:
-		return nil, fmt.Errorf(
-			"%s уже существует: инициализация не заменяет идентичность устройства",
-			filepath.Base(path))
+		return nil, fmt.Errorf("%s уже существует: %w", filepath.Base(path), errDeviceKeyExists)
 	case err == nil:
 		return raw, nil
 	case !errors.Is(err, os.ErrNotExist):
