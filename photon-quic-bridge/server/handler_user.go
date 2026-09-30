@@ -54,6 +54,10 @@ func (h *UserHandler) Handle(userID string, action int, raw json.RawMessage) Res
 		return sendDirectMessage(h.directMessageDeps(), userID, raw)
 	case ActionListDirectMessages:
 		return listDirectMessages(h.directMessageDeps(), userID, raw)
+	case ActionSendDirectMessageV2:
+		return sendDirectMessageV2(h.directMessageV2Deps(), userID, raw)
+	case ActionListDirectMessagesV2:
+		return listDirectMessagesV2(h.directMessageV2Deps(), userID, raw)
 	case ActionListDirectConversations:
 		return listDirectConversations(h.conversationDeps(), userID, raw)
 	default:

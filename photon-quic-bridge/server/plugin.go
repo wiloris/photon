@@ -52,11 +52,18 @@ type Plugin struct {
 
 	// wg позволяет дождаться завершения QUIC-горутины при деактивации.
 	wg sync.WaitGroup
+
+	// dmStore — прямое чтение Posts для личных сообщений v2 (ADR-092 ред. 3,
+	// dm_sql.go). nil — v2 выключен, причина — dmStoreErr; 213/214 при этом
+	// работают. Пишется один раз в OnActivate до начала обслуживания.
+	dmStore    dmStore
+	dmStoreErr error
 }
 
 // OnActivate is invoked when the plugin is activated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
+	p.initDMv2()
 	p.kvstore = kvstore.NewKVStore(p.client)
 	p.commandClient = command.NewCommandHandler(p.client)
 	p.router = p.initRouter()

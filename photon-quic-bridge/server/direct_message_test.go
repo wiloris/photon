@@ -26,14 +26,15 @@ import (
 //     model.post.is_valid.msg.app_error (model.Post.IsValid).
 
 type fakeDM struct {
-	users       map[string]*model.User
-	channels    map[string]*model.Channel // id → канал
-	byName      map[string]string         // имя → id (только личные, TeamId "")
-	posts       []*model.Post
-	clock       int64
-	maxPostSize int
-	created     int // сколько каналов создано
-	createCalls int // сколько раз вызван CreatePost
+	users        map[string]*model.User
+	channels     map[string]*model.Channel // id → канал
+	byName       map[string]string         // имя → id (только личные, TeamId "")
+	posts        []*model.Post
+	clock        int64
+	maxPostSize  int
+	created      int // сколько каналов создано
+	createCalls  int // сколько раз вызван CreatePost
+	getPostCalls int // сколько раз вызван GetPost
 }
 
 func newFakeDM() *fakeDM {
@@ -86,6 +87,7 @@ func (f *fakeDM) CreatePost(p *model.Post) (*model.Post, *model.AppError) {
 }
 
 func (f *fakeDM) GetPost(id string) (*model.Post, *model.AppError) {
+	f.getPostCalls++
 	for _, p := range f.posts {
 		if p.Id == id && p.DeleteAt == 0 {
 			return p, nil

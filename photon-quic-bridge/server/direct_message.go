@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -265,5 +266,22 @@ func (h *UserHandler) directMessageDeps() directMessageDeps {
 		registry: NewAccountRegistry(h.plugin.API),
 		api:      h.plugin.API,
 		logger:   h.plugin.API.LogWarn,
+	}
+}
+
+// directMessageV2Deps — зависимости 217/218 (ADR-092 ред. 3).
+func (h *UserHandler) directMessageV2Deps() directMessageV2Deps {
+	return directMessageV2Deps{
+		directMessageDeps: h.directMessageDeps(),
+		store:             h.plugin.dmStore,
+		storeErr:          h.plugin.dmStoreErr,
+		linkTimeout: func() time.Duration {
+			ms := int64(model.ExperimentalSettingsDefaultLinkMetadataTimeoutMilliseconds)
+			if cfg := h.plugin.API.GetConfig(); cfg != nil && cfg.ExperimentalSettings.LinkMetadataTimeoutMilliseconds != nil {
+				ms = *cfg.ExperimentalSettings.LinkMetadataTimeoutMilliseconds
+			}
+			return time.Duration(ms) * time.Millisecond
+		},
+		now: time.Now,
 	}
 }
