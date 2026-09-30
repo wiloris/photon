@@ -5,8 +5,10 @@ package bbolt
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 
@@ -20,6 +22,20 @@ var (
 	metaBucket = []byte("_meta")
 	versionKey = []byte("schema_version")
 )
+
+// OpenTimeout — сколько New ждёт файл, занятый другим владельцем.
+//
+// Законный держатель файла короткий: хост плагинов открывает engram.db на
+// время миграции реестра и одного запуска, CLI — на время команды. Пять
+// секунд переживают такого держателя с запасом и при этом остаются
+// ошибкой, которую видно: Photon_Create — синхронный вызов, и ждать дольше
+// значит держать вызывающего без ответа ради состояния, которое чаще всего
+// означает дефект (второй инстанс на том же файле).
+const OpenTimeout = 5 * time.Second
+
+// openTimeout — действующее значение; переменная только ради тестов пакета,
+// которым незачем ждать пять секунд, чтобы проверить сам факт отказа.
+var openTimeout = OpenTimeout
 
 // Migration — шаг миграции схемы. Version — целевая версия, после
 // применения которой схема считается находящейся на этой версии.
@@ -44,9 +60,21 @@ var _ ports.Storage = (*Storage)(nil)
 // Версии обязаны быть последовательными без пропусков (1, 2, 3, ...) —
 // New возвращает ошибку при обнаружении дыры или дубликата, чтобы
 // забытая по ошибке миграция не осталась незамеченной молча.
+//
+// Открытие ограничено по времени (openTimeout). bbolt берёт эксклюзивный
+// flock на файл, и с Timeout = 0 (умолчание, nil-опции) ждёт занятый файл
+// БЕСКОНЕЧНО — второй инстанс того же процесса или чужой процесс на том же
+// файле подвешивали вызывающего навсегда. ADR-064 п. 1.6 обещает на
+// «блокировку другим процессом» отказ создания, а не ожидание; истёкший
+// таймаут возвращается ошибкой, которая оборачивает bolt.ErrTimeout.
 func New(path string, migrations []Migration) (*Storage, error) {
-	db, err := bolt.Open(path, 0600, nil)
+	opts := *bolt.DefaultOptions // прочие умолчания — как при nil-опциях
+	opts.Timeout = openTimeout
+	db, err := bolt.Open(path, 0600, &opts)
 	if err != nil {
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, fmt.Errorf("bbolt: open %s: file is locked by another holder, gave up after %v: %w", path, openTimeout, err)
+		}
 		return nil, fmt.Errorf("bbolt: open %s: %w", path, err)
 	}
 

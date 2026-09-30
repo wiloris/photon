@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	bolt "go.etcd.io/bbolt"
@@ -182,4 +183,68 @@ func TestLocalFeed_DestroyClosesStorage(t *testing.T) {
 		t.Fatalf("после Destroy файл остался заблокирован — хранилище не закрыто (rc = %d)", rc)
 	}
 	tsDestroy(again)
+}
+
+// Регрессия: занятый файл не подвешивает Photon_Create (ADR-064 п. 1.6).
+//
+// До исправления bboltadapter.New открывал bbolt без таймаута, и второй
+// инстанс на том же файле ждал в Photon_Create бесконечно. Второй Create
+// идёт в горутине под сторожем: тест не может зависнуть, даже если дефект
+// вернётся, — он упадёт по сторожу.
+func TestLocalFeed_LockedStorageFailsCreateWithinTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "feed.db")
+	seedFeed(t, path, "ch",
+		localfeed.Record{ID: "a", OrderKey: 100, Version: 101, Body: []byte(`{"message":"x"}`)},
+	)
+
+	first, rc := tsCreate(storageConfig(t, path), false)
+	if rc != tsOK || first == nil {
+		t.Fatalf("первый Create: rc = %d", rc)
+	}
+	defer tsDestroy(first)
+
+	type result struct {
+		h  unsafe.Pointer
+		rc int
+	}
+	cfg := storageConfig(t, path)
+	done := make(chan result, 1)
+	start := time.Now()
+	go func() {
+		h, rc := tsCreate(cfg, false)
+		done <- result{h, rc}
+	}()
+
+	var r result
+	watchdog := bboltadapter.OpenTimeout + 15*time.Second
+	select {
+	case r = <-done:
+	case <-time.After(watchdog):
+		t.Fatalf("второй Photon_Create не вернулся за %v: открытие занятого файла снова ждёт бесконечно", watchdog)
+	}
+	elapsed := time.Since(start)
+
+	if r.rc != tsErrInternal {
+		if r.h != nil {
+			tsDestroy(r.h)
+		}
+		t.Fatalf("rc = %d, ожидался PHOTON_ERR_INTERNAL: файл занят (ADR-064 п. 1.6)", r.rc)
+	}
+	if r.h != nil {
+		t.Fatal("при отказе *handle обязан остаться NULL (ADR-027/028)")
+	}
+	if elapsed > bboltadapter.OpenTimeout+5*time.Second {
+		t.Fatalf("отказ за %v — дольше таймаута открытия %v", elapsed, bboltadapter.OpenTimeout)
+	}
+	t.Logf("второй Create отказал за %v (таймаут %v)", elapsed, bboltadapter.OpenTimeout)
+
+	// Первый инстанс продолжает работать.
+	rc2, respOut := tsSendAction(first, actionLocalFeedPageC, cstr(t, `{"channel_id":"ch","limit":10}`), true)
+	if rc2 != tsOK || respOut == nil {
+		t.Fatalf("первый инстанс после отказа второго: SendAction(800) rc = %d", rc2)
+	}
+	defer tsFreeString(respOut)
+	if body := tsGoString(tsStringData(respOut)); !strings.Contains(body, `"id":"a"`) {
+		t.Fatalf("первый инстанс после отказа второго читает не то: %s", body)
+	}
 }
