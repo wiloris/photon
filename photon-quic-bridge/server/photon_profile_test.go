@@ -30,7 +30,11 @@ func (f *fakeProfileUsers) GetUser(id string) (*model.User, *model.AppError) {
 	if !ok {
 		return nil, model.NewAppError("GetUser", "app.user.missing_account.const", nil, "", http.StatusNotFound)
 	}
-	return u, nil
+	// Копия — как у настоящего API: правка полученного объекта не меняет
+	// хранимого пользователя без UpdateUser (ADR-091: иначе чтение после
+	// записи проходило бы и без записи).
+	c := *u
+	return &c, nil
 }
 
 // countingFinder считает обращения к реестру: негодный PhotonID обязан

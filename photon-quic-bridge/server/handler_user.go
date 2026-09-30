@@ -13,6 +13,7 @@ import (
 //	204=GetUserProfile, 205=SearchUsers, 206=GetUsersByIds,
 //	207=PatchMe, 208=SetStatus, 209=UploadAvatar, 210=GetUserAvatar,
 //	211=GetMyPhotonProfile, 212=FindByPhotonID (ADR-081, photon_profile.go),
+//	216=SetMyDisplayName (ADR-091, photon_profile.go),
 //	213=SendDirectMessage, 214=ListDirectMessages (ADR-082, direct_message.go),
 //	215=ListDirectConversations (ADR-084, direct_conversations.go)
 type UserHandler struct {
@@ -47,6 +48,8 @@ func (h *UserHandler) Handle(userID string, action int, raw json.RawMessage) Res
 		return getMyPhotonProfile(h.profileDeps(), userID)
 	case ActionFindByPhotonID:
 		return findByPhotonID(h.profileDeps(), userID, raw)
+	case ActionSetMyDisplayName:
+		return setMyDisplayName(h.profileDeps(), userID, raw)
 	case ActionSendDirectMessage:
 		return sendDirectMessage(h.directMessageDeps(), userID, raw)
 	case ActionListDirectMessages:

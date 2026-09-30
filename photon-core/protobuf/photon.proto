@@ -98,7 +98,7 @@ enum Action {
   ACTION_TOGGLE_LIKE         = 113;
   ACTION_GET_POST_SOCIAL_INFO = 114;
 
-  // ── UserResource (200-215) ──────────────────────────────────────
+  // ── UserResource (200-216) ──────────────────────────────────────
   ACTION_GET_ME            = 200;
   ACTION_GET_USER          = 201;
   ACTION_GET_USERS         = 202;
@@ -126,6 +126,10 @@ enum Action {
   // Входящие: список существующих разговоров 1:1 (ADR-084). Источник
   // списка, а не окончательная модель переписки.
   ACTION_LIST_DIRECT_CONVERSATIONS = 215;
+
+  // Своё отображаемое имя (ADR-091): меняет только Nickname вызывающего,
+  // ответ — PhotonProfile. 207 PATCH_ME для пользователей ENGRAM закрыт.
+  ACTION_SET_MY_DISPLAY_NAME = 216;
 
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
@@ -267,7 +271,7 @@ message PhotonRequest {
   Resource resource = 2;
 
   oneof payload {
-    // ── UserResource (200-215) ────────────────────────── field numbers 200-215
+    // ── UserResource (200-216) ────────────────────────── field numbers 200-216
     GetUserPayload      get_user       = 201;
     GetUsersPayload     get_users      = 202;
     GetUserPayload      get_status     = 203; // reuse — just needs user_id
@@ -282,6 +286,7 @@ message PhotonRequest {
     SendDirectMessagePayload  send_direct_message  = 213;
     ListDirectMessagesPayload list_direct_messages = 214;
     ListDirectConversationsPayload list_direct_conversations = 215;
+    SetMyDisplayNamePayload set_my_display_name = 216;
 
     // ── PostResource (100-114) ────────────────────────── field numbers 100-114
     CreatePostPayload   create_post      = 100;
@@ -351,7 +356,7 @@ message PhotonResponse {
   int32  code  = 3; // internal error code, 0 = success
 
   oneof data {
-    // ── UserResource responses ────────────────────────── field numbers 200-215
+    // ── UserResource responses ────────────────────────── field numbers 200-216
     User           user         = 201;
     UsersResponse  users        = 202;
     StatusResponse status       = 203;
@@ -361,6 +366,7 @@ message PhotonResponse {
     SentDirectMessage      sent_direct_message = 213;
     DirectMessagesResponse direct_messages     = 214;
     DirectConversationsResponse direct_conversations = 215;
+    PhotonProfile  my_display_name   = 216;
 
     // ── PostResource responses ────────────────────────── field numbers 100-114
     Post                post          = 100;
@@ -571,6 +577,14 @@ message ListDirectMessagesPayload {
   string with_photon_id = 1;
   string after          = 2;
   int32  limit          = 3;
+}
+
+// ADR-091: своё отображаемое имя. После обрезки пробелов по краям: пусто —
+// очистка; не длиннее 64 рун; без управляющих/форматных символов и
+// разделителей строк; не только цифры и пробелы. Других полей нет —
+// username, имя, фамилия, Props сюда не входят НАМЕРЕННО.
+message SetMyDisplayNamePayload {
+  string display_name = 1;
 }
 
 // ADR-084: limit 1..200, по умолчанию 60.

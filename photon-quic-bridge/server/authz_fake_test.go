@@ -22,6 +22,11 @@ type fakeAuthzAPI struct {
 	byName     map[string]string // teamID+"/"+name → channelID
 	grants     map[string]bool   // см. grantKey
 	compliance bool
+	// users — пользователи с особым способом входа (ADR-091 §2.4). Субъект
+	// не из карты — обычный пользователь Mattermost: так устроены все
+	// субъекты матрицы, и правилам, не спрашивающим GetUser, всё равно.
+	users     map[string]*model.User
+	usersFail bool // GetUser отвечает ошибкой
 }
 
 func grantKey(userID, scope, id, perm string) string {
@@ -81,6 +86,16 @@ func (f *fakeAuthzAPI) GetFileInfo(id string) (*model.FileInfo, *model.AppError)
 		return fi, nil
 	}
 	return nil, model.NewAppError("GetFileInfo", "not_found", nil, "", 404)
+}
+
+func (f *fakeAuthzAPI) GetUser(id string) (*model.User, *model.AppError) {
+	if f.usersFail {
+		return nil, model.NewAppError("GetUser", "store_error", nil, "", 500)
+	}
+	if u, ok := f.users[id]; ok {
+		return u, nil
+	}
+	return &model.User{Id: id}, nil
 }
 
 func (f *fakeAuthzAPI) GetConfig() *model.Config {

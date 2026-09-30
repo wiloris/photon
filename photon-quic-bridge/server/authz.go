@@ -35,6 +35,9 @@ type authzAPI interface {
 	GetPost(postID string) (*model.Post, *model.AppError)
 	GetFileInfo(fileID string) (*model.FileInfo, *model.AppError)
 	GetConfig() *model.Config
+	// GetUser — способ входа субъекта (ADR-091 §2.4: 207 закрыт для
+	// пользователей ENGRAM-входа).
+	GetUser(userID string) (*model.User, *model.AppError)
 }
 
 type authz struct {
@@ -319,6 +322,24 @@ func isSelf() policy {
 	return func(_ *authz, _ string, o objectRef) bool { return o.isSelf }
 }
 
+// isSelfNotEngram — isSelf, но не для пользователя ENGRAM-входа
+// (AuthService = engram, ADR-080). ADR-091 §2.4: контракт 207 — правка
+// произвольного объекта пользователя (username, Props), и для пользователя
+// ENGRAM он закрыт целиком, а не отфильтрован. Не удалось узнать способ входа
+// — отказ.
+func isSelfNotEngram() policy {
+	return func(z *authz, s string, o objectRef) bool {
+		if !o.isSelf {
+			return false
+		}
+		u, appErr := z.api.GetUser(s)
+		if appErr != nil || u == nil {
+			return false
+		}
+		return u.AuthService != engramAuthService
+	}
+}
+
 // ownNamespace — свойство конструкции ключа engram:<userID>:<key>, а не
 // проверка. Объявлено явно, чтобы у действия было правило (§7.1).
 func ownNamespace() policy { return func(*authz, string, objectRef) bool { return true } }
@@ -483,13 +504,15 @@ var rules = map[int]rule{
 	ActionGetUserProfile: {objUser, permSys(model.PermissionViewMembers)},
 	ActionSearchUsers:    {objNone, permSys(model.PermissionViewMembers)},
 	ActionGetUsersByIds:  {objNone, permSys(model.PermissionViewMembers)},
-	ActionPatchMe:        {objNone, isSelf()},
+	ActionPatchMe:        {objNone, isSelfNotEngram()}, // ADR-091 §2.4
 	ActionSetStatus:      {objNone, isSelf()},
 	ActionUploadAvatar:   {objNone, isSelf()},
 	ActionGetUserAvatar:  {objUser, permSys(model.PermissionViewMembers)},
 	// ADR-081 §2.1: свой профиль — как getMe; поиск — как searchUsers.
 	ActionGetMyPhotonProfile: {objNone, authenticated()},
 	ActionFindByPhotonID:     {objNone, permSys(model.PermissionViewMembers)},
+	// ADR-091: субъект — только вызывающий, объекта в запросе нет.
+	ActionSetMyDisplayName: {objNone, authenticated()},
 	// ADR-082 §3.7: отправка — право создать личный канал и, если он уже
 	// есть, писать в него; чтение — readC, а канала нет — читать нечего.
 	ActionSendDirectMessage: {objDirectPeer, allOf(
