@@ -131,6 +131,14 @@ enum Action {
   // ответ — PhotonProfile. 207 PATCH_ME для пользователей ENGRAM закрыт.
   ACTION_SET_MY_DISPLAY_NAME = 216;
 
+  // Личные сообщения v2 (ADR-092 ред. 3). 217: client_msg_id обязателен
+  // (= op_id исходящей операции Core, ADR-093), повтор идемпотентен, не
+  // больше N_max = 5 URL. 218: порядок (CreateAt ASC, PostID DESC),
+  // непрозрачный курсор {водяной знак, позиция прохода}, окно W только в
+  // начале прохода. 213/214 не меняются.
+  ACTION_SEND_DIRECT_MESSAGE_V2  = 217;
+  ACTION_LIST_DIRECT_MESSAGES_V2 = 218;
+
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
   ACTION_GET_CHANNEL_MEMBERS          = 301;
@@ -313,6 +321,8 @@ message PhotonRequest {
     ListDirectMessagesPayload list_direct_messages = 214;
     ListDirectConversationsPayload list_direct_conversations = 215;
     SetMyDisplayNamePayload set_my_display_name = 216;
+    SendDirectMessageV2Payload  send_direct_message_v2  = 217;
+    ListDirectMessagesV2Payload list_direct_messages_v2 = 218;
 
     // ── PostResource (100-114) ────────────────────────── field numbers 100-114
     CreatePostPayload   create_post      = 100;
@@ -393,6 +403,8 @@ message PhotonResponse {
     DirectMessagesResponse direct_messages     = 214;
     DirectConversationsResponse direct_conversations = 215;
     PhotonProfile  my_display_name   = 216;
+    SentDirectMessageV2      sent_direct_message_v2 = 217;
+    DirectMessagesV2Response direct_messages_v2     = 218;
 
     // ── PostResource responses ────────────────────────── field numbers 100-114
     Post                post          = 100;
@@ -649,6 +661,52 @@ message DirectMessage {
   string author_photon_id = 2;
   string text             = 3;
   int64  created_at       = 4; // миллисекунды Unix
+}
+
+// ── Личные сообщения v2 (ADR-092 ред. 3) ───────────────────────────────
+
+// 217. client_msg_id — UUID, op_id исходящей операции Core; в тексте не
+// больше 5 URL (иначе message_too_many_links).
+message SendDirectMessageV2Payload {
+  string to_photon_id  = 1;
+  string text          = 2;
+  string client_msg_id = 3;
+}
+
+// 218. cursor — непрозрачная строка сервера; пусто — первичная
+// синхронизация. limit 1..200, по умолчанию 60.
+message ListDirectMessagesV2Payload {
+  string with_photon_id = 1;
+  string cursor         = 2;
+  int32  limit          = 3;
+}
+
+message DirectMessageV2 {
+  string id               = 1;
+  string author_photon_id = 2;
+  string text             = 3;
+  int64  created_at       = 4; // миллисекунды Unix
+  string client_msg_id    = 5; // только у сообщений вызывающего
+  bool   deleted          = 6; // только в ответе 217 на повтор удалённого поста
+}
+
+message SentDirectMessageV2 {
+  DirectMessageV2 message = 1;
+}
+
+// Позиция в порядке (CreateAt, PostID). id пуст — нижняя граница окна:
+// клиент ставит якорь (created_at − 1, "") (ADR-095 п. 2.7).
+message DirectMessagePosition {
+  int64  created_at = 1;
+  string id         = 2;
+}
+
+// От старых к новым. from отсутствует при первичной синхронизации.
+message DirectMessagesV2Response {
+  repeated DirectMessageV2 messages    = 1;
+  string                   next_cursor = 2;
+  DirectMessagePosition    from        = 3;
+  bool                     at_end      = 4;
 }
 
 message SentDirectMessage {

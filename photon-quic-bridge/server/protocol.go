@@ -75,6 +75,10 @@ const (
 	// Личные сообщения по PhotonID (ADR-082).
 	ActionSendDirectMessage  = int(photonpb.Action_ACTION_SEND_DIRECT_MESSAGE)
 	ActionListDirectMessages = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES)
+	// Личные сообщения v2 (ADR-092 ред. 3): идемпотентная отправка и
+	// синхронизация с непрозрачным курсором.
+	ActionSendDirectMessageV2  = int(photonpb.Action_ACTION_SEND_DIRECT_MESSAGE_V2)
+	ActionListDirectMessagesV2 = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES_V2)
 
 	// Входящие: список разговоров 1:1 (ADR-084).
 	ActionListDirectConversations = int(photonpb.Action_ACTION_LIST_DIRECT_CONVERSATIONS)

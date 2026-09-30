@@ -519,6 +519,12 @@ var rules = map[int]rule{
 		permSys(model.PermissionCreateDirectChannel),
 		ifChannel(permChan(model.PermissionCreatePost), authenticated()))},
 	ActionListDirectMessages: {objDirectPeer, ifChannel(readC(), authenticated())},
+	// ADR-092 ред. 3: v2 — те же объект и права, что у 213/214; меняется
+	// только контракт ответа, не круг допущенных.
+	ActionSendDirectMessageV2: {objDirectPeer, allOf(
+		permSys(model.PermissionCreateDirectChannel),
+		ifChannel(permChan(model.PermissionCreatePost), authenticated()))},
+	ActionListDirectMessagesV2: {objDirectPeer, ifChannel(readC(), authenticated())},
 	// ADR-084 §2.1: объекта во входе нет; список — только каналы участия.
 	ActionListDirectConversations: {objNone, authenticated()},
 
