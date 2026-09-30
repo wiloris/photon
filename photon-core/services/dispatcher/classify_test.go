@@ -64,6 +64,7 @@ var known = map[string]error{
 	"ErrUnknownDirection":    localfeed.ErrUnknownDirection,
 	"ErrAnchorNotAllowed":    localfeed.ErrAnchorNotAllowed,
 	"ErrRecordCrossesAnchor": localfeed.ErrRecordCrossesAnchor,
+	"ErrEmptyCursor":         localfeed.ErrEmptyCursor,
 }
 
 func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
@@ -76,6 +77,7 @@ func TestT8_ClassifyCoversEverySentinel(t *testing.T) {
 	// error» у клиента, которому на самом деле надо чинить payload.
 	names = append(names, sentinelNames(t, "../localfeed/localfeed.go")...)
 	names = append(names, sentinelNames(t, "../localfeed/segments.go")...)
+	names = append(names, sentinelNames(t, "../localfeed/catalog.go")...)
 
 	for _, name := range names {
 		err, ok := known[name]
@@ -198,6 +200,7 @@ func TestClassifyLocalfeedSentinels(t *testing.T) {
 		{"неизвестное направление", localfeed.ErrUnknownDirection, ClassInvalidArgument},
 		{"якорь при newest", localfeed.ErrAnchorNotAllowed, ClassInvalidArgument},
 		{"запись не по ту сторону якоря", localfeed.ErrRecordCrossesAnchor, ClassInvalidArgument},
+		{"пустой курсор", localfeed.ErrEmptyCursor, ClassInvalidArgument},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,6 +242,7 @@ func TestClassifyWrappedFeedErrorKeepsSentinel(t *testing.T) {
 		localfeed.ErrUnknownDirection,
 		localfeed.ErrAnchorNotAllowed,
 		localfeed.ErrRecordCrossesAnchor,
+		localfeed.ErrEmptyCursor,
 	} {
 		wrapped := wrapFeedWriteError(sentinel)
 		if !errors.Is(wrapped, sentinel) {

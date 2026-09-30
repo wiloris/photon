@@ -232,7 +232,7 @@ func (s *Store) Put(ctx context.Context, channelID string, recs []Record) error 
 			}
 			s.stats.countWrite()
 		}
-		return nil
+		return touchCatalog(tx, channelID, recs)
 	})
 }
 
@@ -294,11 +294,35 @@ type IngestResult struct {
 // механизм и заведён. Атомарность даёт ports.Storage.Update, поэтому
 // дополнительной машинерии не нужно.
 func (s *Store) Ingest(ctx context.Context, channelID string, b Block) (IngestResult, error) {
+	return s.IngestWith(ctx, channelID, b, IngestOptions{})
+}
+
+// IngestOptions — то, что ложится В ТУ ЖЕ транзакцию, что блок.
+type IngestOptions struct {
+	// Cursor — непрозрачный курсор сервера, с которого продолжать
+	// синхронизацию канала после этого блока. nil — курсор не меняется.
+	// Пишется вместе с блоком: курсор, сохранённый без блока, пропустил бы
+	// данные; блок без курсора — повторился бы (что безвредно, но не нужно).
+	Cursor []byte
+
+	// Also выполняется внутри той же транзакции после записи блока, курсора
+	// и каталога; его ошибка откатывает ВСЁ. Так подтверждение исходящих
+	// (outbox.ConfirmTx, ADR-093 §2.5) атомарно с блоком, а localfeed не
+	// знает об очереди.
+	Also func(tx ports.WriteTx) error
+}
+
+// IngestWith — Ingest плюс курсор синхронизации и чужая работа в той же
+// транзакции (IngestOptions).
+func (s *Store) IngestWith(ctx context.Context, channelID string, b Block, opt IngestOptions) (IngestResult, error) {
 	if channelID == "" {
 		return IngestResult{}, ErrEmptyChannel
 	}
 	if err := validateRecords(b.Records); err != nil {
 		return IngestResult{}, err
+	}
+	if opt.Cursor != nil && len(opt.Cursor) == 0 {
+		return IngestResult{}, ErrEmptyCursor
 	}
 
 	var res IngestResult
@@ -365,6 +389,19 @@ func (s *Store) Ingest(ctx context.Context, channelID string, b Block) (IngestRe
 		}
 		if err := tx.Put(Namespace, segmentsKey(channelID), enc); err != nil {
 			return err
+		}
+		if err := touchCatalog(tx, channelID, b.Records); err != nil {
+			return err
+		}
+		if opt.Cursor != nil {
+			if err := tx.Put(Namespace, cursorKey(channelID), opt.Cursor); err != nil {
+				return err
+			}
+		}
+		if opt.Also != nil {
+			if err := opt.Also(tx); err != nil {
+				return err
+			}
 		}
 
 		res = IngestResult{

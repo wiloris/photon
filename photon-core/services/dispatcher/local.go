@@ -286,7 +286,7 @@ func parseDirection(s string) (localfeed.Direction, error) {
 // сбоем хранилища.
 //
 // Критерий тот же, которым пользуется classTable: есть ли что исправлять
-// вызывающему. У всех семи есть — повторять вызов с тем же payload
+// вызывающему. У всех восьми есть — повторять вызов с тем же payload
 // бессмысленно.
 //
 // Список проверяется на полноту машинно (TestLocalWrite_EveryLocalfeedSentinelIsClassified):
@@ -301,6 +301,7 @@ var feedWriteArgErrors = []error{
 	localfeed.ErrUnknownDirection,
 	localfeed.ErrAnchorNotAllowed,
 	localfeed.ErrRecordCrossesAnchor,
+	localfeed.ErrEmptyCursor,
 }
 
 // wrapFeedWriteError относит ошибку записи к классу исхода вызова.

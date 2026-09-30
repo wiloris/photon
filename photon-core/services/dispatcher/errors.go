@@ -125,6 +125,7 @@ var classTable = []struct {
 	{localfeed.ErrUnknownDirection, ClassInvalidArgument},
 	{localfeed.ErrAnchorNotAllowed, ClassInvalidArgument},
 	{localfeed.ErrRecordCrossesAnchor, ClassInvalidArgument},
+	{localfeed.ErrEmptyCursor, ClassInvalidArgument},
 
 	// Потоковая передача. Все четыре — ошибки АРГУМЕНТА или КАДРА, а не
 	// связи: повторять вызов с теми же параметрами бессмысленно, и класс

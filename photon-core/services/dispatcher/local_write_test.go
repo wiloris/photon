@@ -471,7 +471,7 @@ func TestLocalWrite_UnknownPayloadFieldIgnored(t *testing.T) {
 // TestT8_ClassifyCoversEverySentinel: иначе «полнота» была бы утверждением о
 // намерении, а не о коде.
 func TestLocalWrite_EveryLocalfeedSentinelIsClassified(t *testing.T) {
-	// Ошибки localfeed, которые аргументом НЕ являются. Пусто: все семь
+	// Ошибки localfeed, которые аргументом НЕ являются. Пусто: все восемь
 	// сегодняшних — ошибки вызывающего. Список существует, чтобы появление
 	// такой ошибки было решением, а не умолчанием.
 	notArgument := map[string]bool{}
@@ -484,10 +484,11 @@ func TestLocalWrite_EveryLocalfeedSentinelIsClassified(t *testing.T) {
 		"ErrUnknownDirection":    true,
 		"ErrAnchorNotAllowed":    true,
 		"ErrRecordCrossesAnchor": true,
+		"ErrEmptyCursor":         true,
 	}
 
 	var names []string
-	for _, f := range []string{"../localfeed/localfeed.go", "../localfeed/segments.go"} {
+	for _, f := range []string{"../localfeed/localfeed.go", "../localfeed/segments.go", "../localfeed/catalog.go"} {
 		names = append(names, sentinelNames(t, f)...)
 	}
 	if len(names) == 0 {

@@ -66,7 +66,10 @@ func ingestWithoutGet(tb testing.TB, s *Store, channelID string, b Block) {
 		if err != nil {
 			return err
 		}
-		return tx.Put(Namespace, segmentsKey(channelID), enc)
+		if err := tx.Put(Namespace, segmentsKey(channelID), enc); err != nil {
+			return err
+		}
+		return touchCatalog(tx, channelID, b.Records)
 	})
 	if err != nil {
 		tb.Fatalf("ingestWithoutGet: %v", err)
