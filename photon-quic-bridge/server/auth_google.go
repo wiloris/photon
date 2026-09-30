@@ -110,7 +110,11 @@ type authDeps struct {
 	verifier idTokenVerifier
 	registry *AccountRegistry
 	users    userSessionAPI
-	logger   func(msg string, keyValuePairs ...any)
+	// teams и engramTeam — обязательное членство в команде engram
+	// (engram_team.go). Команду вход не создаёт: в teamMemberAPI нет CreateTeam.
+	teams      teamMemberAPI
+	engramTeam *engramTeam
+	logger     func(msg string, keyValuePairs ...any)
 }
 
 // HandleGoogleAuth — POST /api/v1/auth/google.
@@ -122,9 +126,11 @@ func (p *Plugin) HandleGoogleAuth(w http.ResponseWriter, r *http.Request) {
 	deps := authDeps{
 		clientID: clientID,
 		verifier: p.googleVerifier.get(clientID),
-		registry: NewAccountRegistry(p.API),
-		users:    p.API,
-		logger:   p.API.LogWarn,
+		registry:   NewAccountRegistry(p.API),
+		users:      p.API,
+		teams:      p.API,
+		engramTeam: &p.engramTeam,
+		logger:     p.API.LogWarn,
 	}
 	status, body := handleGoogleAuth(r.Context(), r, deps)
 	writeAuthResponse(w, status, body)
@@ -146,7 +152,7 @@ func statusFor(code string) int {
 		return http.StatusBadRequest
 	case errCodeInvalidCredential, errCodeEmailRequired:
 		return http.StatusUnauthorized
-	case errCodeNotConfigured, errCodeVerifyUnavailable:
+	case errCodeNotConfigured, errCodeVerifyUnavailable, errCodeTeamUnavailable, errCodeTeamFull:
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
@@ -206,6 +212,12 @@ func handleGoogleAuth(ctx context.Context, r *http.Request, d authDeps) (int, au
 			return fail(errCodeRegistryFailure, "account registry failure")
 		}
 		account = linked
+	}
+
+	// Пользователь ∈ команда engram — ДО выдачи сессии, для нового и для
+	// вернувшегося одинаково. Не удалось — сессии нет (engram_team.go).
+	if code := ensureEngramMembership(d, account.MMUserID); code != "" {
+		return fail(code, "cannot ensure engram team membership")
 	}
 
 	session, appErr := d.users.CreateSession(&model.Session{UserId: account.MMUserID})

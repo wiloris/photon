@@ -148,6 +148,7 @@ type authRig struct {
 	kv       *fakeKV
 	verifier *fakeVerifier
 	users    *fakeUsers
+	teams    *fakeTeams
 	logs     *logCapture
 	deps     authDeps
 }
@@ -159,15 +160,18 @@ func newAuthRig(t *testing.T) *authRig {
 		Provider: "google", Subject: "sub-1", Email: "user@example.com",
 	}}
 	users := newFakeUsers()
+	teams := newFakeTeams(users)
 	logs := &logCapture{}
 	return &authRig{
-		kv: kvs, verifier: ver, users: users, logs: logs,
+		kv: kvs, verifier: ver, users: users, teams: teams, logs: logs,
 		deps: authDeps{
-			clientID: "client-123.apps.googleusercontent.com",
-			verifier: ver,
-			registry: NewAccountRegistry(kvs),
-			users:    users,
-			logger:   logs.log,
+			clientID:   "client-123.apps.googleusercontent.com",
+			verifier:   ver,
+			registry:   NewAccountRegistry(kvs),
+			users:      users,
+			teams:      teams,
+			engramTeam: &engramTeam{},
+			logger:     logs.log,
 		},
 	}
 }
