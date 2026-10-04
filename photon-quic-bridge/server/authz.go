@@ -605,6 +605,23 @@ var rules = map[int]rule{
 	ActionGetOrCreateWall: {objWall, ifSelf(authenticated(), readC())},
 	ActionGetWallPosts:    {objChannel, readC()},
 	ActionPublishWallPost: {objChannel, allOf(readC(), permChan(model.PermissionCreatePost))},
+
+	// ── ConversationResource (ADR-099 §2.4) ──
+	// Правило таблицы — только «аутентифицирован». Доступ к разговору и право
+	// на операцию решает обработчик по данным ENGRAM (ADR-099 §11); права и
+	// членство Mattermost для кодов 9xx не проверяются и не используются.
+	ActionConversationCreate:        {objNone, authenticated()},
+	ActionConversationGet:           {objNone, authenticated()},
+	ActionConversationList:          {objNone, authenticated()},
+	ActionConversationUpdate:        {objNone, authenticated()},
+	ActionConversationArchive:       {objNone, authenticated()},
+	ActionConversationMembersAdd:    {objNone, authenticated()},
+	ActionConversationMemberRemove:  {objNone, authenticated()},
+	ActionConversationLeave:         {objNone, authenticated()},
+	ActionConversationRoleSet:       {objNone, authenticated()},
+	ActionConversationOwnerTransfer: {objNone, authenticated()},
+	ActionConversationSend:          {objNone, authenticated()},
+	ActionConversationSync:          {objNone, authenticated()},
 }
 
 // authorize — единственная точка принятия решения. Вызывается Dispatcher'ом до

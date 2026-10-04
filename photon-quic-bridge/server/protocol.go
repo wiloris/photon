@@ -154,6 +154,21 @@ const (
 	ActionOutboxRetry      = int(photonpb.Action_ACTION_OUTBOX_RETRY)
 	ActionOutboxCancel     = int(photonpb.Action_ACTION_OUTBOX_CANCEL)
 	ActionOutboxList       = int(photonpb.Action_ACTION_OUTBOX_LIST)
+
+	// ConversationResource (900-999), ADR-099 §2.2: групповые разговоры
+	// ENGRAM. Обработчик — ConversationHandler.
+	ActionConversationCreate        = int(photonpb.Action_ACTION_CONVERSATION_CREATE)
+	ActionConversationGet           = int(photonpb.Action_ACTION_CONVERSATION_GET)
+	ActionConversationList          = int(photonpb.Action_ACTION_CONVERSATION_LIST)
+	ActionConversationUpdate        = int(photonpb.Action_ACTION_CONVERSATION_UPDATE)
+	ActionConversationArchive       = int(photonpb.Action_ACTION_CONVERSATION_ARCHIVE)
+	ActionConversationMembersAdd    = int(photonpb.Action_ACTION_CONVERSATION_MEMBERS_ADD)
+	ActionConversationMemberRemove  = int(photonpb.Action_ACTION_CONVERSATION_MEMBER_REMOVE)
+	ActionConversationLeave         = int(photonpb.Action_ACTION_CONVERSATION_LEAVE)
+	ActionConversationRoleSet       = int(photonpb.Action_ACTION_CONVERSATION_ROLE_SET)
+	ActionConversationOwnerTransfer = int(photonpb.Action_ACTION_CONVERSATION_OWNER_TRANSFER)
+	ActionConversationSend          = int(photonpb.Action_ACTION_CONVERSATION_SEND)
+	ActionConversationSync          = int(photonpb.Action_ACTION_CONVERSATION_SYNC)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

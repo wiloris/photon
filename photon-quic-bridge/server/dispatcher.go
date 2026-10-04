@@ -21,6 +21,8 @@ type Dispatcher struct {
 	file    *FileHandler
 	wall    *WallHandler
 	media   *MediaHandler
+	// conversation — сотня 900 (ADR-099 §2.1).
+	conversation *ConversationHandler
 	// mediaService — исполнитель медийных операций. Держится здесь, чтобы у
 	// обычного пути и у медийного стрима были ОДИН экземпляр сервиса и одно
 	// хранилище: два экземпляра разошлись бы по состоянию.
@@ -50,6 +52,7 @@ func NewDispatcher(p *Plugin) *Dispatcher {
 		file:         &FileHandler{plugin: p},
 		wall:         &WallHandler{plugin: p},
 		media:        &MediaHandler{plugin: p, media: mediaSvcInstance},
+		conversation: &ConversationHandler{plugin: p},
 		mediaService: mediaSvcInstance,
 	}
 }
@@ -118,6 +121,8 @@ func (d *Dispatcher) Dispatch(userID string, header HeaderFrame, rawPayload json
 		return d.wall.Handle(userID, header.Action, rawPayload)
 	case header.Action >= 700 && header.Action <= 799:
 		return d.media.Handle(userID, header.Action, rawPayload)
+	case header.Action >= 900 && header.Action <= 999:
+		return d.conversation.Handle(userID, header.Action, rawPayload)
 	default:
 		// Недостижимо: код без правила отсеян выше. Оставлено намеренно —
 		// switch по диапазонам и таблица правил могут разойтись только через

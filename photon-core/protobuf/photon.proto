@@ -65,7 +65,12 @@ enum Resource {
   // (ADR-049 §8). RESOURCE_FILE и действия 500-505 при этом не меняются и
   // legacy не объявляются.
   RESOURCE_MEDIA       = 7;
-  // 8-99 reserved for future resources
+  // RESOURCE_CONVERSATION — разговоры ENGRAM (ADR-099 §2.1): сотня 900-999,
+  // строка ресурса в конверте "ConversationResource". Отображение «номер
+  // ресурса × 100» не сохраняется: сотня 800 занята локальными действиями
+  // (ADR-064 §2).
+  RESOURCE_CONVERSATION = 8;
+  // 9-99 reserved for future resources
 }
 
 // Action — явные именованные action-коды. Номера здесь совпадают с
@@ -242,6 +247,27 @@ enum Action {
   ACTION_OUTBOX_RETRY    = 810;
   ACTION_OUTBOX_CANCEL   = 811;
   ACTION_OUTBOX_LIST     = 812;
+
+  // ── ConversationResource (900-999), ADR-099 §2.2 ──────────────────────────
+  // Групповые разговоры ENGRAM (ADR-098). 905-909, 913-919, 922-929 и
+  // 932-999 зарезервированы без семантики (ADR-099 §2.3).
+  //
+  // Payload'ы этих кодов в oneof PhotonRequest/PhotonResponse НЕ
+  // добавляются, вопреки общему правилу ниже: ADR-099 §14 ограничивает
+  // изменения Core реестром — enum Action, enum Resource и ResourceFor.
+  // Форма запросов и ответов — ADR-099 §4-§9 с поправкой ADR-103.
+  ACTION_CONVERSATION_CREATE         = 900;
+  ACTION_CONVERSATION_GET            = 901;
+  ACTION_CONVERSATION_LIST           = 902;
+  ACTION_CONVERSATION_UPDATE         = 903;
+  ACTION_CONVERSATION_ARCHIVE        = 904;
+  ACTION_CONVERSATION_MEMBERS_ADD    = 910;
+  ACTION_CONVERSATION_MEMBER_REMOVE  = 911;
+  ACTION_CONVERSATION_LEAVE          = 912;
+  ACTION_CONVERSATION_ROLE_SET       = 920;
+  ACTION_CONVERSATION_OWNER_TRANSFER = 921;
+  ACTION_CONVERSATION_SEND           = 930;
+  ACTION_CONVERSATION_SYNC           = 931;
 }
 
 enum EventType {
@@ -297,7 +323,8 @@ message HandshakeResponse {
 // перехода на protobuf-байты — критерий возврата в ADR-034 п.5).
 //
 // Правило при правке: добавляя action в enum Action, добавляй payload сюда
-// с ТЕМ ЖЕ номером. Расхождение здесь ничего не сломает на проводе прямо
+// с ТЕМ ЖЕ номером. Исключения — локальные действия 800-899 (на провод не
+// выходят) и ConversationResource 900-999 (ADR-099 §14, см. enum Action). Расхождение здесь ничего не сломает на проводе прямо
 // сейчас — и именно поэтому его легко не заметить.
 
 message PhotonRequest {

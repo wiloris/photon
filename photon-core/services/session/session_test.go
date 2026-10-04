@@ -353,6 +353,7 @@ func TestT8_ResourceForEachRangeAndBoundaries(t *testing.T) {
 		{400, "EngramResource"}, {405, "EngramResource"},
 		{500, "FileResource"}, {505, "FileResource"},
 		{600, "WallResource"}, {602, "WallResource"},
+		{900, "ConversationResource"}, {931, "ConversationResource"},
 	}
 	for _, tc := range cases {
 		got, err := ResourceFor(tc.action)
@@ -373,7 +374,9 @@ func TestT8_UnknownActionRejected(t *testing.T) {
 	// 700 из этого списка убран: с вводом MediaResource (ADR-049 §8) код
 	// существует. Заменён на 750 — он лежит В диапазоне Media, но такого
 	// action'а нет, то есть проверяет ровно то же свойство.
-	for _, code := range []int32{0, 1, 99, 150, 250, 750, 9999, -1} {
+	// 950 — то же свойство для ConversationResource (ADR-099 §2.3: 932-999
+	// зарезервированы без семантики).
+	for _, code := range []int32{0, 1, 99, 150, 250, 750, 950, 9999, -1} {
 		if _, err := ResourceFor(code); !errors.Is(err, ErrUnknownAction) {
 			t.Errorf("ResourceFor(%d) err = %v, want ErrUnknownAction", code, err)
 		}

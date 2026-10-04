@@ -66,6 +66,10 @@ func ResourceFor(action int32) (string, error) {
 		return "MediaResource", nil
 	case action >= 800 && action <= 899:
 		return ResourceLocalFeed, nil
+	case action >= 900 && action <= 999:
+		// Разговоры ENGRAM (ADR-099 §2.1). Строка — та же, что Bridge ждёт в
+		// конверте; маршрут Bridge, как и для остальных сотен, идёт по коду.
+		return "ConversationResource", nil
 	}
 
 	// Достижимо только если в enum Action появится код вне известных
