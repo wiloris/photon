@@ -47,3 +47,13 @@
 /photon-sdk/build/
 /photon-sdk/.gradle/
 /photon-sdk/.kotlin/
+
+# Локальные файлы владельца в корне (пустые ключи для ручных проверок).
+# Не исходники и не секреты проекта — в репозиторий не попадают никогда.
+/privatekey
+/publickey
+
+# Собранный бинарник плагина в корне photon-quic-bridge — посторонний
+# артефакт: make dist берёт бинарники из server/dist/ (Makefile), сюда они
+# не попадают. Собирать заново: см. AGENT_WORKFLOW.md.
+/photon-quic-bridge/plugin-linux-amd64
