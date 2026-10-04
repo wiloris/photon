@@ -105,7 +105,11 @@ func (f *fakeConvMM) CreateTeamMember(teamID, userID string) (*model.TeamMember,
 		f.memberFail--
 		return nil, convAppErr("app.team.join_user_to_team.save_member.app_error", http.StatusInternalServerError)
 	}
-	f.teamMembers[teamID][userID] = true
+	members, ok := f.teamMembers[teamID]
+	if !ok {
+		return nil, convAppErr("app.team.get.find.app_error", http.StatusNotFound)
+	}
+	members[userID] = true
 	return &model.TeamMember{TeamId: teamID, UserId: userID}, nil
 }
 
@@ -171,6 +175,15 @@ func (f *fakeConvMM) GetConfig() *model.Config {
 	cfg := &model.Config{}
 	cfg.TeamSettings.MaxChannelsPerTeam = model.NewPointer(*f.maxChannels)
 	return cfg
+}
+
+// dropTeam — команда исчезла вне Bridge.
+func (f *fakeConvMM) dropTeam(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t := f.teams[name]
+	delete(f.teams, name)
+	delete(f.teamMembers, t.Id)
 }
 
 func (f *fakeConvMM) setMaxChannels(n int64) { f.mu.Lock(); *f.maxChannels = n; f.mu.Unlock() }

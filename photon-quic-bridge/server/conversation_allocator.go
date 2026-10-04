@@ -97,8 +97,9 @@ func (s *convService) provisionCarrierTeam(ctx context.Context) error {
 	// P1 — продолжить незавершённую строку или зарезервировать следующее имя.
 	var name string
 	var attempted sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT team_name, create_attempted_at FROM engram_service_team
-WHERE state = 'reserved' ORDER BY created_at LIMIT 1`).Scan(&name, &attempted)
+	var ownTeamID sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT team_name, create_attempted_at, team_id FROM engram_service_team
+WHERE state = 'reserved' ORDER BY created_at LIMIT 1`).Scan(&name, &attempted, &ownTeamID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		var maxN sql.NullInt64
@@ -115,7 +116,12 @@ VALUES ($1, 'reserved', $2)`, name, s.now()); err != nil {
 		return err
 	}
 
-	var team *model.Team
+	// Своя команда: team_id вернул успешный CreateTeam этой строки, P3 не
+	// завершён. Это продолжение, а не приём найденной команды (§6.0.5).
+	if ownTeamID.Valid {
+		return s.finishCarrierTeam(ctx, name, ownTeamID.String)
+	}
+
 	if !attempted.Valid {
 		// P1 — имя должно быть свободно: существующая команда (любая, в том
 		// числе архивная) занимает N и Bridge не принимается.
@@ -157,23 +163,33 @@ WHERE team_name = $1 AND state = 'reserved' AND create_attempted_at IS NULL`, na
 		// Неопределённый исход: строка остаётся reserved с отметкой попытки.
 		return fmt.Errorf("%w: CreateTeam %s: %v", errConvUnavailable, name, appErr)
 	}
+	// team_id успешного CreateTeam — сразу в строку (§6.0.4 P2): сбой P3
+	// дальше не превратит свою команду в «найденную».
+	if _, err := s.db.ExecContext(ctx, `UPDATE engram_service_team SET team_id = $2
+WHERE team_name = $1 AND state = 'reserved' AND team_id IS NULL`, name, team.Id); err != nil {
+		return err
+	}
+	return s.finishCarrierTeam(ctx, name, team.Id)
+}
 
-	// P3 — бот, только в команду, полученную успешным CreateTeam. Повторы
-	// внутри прохода: на следующем проходе команда будет «найденной» и по
-	// §6.0.5 не принимается.
-	var memberErr *model.AppError
-	for i := 0; i < 3; i++ {
-		if _, memberErr = s.mm.CreateTeamMember(team.Id, s.botID); memberErr == nil {
-			break
+// finishCarrierTeam — P3 и P4 для своей команды (team_id из своей строки).
+func (s *convService) finishCarrierTeam(ctx context.Context, name, teamID string) error {
+	// P3 — бот по team_id своей строки; GetTeamByName не используется.
+	if _, appErr := s.mm.CreateTeamMember(teamID, s.botID); appErr != nil {
+		if appErr.StatusCode == http.StatusNotFound {
+			// Своя команда исчезла вне Bridge — новых носителей не примет.
+			if _, err := s.db.ExecContext(ctx, `UPDATE engram_service_team SET state = 'full'
+WHERE team_name = $1 AND state = 'reserved'`, name); err != nil {
+				return err
+			}
+			s.logger("[Photon][Conv] carrier team disappeared before bot joined", "team_name", name)
+			return errConvRetryNextName
 		}
+		return fmt.Errorf("%w: бот в команду %s: %v", errConvUnavailable, name, appErr)
 	}
-	if memberErr != nil {
-		return fmt.Errorf("%w: бот в команду %s: %v", errConvUnavailable, name, memberErr)
-	}
-
 	// P4 — подтверждение.
 	if _, err := s.db.ExecContext(ctx, `UPDATE engram_service_team SET state = 'created', team_id = $2
-WHERE team_name = $1 AND state = 'reserved'`, name, team.Id); err != nil {
+WHERE team_name = $1 AND state = 'reserved'`, name, teamID); err != nil {
 		return err
 	}
 	s.logger("[Photon][Conv] carrier team created", "team_name", name)

@@ -426,6 +426,37 @@ func TestConvAllocatorUncertainNoCreateRetriesSameName(t *testing.T) {
 	require.Equal(t, 1, r.count(t, `SELECT count(*) FROM engram_service_team WHERE team_name = 'engram-carriers-1' AND state = 'created'`))
 }
 
+// Сбой P3 после успешного CreateTeam: team_id уже в строке, повтор
+// продолжает свою команду, а не ищет её по имени (§6.0.4).
+func TestConvAllocatorBotJoinFailureContinuesOwnTeam(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	a := r.id.person(pidA)
+	req := createReq(newRequestID(), "g")
+	r.mm.memberFail = 1
+	require.Equal(t, convErrTemporarilyUnavail, r.create(t, a, req).Error)
+	require.Equal(t, 1, r.count(t, `SELECT count(*) FROM engram_service_team WHERE team_name = 'engram-carriers-1' AND state = 'reserved' AND team_id IS NOT NULL`))
+
+	r.mustCreate(t, a, req)
+	require.Equal(t, 1, r.mm.createTeamCalls, "вторая команда не создавалась")
+	require.Equal(t, 1, r.count(t, `SELECT count(*) FROM engram_service_team`))
+	require.Equal(t, 1, r.count(t, `SELECT count(*) FROM engram_service_team WHERE team_name = 'engram-carriers-1' AND state = 'created'`))
+	require.True(t, r.mm.teamMembers[r.mm.teams["engram-carriers-1"].Id][convTestBot])
+}
+
+// Своя команда исчезла до P3: reserved → full с её team_id, следующий N.
+func TestConvAllocatorOwnTeamDisappeared(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	a := r.id.person(pidA)
+	req := createReq(newRequestID(), "g")
+	r.mm.memberFail = 1
+	require.Equal(t, convErrTemporarilyUnavail, r.create(t, a, req).Error)
+	r.mm.dropTeam("engram-carriers-1")
+
+	r.mustCreate(t, a, req)
+	require.Equal(t, 1, r.count(t, `SELECT count(*) FROM engram_service_team WHERE team_name = 'engram-carriers-1' AND state = 'full' AND team_id IS NOT NULL`))
+	require.Equal(t, 1, r.count(t, `SELECT count(*) FROM engram_service_team WHERE team_name = 'engram-carriers-2' AND state = 'created'`))
+}
+
 func TestConvAllocatorCapacity(t *testing.T) {
 	t.Run("MaxChannelsPerTeam ≤ 2 — без команд", func(t *testing.T) {
 		r := newGroupRig(t, 2)
