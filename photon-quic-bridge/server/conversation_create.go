@@ -87,36 +87,15 @@ func parseCreate(raw json.RawMessage) (convCreatePayload, bool) {
 // порядке первого появления (ADR-099 §4). Код отказа — invalid_photon_id /
 // photon_id_not_found; err — сбой реестра или Mattermost.
 func (s *convService) resolveMembers(ids []string, creatorPID string) ([]string, string, error) {
-	seen := map[string]bool{creatorPID: true}
-	var out []string
-	for _, id := range ids {
-		if !isCanonicalPhotonID(id) {
-			return nil, errInvalidPhotonID, nil
-		}
+	all, code, err := s.resolveExisting(ids)
+	if err != nil || code != "" {
+		return nil, code, err
 	}
-	for _, id := range ids {
-		if seen[id] {
-			continue
+	out := []string{}
+	for _, id := range all {
+		if id != creatorPID {
+			out = append(out, id)
 		}
-		seen[id] = true
-		rec, found, err := s.registry.FindByPhotonID(id)
-		if err != nil {
-			return nil, "", err
-		}
-		if !found {
-			return nil, errPhotonIDNotFound, nil
-		}
-		u, appErr := s.users.GetUser(rec.MMUserID)
-		if appErr != nil {
-			if appErr.StatusCode == 404 {
-				return nil, errPhotonIDNotFound, nil
-			}
-			return nil, "", appErr
-		}
-		if u.DeleteAt != 0 { // деактивированный — «не найдено» (ADR-081 §2.3)
-			return nil, errPhotonIDNotFound, nil
-		}
-		out = append(out, id)
 	}
 	return out, "", nil
 }
@@ -610,11 +589,15 @@ WHERE conversation_id = $1 AND version = $2 AND seq = $3 AND state = 'pending'`,
 WHERE conversation_id = $1 AND pos = $2 AND state = 'reserved'`, convID, at, postID); err != nil {
 		return err
 	}
-	if ev.Event == "created" {
-		if _, err := tx.ExecContext(ctx, `UPDATE engram_member_period SET open_post_id = $2
-WHERE conversation_id = $1 AND period_no = 1 AND opened_version = 1 AND open_at = $3`, convID, postID, at); err != nil {
-			return err
-		}
+	// Периоды, которые событие открывает или закрывает, узнаются по позиции:
+	// её поставила транзакция изменения (E1, E4).
+	if _, err := tx.ExecContext(ctx, `UPDATE engram_member_period SET open_post_id = $2
+WHERE conversation_id = $1 AND open_at = $3 AND open_post_id IS NULL`, convID, postID, at); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE engram_member_period SET close_post_id = $2
+WHERE conversation_id = $1 AND close_at = $3 AND close_post_id IS NULL`, convID, postID, at); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE engram_conversation SET last_activity_at = GREATEST(last_activity_at, $2)
 WHERE conversation_id = $1`, convID, at); err != nil {

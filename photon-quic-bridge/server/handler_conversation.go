@@ -11,15 +11,15 @@ import (
 // схемы недоступны», повторять можно.
 const errCodeTemporarilyUnavailable = "temporarily_unavailable"
 
-// convCallTimeout — предел одного вызова 900–902, включая ожидание
+// convCallTimeout — предел одного вызова 900–921, включая ожидание
 // блокировок и вызовы Mattermost.
 const convCallTimeout = 60 * time.Second
 
 // ConversationHandler — сотня 900: групповые разговоры ENGRAM (ADR-099).
 //
 // service == nil — схема Bridge не готова (ADR-100 §2.6): каждый код v1
-// отвечает temporarily_unavailable. Реализованы 900–902; остальные коды v1
-// до своих срезов отвечают так же — честный отказ, а не ложный успех.
+// отвечает temporarily_unavailable. Реализованы 900–921; 930/931 до своих
+// срезов отвечают так же — честный отказ, а не ложный успех.
 type ConversationHandler struct {
 	plugin  *Plugin
 	service *convService
@@ -45,26 +45,46 @@ func newConversationHandler(p *Plugin) *ConversationHandler {
 
 func (h *ConversationHandler) Handle(userID string, action int, raw json.RawMessage) Response {
 	switch action {
-	case ActionConversationCreate, ActionConversationGet, ActionConversationList:
+	case ActionConversationCreate, ActionConversationGet, ActionConversationList,
+		ActionConversationUpdate, ActionConversationArchive,
+		ActionConversationMembersAdd, ActionConversationMemberRemove, ActionConversationLeave,
+		ActionConversationRoleSet, ActionConversationOwnerTransfer:
 		if h.service == nil {
 			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
 		defer cancel()
-		switch action {
-		case ActionConversationCreate:
-			return h.service.createConversation(ctx, userID, raw)
-		case ActionConversationGet:
-			return h.service.getConversation(ctx, userID, raw)
-		default:
-			return h.service.listConversations(ctx, userID, raw)
-		}
-	case ActionConversationUpdate, ActionConversationArchive,
-		ActionConversationMembersAdd, ActionConversationMemberRemove, ActionConversationLeave,
-		ActionConversationRoleSet, ActionConversationOwnerTransfer,
-		ActionConversationSend, ActionConversationSync:
+		return h.service.dispatch(ctx, userID, action, raw)
+	case ActionConversationSend, ActionConversationSync:
 		return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 	}
+}
+
+// dispatch — реализованные действия сервиса.
+func (s *convService) dispatch(ctx context.Context, userID string, action int, raw json.RawMessage) Response {
+	switch action {
+	case ActionConversationCreate:
+		return s.createConversation(ctx, userID, raw)
+	case ActionConversationGet:
+		return s.getConversation(ctx, userID, raw)
+	case ActionConversationList:
+		return s.listConversations(ctx, userID, raw)
+	case ActionConversationUpdate:
+		return s.updateConversation(ctx, userID, raw)
+	case ActionConversationArchive:
+		return s.archiveConversation(ctx, userID, raw)
+	case ActionConversationMembersAdd:
+		return s.addMembers(ctx, userID, raw)
+	case ActionConversationMemberRemove:
+		return s.removeMember(ctx, userID, raw)
+	case ActionConversationLeave:
+		return s.leaveConversation(ctx, userID, raw)
+	case ActionConversationRoleSet:
+		return s.setRole(ctx, userID, raw)
+	case ActionConversationOwnerTransfer:
+		return s.transferOwner(ctx, userID, raw)
+	}
+	return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 }
