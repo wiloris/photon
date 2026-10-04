@@ -159,6 +159,10 @@ CREATE INDEX engram_position_open
 -- сверка брошенных резервов (§8)
 CREATE INDEX engram_position_open_age
   ON engram_position (reserved_at) WHERE state = 'reserved';
+-- владелец ключа во всех состояниях, включая надгробия (ADR-102 §2;
+-- implementation contract §2.2): key_live надгробий не покрывает
+CREATE INDEX engram_position_key_all
+  ON engram_position (conversation_id, item_key);
 ```
 
 Тексты сообщений (930) в таблицы Bridge не пишутся: это посты носителя
@@ -431,10 +435,9 @@ ADR-092 §2.5.1 (§5) сохраняется.
      **не** повтор: ответ `idempotency_conflict` (ADR-099 §12), новая
      позиция не резервируется, `CreatePost` не вызывается, чужой резерв или
      надгробие не изменяется (ни переходов, ни сверки в ходе этого
-     запроса). Индекс `engram_position_key_live` надгробий не покрывает;
-     для этой проверки нужен поиск по `(conversation_id, item_key)` во всех
-     состояниях — индекс под него в §2 не задан, план не замерен (как
-     L3/L4, §10).
+     запроса). Поиск — по `engram_position_key_all` (§2): индекс
+     `engram_position_key_live` надгробий не покрывает. План не замерен
+     (как L3/L4, §10).
    - Иначе — **поиск** среди резервов разговора с `item_key =
      client_msg_id` **не в состоянии `aborted`** (`engram_position_key_live`);
      все они принадлежат этому же `sender` (ADR-102 §2):
@@ -456,10 +459,17 @@ ADR-092 §2.5.1 (§5) сохраняется.
 4. **Публикация:** `CreatePost` с явным `CreateAt = P` и
    `Props.engram_client_msg_id`. `PendingPostId` не задаётся либо задаётся
    с привязкой к позиции (`client_msg_id` + `P`). `CreateAt` возвращённого
-   поста сверяется с `P`; расхождение или ошибка `CreatePost` → резерв
-   `reserved → aborted`, успех не сообщается (ADR-101 §5.6:
-   `deduplicateCreatePost` 30 с возвращает прежний пост с тем же
-   `PendingPostId` как успех).
+   поста сверяется с `P`; расхождение → резерв `reserved → aborted`, успех
+   не сообщается (ADR-101 §5.6: `deduplicateCreatePost` 30 с возвращает
+   прежний пост с тем же `PendingPostId` как успех). Однозначная
+   подтверждённая ошибка создания (пост не создан) → так же `aborted`.
+   **Неопределённый результат** — тайм-аут, потерянный ответ, обрыв RPC,
+   смерть исполнителя после отправки `CreatePost` — к `aborted` у владельца
+   **не** ведёт: резерв остаётся `reserved` и закрывается сверкой (§8), которая
+   сначала ищет пост с `CreateAt = P` и ключом (ADR-101 §5.10; implementation
+   contract §3.4, §3.6). *Прежняя редакция: «расхождение или ошибка
+   `CreatePost` → `aborted`» — сужено, так как допускала отмену при
+   неопределённом исходе.*
 5. **Закрытие:** условный переход `reserved → published` с `post_id`. Не
    прошёл (резерв уже отменён сверкой) → успех **не** сообщается, клиент
    повторяет; повтор получает новую позицию (шаг 2 → 3).
@@ -544,6 +554,7 @@ Q5).
 | выдача позиции (930, изменение) | `UPDATE engram_conversation SET position_h = GREATEST($t, position_h + 1) WHERE conversation_id=$1 RETURNING position_h` + `INSERT engram_position` | PK | — | не замерено здесь; потолок сериализации — ADR-101 §5.8 |
 | барьер (внутри оператора 931) | `min(pos) … WHERE conversation_id=$1 AND state='reserved'`, иначе `position_h + 1` | `engram_position_open` | — | не замерено здесь |
 | повтор 930 | `… WHERE conversation_id=$1 AND item_key=$2 AND state <> 'aborted'` | `engram_position_key_live` | — | не замерено здесь |
+| владелец ключа 930 (ADR-102) | `… WHERE conversation_id=$1 AND item_kind='message' AND item_key=$2 AND sender <> $3 LIMIT 1` | `engram_position_key_all` | — | не замерено здесь (contract O1) |
 | брошенные резервы (сверка) | `… WHERE state='reserved' AND reserved_at < $1 ORDER BY reserved_at LIMIT 100` | `engram_position_open_age` | — | не замерено здесь |
 
 ### 7.2. Лента 931: форма «диапазон `CreateAt` + группа равных»

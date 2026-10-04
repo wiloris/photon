@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
 	"sync"
 	"time"
@@ -58,12 +59,19 @@ type Plugin struct {
 	// работают. Пишется один раз в OnActivate до начала обслуживания.
 	dmStore    dmStore
 	dmStoreErr error
+
+	// convDB — основная БД для таблиц разговоров ENGRAM (ADR-100); nil —
+	// схема не готова, причина — convStoreErr, 900–931 отвечают
+	// temporarily_unavailable. Пишется один раз в OnActivate.
+	convDB       *sql.DB
+	convStoreErr error
 }
 
 // OnActivate is invoked when the plugin is activated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 	p.initDMv2()
+	p.initConversations()
 	p.kvstore = kvstore.NewKVStore(p.client)
 	p.commandClient = command.NewCommandHandler(p.client)
 	p.router = p.initRouter()
