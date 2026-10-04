@@ -65,6 +65,9 @@ type Plugin struct {
 	// temporarily_unavailable. Пишется один раз в OnActivate.
 	convDB       *sql.DB
 	convStoreErr error
+	// convBotID — бот engram-bridge, единственный участник служебных команд
+	// (conversation-storage.md §6.0.7); "" — бота нет, 900 недоступен.
+	convBotID string
 }
 
 // OnActivate is invoked when the plugin is activated.

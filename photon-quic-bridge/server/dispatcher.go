@@ -52,7 +52,7 @@ func NewDispatcher(p *Plugin) *Dispatcher {
 		file:         &FileHandler{plugin: p},
 		wall:         &WallHandler{plugin: p},
 		media:        &MediaHandler{plugin: p, media: mediaSvcInstance},
-		conversation: &ConversationHandler{plugin: p},
+		conversation: newConversationHandler(p),
 		mediaService: mediaSvcInstance,
 	}
 }

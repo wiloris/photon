@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mattermost/mattermost/server/public/model"
 )
 
 // Таблицы Bridge для разговоров ENGRAM (ADR-100 §2.4–§2.6).
@@ -24,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 1
+const convSchemaVersion = 2
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -125,6 +127,9 @@ CREATE INDEX engram_position_open_age
 CREATE INDEX engram_position_key_all
   ON engram_position (conversation_id, item_key);
 `,
+	// v2 — отметка первой попытки CreateTeam служебной команды
+	// (conversation-storage.md §6.0.3). Доказательством владения не является.
+	`ALTER TABLE engram_service_team ADD COLUMN create_attempted_at bigint;`,
 }
 
 var (
@@ -305,6 +310,15 @@ func checkConversationSchema(ctx context.Context, db *sql.DB, driverName string)
 		problems = append(problems, fmt.Sprintf("версия схемы %d, ожидалась %d", version, convSchemaVersion))
 	}
 
+	var attType sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name = 'engram_service_team' AND column_name = 'create_attempted_at'`).Scan(&attType); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("conversation: чтение схемы: %w", err)
+	}
+	if attType.String != "bigint" {
+		problems = append(problems, fmt.Sprintf("engram_service_team.create_attempted_at: тип %q, ожидался \"bigint\"", attType.String))
+	}
+
 	var hType sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
 WHERE table_schema = current_schema() AND table_name = 'engram_conversation' AND column_name = 'position_h'`).Scan(&hType); err != nil && err != sql.ErrNoRows {
@@ -401,4 +415,17 @@ func (p *Plugin) initConversations() {
 	}
 	p.convDB = db
 	p.API.LogInfo("[Photon][Conv] schema ready", "version", convSchemaVersion)
+
+	// Бот — §6.0.7. Отказ выключает только 900: служебные команды без бота
+	// не создаются, а 901/902 от бота не зависят.
+	botID, err := p.client.Bot.EnsureBot(&model.Bot{
+		Username:    convBotUsername,
+		DisplayName: "ENGRAM Bridge",
+		Description: "Служебный пользователь Photon Bridge: участник служебных команд носителей ENGRAM.",
+	})
+	if err != nil {
+		p.API.LogError("[Photon][Conv] EnsureBot failed: 900 unavailable", "error", err.Error())
+		return
+	}
+	p.convBotID = botID
 }
