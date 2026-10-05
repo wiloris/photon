@@ -89,6 +89,17 @@ func advisoryKey(name string) int64 {
 // блокировки; release завершает транзакцию и снимает блокировку. Попытка с
 // опросом в пределах бюджета, исход «не дождались» различим.
 func (s *convService) holdLock(ctx context.Context, key int64) (release func(), err error) {
+	return s.holdAdvisory(ctx, `SELECT pg_try_advisory_xact_lock($1)`, key)
+}
+
+// holdSharedLock — то же для разделяемой блокировки S(разговор)
+// (conversation-storage.md §5): S совместима с S и несовместима с X того же
+// ключа (M8).
+func (s *convService) holdSharedLock(ctx context.Context, key int64) (release func(), err error) {
+	return s.holdAdvisory(ctx, `SELECT pg_try_advisory_xact_lock_shared($1)`, key)
+}
+
+func (s *convService) holdAdvisory(ctx context.Context, try string, key int64) (release func(), err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -96,7 +107,7 @@ func (s *convService) holdLock(ctx context.Context, key int64) (release func(), 
 	deadline := time.Now().Add(s.lockWait)
 	for {
 		var got bool
-		if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1)`, key).Scan(&got); err != nil {
+		if err := tx.QueryRowContext(ctx, try, key).Scan(&got); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}

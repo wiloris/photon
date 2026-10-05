@@ -43,6 +43,32 @@ type fakeConvMM struct {
 	postCreateThenFailOnCall int
 	postCalls                int
 	memberFail               int
+
+	// 930 — исходы CreatePost поста сообщения (номер вызова с 1).
+	postRejectOnCall  int    // однозначный отказ 4xx, пост не записан
+	postRejectID      string // Id ошибки отказа; "" — отказ хука
+	postNilOnCall     int    // обрыв RPC: клиент плагина отдаёт nil, nil; пост не записан
+	postShiftCreateAt int64  // пост записан и возвращён с CreateAt + сдвиг (хук изменил пост)
+	// postDecide — исход для поста сообщения по самому посту (для
+	// конкурентных прогонов): "ok", "reject", "nil", "lost", "shift".
+	// Не nil — заменяет счётчики выше для постов сообщений.
+	postDecide func(p *model.Post) string
+	// postBeforeCreate — до записи поста (CreatePost «в полёте»);
+	// postAfterCreate — после записи, до ответа.
+	postBeforeCreate func(p *model.Post)
+	postAfterCreate  func(p *model.Post)
+	// pending — дедупликация по PendingPostId, как deduplicateCreatePost
+	// 9.11 (ADR-101 §5.6): в пределах кэша прежний пост возвращается как
+	// успех, CreateAt не сверяется. Срок кэша (30 с) длиннее любого теста.
+	pending map[string]*model.Post
+	// pendingIDs — PendingPostId каждого вызова для поста сообщения.
+	pendingIDs []string
+	// msgViolations — S10: пост сообщения группы без зафиксированного
+	// резерва своей позиции или с CreateAt = 0. Проверяется своим
+	// соединением — как его увидел бы Mattermost.
+	msgViolations []string
+	// mmNow — часы Mattermost для поста с CreateAt = 0; nil — настоящие.
+	mmNow func() int64
 }
 
 func newFakeConvMM(db *sql.DB, maxChannels int64) *fakeConvMM {
@@ -147,26 +173,111 @@ func (f *fakeConvMM) GetChannelByName(teamID, name string, _ bool) (*model.Chann
 func (f *fakeConvMM) CreatePost(p *model.Post) (*model.Post, *model.AppError) {
 	f.mu.Lock()
 	f.postCalls++
-	fail := f.postFailOnCall == f.postCalls
-	lost := f.postCreateThenFailOnCall == f.postCalls
+	call := f.postCalls
+	fail := f.postFailOnCall == call
+	lost := f.postCreateThenFailOnCall == call
+	reject := f.postRejectOnCall == call
+	rejectID := f.postRejectID
+	nilOut := f.postNilOnCall == call
+	shift := f.postShiftCreateAt
+	before, after := f.postBeforeCreate, f.postAfterCreate
+	mmNow := f.mmNow
+	isMsg := p.Type == "" && p.GetProp(dmPropClientMsgID) != nil
+	if isMsg && f.postDecide != nil {
+		decision := f.postDecide(p)
+		reject, nilOut, lost = decision == "reject", decision == "nil", decision == "lost"
+		shift = 0
+		if decision == "shift" {
+			shift = 1
+		}
+	}
+	if isMsg {
+		f.pendingIDs = append(f.pendingIDs, p.PendingPostId)
+		if p.PendingPostId != "" {
+			if prev, ok := f.pending[p.PendingPostId]; ok {
+				f.mu.Unlock()
+				return prev.Clone(), nil
+			}
+		}
+	}
 	f.mu.Unlock()
 	if fail {
 		return nil, convAppErr("app.post.save.app_error", http.StatusInternalServerError)
 	}
+	if isMsg {
+		f.checkMessagePost(p)
+	}
+	if before != nil {
+		before(p)
+	}
+	if reject {
+		if rejectID == "" {
+			rejectID = "Post rejected by plugin. rejected"
+		}
+		return nil, convAppErr(rejectID, http.StatusBadRequest)
+	}
+	if nilOut {
+		return nil, nil
+	}
 	out := p.Clone()
 	out.Id = model.NewId()
 	if out.CreateAt == 0 {
-		out.CreateAt = model.GetMillis()
+		if mmNow != nil {
+			out.CreateAt = mmNow()
+		} else {
+			out.CreateAt = model.GetMillis()
+		}
+	}
+	if isMsg {
+		out.CreateAt += shift
 	}
 	props, _ := json.Marshal(out.GetProps())
 	if _, err := f.db.Exec(`INSERT INTO posts (id, channelid, userid, createat, updateat, deleteat, message, type, props)
 VALUES ($1, $2, $3, $4, $4, 0, $5, $6, $7::jsonb)`, out.Id, out.ChannelId, out.UserId, out.CreateAt, out.Message, out.Type, string(props)); err != nil {
 		return nil, convAppErr("store", http.StatusInternalServerError)
 	}
+	if isMsg && p.PendingPostId != "" {
+		f.mu.Lock()
+		if f.pending == nil {
+			f.pending = map[string]*model.Post{}
+		}
+		f.pending[p.PendingPostId] = out.Clone()
+		f.mu.Unlock()
+	}
+	if after != nil {
+		after(out)
+	}
 	if lost {
 		return nil, convAppErr("app.post.create_post.lost_response", http.StatusInternalServerError)
 	}
 	return out, nil
+}
+
+// checkMessagePost — S10 (ADR-101 §5.1, §5.1a): пост сообщения группы
+// создаётся только на позиции зафиксированного резерва reserved своего
+// ключа и никогда с CreateAt = 0.
+func (f *fakeConvMM) checkMessagePost(p *model.Post) {
+	key, _ := p.GetProp(dmPropClientMsgID).(string)
+	violation := ""
+	if p.CreateAt == 0 {
+		violation = "CreateAt = 0"
+	} else {
+		var kind, itemKey, state string
+		err := f.db.QueryRow(`SELECT pp.item_kind, pp.item_key, pp.state FROM engram_position pp
+JOIN engram_conversation c ON c.conversation_id = pp.conversation_id
+WHERE c.carrier_channel_id = $1 AND pp.pos = $2`, p.ChannelId, p.CreateAt).Scan(&kind, &itemKey, &state)
+		switch {
+		case err != nil:
+			violation = fmt.Sprintf("нет зафиксированного резерва на позиции %d: %v", p.CreateAt, err)
+		case kind != "message" || itemKey != key || state != "reserved":
+			violation = fmt.Sprintf("резерв %d: %s/%s/%s, ожидался message/%s/reserved", p.CreateAt, kind, itemKey, state, key)
+		}
+	}
+	if violation != "" {
+		f.mu.Lock()
+		f.msgViolations = append(f.msgViolations, violation)
+		f.mu.Unlock()
+	}
 }
 
 func (f *fakeConvMM) GetConfig() *model.Config {
@@ -282,6 +393,13 @@ func newGroupRig(t *testing.T, maxChannels int64) *groupRig {
 		lockWait: 10 * time.Second, pollEvery: 5 * time.Millisecond,
 		logger: func(string, ...any) {},
 	}
+	t.Cleanup(func() {
+		r.mm.mu.Lock()
+		defer r.mm.mu.Unlock()
+		if len(r.mm.msgViolations) > 0 {
+			t.Errorf("S10: посты сообщений без резерва: %v", r.mm.msgViolations)
+		}
+	})
 	return r
 }
 
