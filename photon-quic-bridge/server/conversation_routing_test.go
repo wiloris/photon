@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/require"
 	photonpb "github.com/wiloris/photon-core/protobuf"
 )
@@ -109,11 +110,15 @@ func TestAuthz219HasRuleOf218(t *testing.T) {
 	require.NoError(t, z.authorize(uB, ActionListDirectMessagesBefore, pl(t, map[string]string{"with_photon_id": pidA})))
 }
 
-// TestAuthz219StubUnavailable — 219 после авторизации в M1 отвечает temporarily_unavailable.
-func TestAuthz219StubUnavailable(t *testing.T) {
-	h := &UserHandler{}
-	resp := h.Handle(uB, ActionListDirectMessagesBefore, json.RawMessage(`{}`))
+// TestAuthz219ReachesHandler — после авторизации 219 доходит до настоящего
+// обработчика (срез M3), а не до заглушки M1: запрос без `before` отвечает
+// invalid_request, а не temporarily_unavailable.
+func TestAuthz219ReachesHandler(t *testing.T) {
+	p := &Plugin{}
+	p.SetAPI(&plugintest.API{})
+	h := &UserHandler{plugin: p}
+	resp := h.Handle(uB, ActionListDirectMessagesBefore, pl(t, map[string]string{"with_photon_id": pidA}))
 	require.False(t, resp.OK)
-	require.Equal(t, errCodeTemporarilyUnavailable, resp.Error)
+	require.Equal(t, errCodeInvalidRequest, resp.Error)
 	require.Nil(t, resp.Data)
 }

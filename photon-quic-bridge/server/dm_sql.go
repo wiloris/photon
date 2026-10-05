@@ -67,6 +67,14 @@ type dmStore interface {
 	WithSendLock(ctx context.Context, sender, clientMsgID string, wait time.Duration, fn func(find dmFindFunc) error) error
 }
 
+// dmBeforeStore — чтение назад (219, ADR-105). Отдельный интерфейс, чтобы не
+// менять dmStore и дублёры 218; реализует *pgDMStore.
+type dmBeforeStore interface {
+	// Before — не больше limit постов строго старше pos в порядке ADR-092
+	// §2.1, ближайшие к pos, от старых к новым. Окна нет (ADR-105 §1.3).
+	Before(ctx context.Context, channelID string, authors dmAuthors, pos dmPos, limit int) ([]dmRow, error)
+}
+
 // dmFindFunc — поиск своего поста по метке идемпотентности, включая
 // удалённые (§2.5.1 п. 2).
 type dmFindFunc func(channelID, userID, clientMsgID string, since int64) (*dmRow, error)
@@ -146,6 +154,25 @@ ORDER BY CreateAt ASC, Id DESC LIMIT $6`, channelID, authors[0], authors[1], pos
 		return nil, err
 	}
 	return scanRows(rows)
+}
+
+// Before: порядок ленты (CreateAt ASC, Id DESC), поэтому «строго старше
+// (T, id)» — CreateAt < T ИЛИ (CreateAt = T И Id > id): при равном CreateAt
+// пост с БОЛЬШИМ id стоит раньше (обратное After).
+func (s *pgDMStore) Before(ctx context.Context, channelID string, authors dmAuthors, pos dmPos, limit int) ([]dmRow, error) {
+	rows, err := s.db.QueryContext(ctx, dmSelect+` AND (CreateAt < $4 OR (CreateAt = $4 AND Id > $5))
+ORDER BY CreateAt DESC, Id ASC LIMIT $6`, channelID, authors[0], authors[1], pos.CreateAt, pos.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 // sendLockKey — 64-битный ключ advisory lock из (отправитель,

@@ -83,6 +83,7 @@ type convFeedMode int
 const (
 	feedNewest convFeedMode = iota // первичная синхронизация: последние limit, по убыванию
 	feedAscend                     // проход: createat >= нижняя граница, по возрастанию
+	feedBefore                     // история назад (940): createat < якорь, по убыванию; текст как у feedNewest
 )
 
 // convFeedSQL — оператор §7.2 (ADR-101): барьер — подзапрос того же
@@ -98,7 +99,7 @@ const (
 // Первая колонка — барьер, он возвращается и при пустой странице.
 func convFeedSQL(mode convFeedMode, periods int) string {
 	order := "ASC"
-	if mode == feedNewest {
+	if mode == feedNewest || mode == feedBefore {
 		order = "DESC"
 	}
 	var filter string
@@ -145,8 +146,15 @@ func readConvFeed(ctx context.Context, q convQuerier, convID, channelID string, 
 // чтобы тесты могли выполнить сломанный вариант (отрицательные контроли).
 func runConvFeed(ctx context.Context, q convQuerier, sqlText, convID, channelID string,
 	lower int64, limit int, periods []convPeriodBounds) (int64, []convFeedRow, error) {
-	upper := int64(math.MaxInt64)
-	if n := len(periods); n > 0 && periods[n-1].close != math.MaxInt64 {
+	return runConvFeedBelow(ctx, q, sqlText, convID, channelID, lower, math.MaxInt64, limit, periods)
+}
+
+// runConvFeedBelow — runConvFeed с дополнительной верхней границей below
+// (исключительно): верхняя граница оператора — min(below, закрытие периода + 1).
+func runConvFeedBelow(ctx context.Context, q convQuerier, sqlText, convID, channelID string,
+	lower, below int64, limit int, periods []convPeriodBounds) (int64, []convFeedRow, error) {
+	upper := below
+	if n := len(periods); n > 0 && periods[n-1].close != math.MaxInt64 && periods[n-1].close+1 < upper {
 		upper = periods[n-1].close + 1
 	}
 	args := []any{convID, channelID, lower, limit, upper}

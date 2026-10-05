@@ -423,6 +423,94 @@ func listDirectMessagesV2(d directMessageV2Deps, callerID string, raw json.RawMe
 	return Response{OK: true, Data: resp}
 }
 
+// ── 219 ──────────────────────────────────────────────────────────────
+
+type listDirectMessagesBeforePayload struct {
+	WithPhotonID string          `json:"with_photon_id"`
+	Before       *dmWirePosition `json:"before"`
+	Limit        *int            `json:"limit"`
+}
+
+// DirectMessagesBefore — ответ 219: сообщения строго старше якоря в порядке
+// ADR-092 §2.1; курсора нет (ADR-105 §2.3).
+type DirectMessagesBefore struct {
+	Items   []DirectMessageV2 `json:"items"`
+	AtStart bool              `json:"at_start"`
+}
+
+// listDirectMessagesBefore — Action 219 (ADR-105, близнец 218: те же
+// проверки в том же порядке, форма сообщения 218, окна нет).
+func listDirectMessagesBefore(d directMessageV2Deps, callerID string, raw json.RawMessage) Response {
+	var p listDirectMessagesBeforePayload
+	if !decodeStrict(raw, &p) {
+		return dmFail(errCodeInvalidRequest)
+	}
+	if !isCanonicalPhotonID(p.WithPhotonID) {
+		return dmFail(errInvalidPhotonID)
+	}
+	limit := dmBeforeDefaultLimit
+	if p.Limit != nil {
+		limit = *p.Limit
+	}
+	if limit < 1 || limit > dmBeforeMaxLimit {
+		return dmFail(errInvalidLimit)
+	}
+	if p.Before == nil || p.Before.CreatedAt <= 0 || !postIDRe.MatchString(p.Before.ID) {
+		return dmFail(errCodeInvalidRequest)
+	}
+
+	who, code := resolveParticipants(d.directMessageDeps, callerID, p.WithPhotonID)
+	if code != "" {
+		return dmFail(code)
+	}
+	store, _ := d.store.(dmBeforeStore)
+	if !d.available() || store == nil {
+		d.logger("[Photon][DMv2] 219 refused: v2 unavailable", "error", errString(d.storeErr))
+		return dmFail(errSyncUnavailable)
+	}
+
+	// Канал ищется БЕЗ создания: нет канала — нет постов, начало достигнуто.
+	resp := DirectMessagesBefore{Items: []DirectMessageV2{}, AtStart: true}
+	ch, appErr := d.api.GetChannelByName("", model.GetDMNameFromIds(callerID, who.peerUserID), false)
+	switch {
+	case appErr == nil && ch != nil:
+	case appErr != nil && appErr.StatusCode != mmChannelNotFoundStatus:
+		d.logger("[Photon][DMv2] GetChannelByName failed", "error", appErr.Error())
+		return dmFail(errMessageFailed)
+	default:
+		return Response{OK: true, Data: resp}
+	}
+
+	// limit+1 — проба для at_start: старше выданного есть хотя бы один пост.
+	rows, err := store.Before(context.Background(), ch.Id, dmAuthors{callerID, who.peerUserID},
+		dmPos{CreateAt: p.Before.CreatedAt, ID: p.Before.ID}, limit+1)
+	if err != nil {
+		d.logger("[Photon][DMv2] 219 query failed", "error", err.Error())
+		return dmFail(errMessageFailed)
+	}
+	if len(rows) > limit {
+		resp.AtStart = false
+		rows = rows[len(rows)-limit:] // строки от старых к новым: лишняя — первая
+	}
+	for _, r := range rows {
+		m := DirectMessageV2{ID: r.ID, Text: r.Message, CreatedAt: r.CreateAt}
+		if r.UserID == callerID {
+			m.AuthorPhotonID = who.ownPhotonID
+			m.ClientMsgID = r.ClientMsgID
+		} else {
+			m.AuthorPhotonID = who.peerPhotonID
+		}
+		resp.Items = append(resp.Items, m)
+	}
+	return Response{OK: true, Data: resp}
+}
+
+// 219: limit 1..200, по умолчанию 60 (ADR-105 §2.2); константы 218 не трогаем.
+const (
+	dmBeforeDefaultLimit = 60
+	dmBeforeMaxLimit     = 200
+)
+
 func errString(err error) string {
 	if err == nil {
 		return ""
