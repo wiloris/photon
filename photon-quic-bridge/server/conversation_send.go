@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
 // 930 SEND — ADR-099 §9.1 с поправкой ADR-103 §2; ADR-101 §5.1, §5.1a,
@@ -253,8 +254,9 @@ func (s *convService) reserveMessage(ctx context.Context, convID, pid, cid strin
 	}
 	defer tx.Rollback()
 	var pos int64
+	clock := s.now()
 	if err := tx.QueryRowContext(ctx, `UPDATE engram_conversation SET position_h = GREATEST($2, position_h + 1)
-WHERE conversation_id = $1 RETURNING position_h`, convID, s.now()).Scan(&pos); err != nil {
+WHERE conversation_id = $1 RETURNING position_h`, convID, clock).Scan(&pos); err != nil {
 		return 0, false, err
 	}
 	var taken bool
@@ -275,7 +277,11 @@ VALUES ($1, $2, 'message', $3, 'reserved', $4, $5, $6)`, convID, pos, cid, pid, 
 		s.logger("[Photon][Conv] 930 reserve insert failed", "error", err.Error())
 		return 0, true, nil
 	}
-	return pos, false, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	s.observePositionLead("930", convID, pos, clock)
+	return pos, false, nil
 }
 
 // publishMessage — contract §3.4–§3.5. Возвращает id поста или код отказа;
@@ -287,9 +293,9 @@ func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid,
 	post.AddProp(dmPropClientMsgID, cid)
 	created, appErr := s.mm.CreatePost(post)
 	switch {
-	case appErr != nil && appErr.StatusCode >= http.StatusBadRequest && appErr.StatusCode < http.StatusInternalServerError:
-		// Однозначный отказ: Mattermost отверг пост до записи (проверка
-		// поста, права, хуки) — пост не создан. reserved → aborted.
+	case createPostRejected(appErr):
+		// Однозначный отказ: Mattermost отверг пост до записи — пост не
+		// создан. reserved → aborted.
 		s.logger("[Photon][Conv] 930 CreatePost rejected", "error", appErr.Error())
 		s.abortMessage(ctx, convID, slot.pos)
 		if appErr.Id == mmPostTooLongErrorID {
@@ -297,9 +303,10 @@ func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid,
 		}
 		return "", convErrTemporarilyUnavail
 	case appErr != nil || created == nil:
-		// Неопределённый исход: внутренняя ошибка сервера, обрыв RPC
-		// (клиент RPC плагина возвращает nil, nil). Пост мог быть создан
-		// (R1) — резерв остаётся reserved и держит барьер до сверки
+		// Неопределённый исход: внутренняя ошибка сервера, ошибка после
+		// записи поста (в том числе 4xx — см. createPostRejected), обрыв
+		// RPC (клиент RPC плагина возвращает nil, nil). Пост мог быть
+		// создан (R1) — резерв остаётся reserved и держит барьер до сверки
 		// (contract §3.6). Успех не сообщается.
 		errText := "nil post"
 		if appErr != nil {
@@ -326,6 +333,44 @@ func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid,
 		return "", convErrTemporarilyUnavail
 	}
 	return created.Id, ""
+}
+
+// Ошибки CreatePost Mattermost 9.11.18, которые подтверждают, что пост НЕ
+// создан (contract §3.4). Путь плагина: PluginAPI.CreatePost →
+// App.CreatePostMissingChannel → App.CreatePost (app/post.go) →
+// SqlPostStore.SaveMultiple (sqlstore/post_store.go).
+const (
+	mmPostInvalidErrorPrefix  = "model.post.is_valid."      // Post.IsValid в SaveMultiple до INSERT
+	mmPluginRejectErrorPrefix = "Post rejected by plugin. " // отказ хука MessageWillBePosted
+	mmChannelNotFoundErrorID  = "app.channel.get.existing.app_error"
+	mmMissingAccountErrorID   = "app.user.missing_account.const"
+)
+
+// createPostRejected — CreatePost отверг пост ДО записи: однозначная
+// подтверждённая ошибка создания (contract §3.4) — только тогда резерв
+// отменяется. Статус 4xx сам по себе этого не доказывает: после
+// Post().Save App.CreatePost ещё вызывает SanitizePostMetadataForUser, и
+// GetChannel канала из permalink в тексте сообщения отвечает 404
+// app.channel.get.existing.app_error (Where "GetChannel") — пост при этом
+// уже записан. Тот же Id до записи даёт только CreatePostMissingChannel,
+// поэтому для него сверяется и Where (поле доходит через RPC плагина).
+// Список закрыт: любая другая ошибка, включая прочие 4xx, —
+// неопределённость (contract §3.6).
+func createPostRejected(e *model.AppError) bool {
+	if e == nil || e.StatusCode < http.StatusBadRequest || e.StatusCode >= http.StatusInternalServerError {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(e.Id, mmPostInvalidErrorPrefix):
+		return true
+	case strings.HasPrefix(e.Id, mmPluginRejectErrorPrefix), e.Id == plugin.DismissPostError:
+		return true
+	case e.Id == mmChannelNotFoundErrorID:
+		return e.Where == "CreatePostMissingChannel"
+	case e.Id == mmMissingAccountErrorID:
+		return e.Where == "CreatePost"
+	}
+	return false
 }
 
 // abortMessage — условный переход своего резерва reserved → aborted

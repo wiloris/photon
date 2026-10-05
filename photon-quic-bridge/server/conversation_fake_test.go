@@ -45,10 +45,15 @@ type fakeConvMM struct {
 	memberFail               int
 
 	// 930 — исходы CreatePost поста сообщения (номер вызова с 1).
-	postRejectOnCall  int    // однозначный отказ 4xx, пост не записан
-	postRejectID      string // Id ошибки отказа; "" — отказ хука
-	postNilOnCall     int    // обрыв RPC: клиент плагина отдаёт nil, nil; пост не записан
-	postShiftCreateAt int64  // пост записан и возвращён с CreateAt + сдвиг (хук изменил пост)
+	postRejectOnCall int    // однозначный отказ 4xx, пост не записан
+	postRejectID     string // Id ошибки отказа; "" — отказ хука
+	postRejectWhere  string // Where ошибки отказа; "" — "fake"
+	postRejectStatus int    // код ошибки отказа; 0 — 400
+	// postLostErr — ошибка потерянного ответа (postCreateThenFailOnCall и
+	// "lost"): пост записан, затем ошибка; nil — 500.
+	postLostErr       *model.AppError
+	postNilOnCall     int   // обрыв RPC: клиент плагина отдаёт nil, nil; пост не записан
+	postShiftCreateAt int64 // пост записан и возвращён с CreateAt + сдвиг (хук изменил пост)
 	// postDecide — исход для поста сообщения по самому посту (для
 	// конкурентных прогонов): "ok", "reject", "nil", "lost", "shift".
 	// Не nil — заменяет счётчики выше для постов сообщений.
@@ -177,7 +182,8 @@ func (f *fakeConvMM) CreatePost(p *model.Post) (*model.Post, *model.AppError) {
 	fail := f.postFailOnCall == call
 	lost := f.postCreateThenFailOnCall == call
 	reject := f.postRejectOnCall == call
-	rejectID := f.postRejectID
+	rejectID, rejectWhere, rejectStatus := f.postRejectID, f.postRejectWhere, f.postRejectStatus
+	lostErr := f.postLostErr
 	nilOut := f.postNilOnCall == call
 	shift := f.postShiftCreateAt
 	before, after := f.postBeforeCreate, f.postAfterCreate
@@ -214,7 +220,14 @@ func (f *fakeConvMM) CreatePost(p *model.Post) (*model.Post, *model.AppError) {
 		if rejectID == "" {
 			rejectID = "Post rejected by plugin. rejected"
 		}
-		return nil, convAppErr(rejectID, http.StatusBadRequest)
+		if rejectStatus == 0 {
+			rejectStatus = http.StatusBadRequest
+		}
+		e := convAppErr(rejectID, rejectStatus)
+		if rejectWhere != "" {
+			e.Where = rejectWhere
+		}
+		return nil, e
 	}
 	if nilOut {
 		return nil, nil
@@ -248,6 +261,9 @@ VALUES ($1, $2, $3, $4, $4, 0, $5, $6, $7::jsonb)`, out.Id, out.ChannelId, out.U
 		after(out)
 	}
 	if lost {
+		if lostErr != nil {
+			return nil, lostErr
+		}
 		return nil, convAppErr("app.post.create_post.lost_response", http.StatusInternalServerError)
 	}
 	return out, nil

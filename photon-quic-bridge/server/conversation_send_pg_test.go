@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -351,19 +353,27 @@ func TestConv930UncertainOutcomeKeepsReservation(t *testing.T) {
 	}
 }
 
-// Однозначный отказ (4xx, пост не создан) — reserved → aborted, успех не
-// сообщается; повтор — новая позиция больше прежней. Отказ по длине —
-// message_too_long, как 217.
+// Однозначный отказ (ошибка 9.11.18 до записи поста, createPostRejected) —
+// reserved → aborted, успех не сообщается; повтор — новая позиция больше
+// прежней. Отказ по длине — message_too_long, как 217.
 func TestConv930ConfirmedFailureAborts(t *testing.T) {
 	r := newGroupRig(t, 2000)
 	a := r.id.person(pidA)
 	id := r.group(t, a)
-	for _, tc := range []struct{ errID, code string }{
-		{"", convErrTemporarilyUnavail},
-		{mmPostTooLongErrorID, errMessageTooLong},
+	for _, tc := range []struct {
+		errID, where string
+		status       int
+		code         string
+	}{
+		{"", "", 0, convErrTemporarilyUnavail},
+		{mmPostTooLongErrorID, "Post.IsValid", 0, errMessageTooLong},
+		{plugin.DismissPostError, "createPost", 0, convErrTemporarilyUnavail},
+		{mmChannelNotFoundErrorID, "CreatePostMissingChannel", http.StatusNotFound, convErrTemporarilyUnavail},
+		{mmMissingAccountErrorID, "CreatePost", http.StatusNotFound, convErrTemporarilyUnavail},
 	} {
 		r.mm.mu.Lock()
 		r.mm.postRejectOnCall, r.mm.postRejectID = r.mm.postCalls+1, tc.errID
+		r.mm.postRejectWhere, r.mm.postRejectStatus = tc.where, tc.status
 		r.mm.mu.Unlock()
 		cid := newRequestID()
 		require.Equal(t, tc.code, r.send(t, a, id, cid, "x").Error)
@@ -374,6 +384,53 @@ func TestConv930ConfirmedFailureAborts(t *testing.T) {
 		require.Greater(t, m.CreatedAt, rows[0].Pos)
 		r.assertDelivered(t, id, pidA, m)
 		require.Equal(t, "aborted", r.stateAt(t, id, rows[0].Pos), "надгробие постоянно")
+	}
+}
+
+// 4xx — не подтверждение, что пост не создан (contract §3.4). 9.11.18:
+// после Post().Save App.CreatePost вызывает SanitizePostMetadataForUser, и
+// GetChannel канала из permalink в тексте отвечает 404
+// app.channel.get.existing.app_error — пост уже записан. Такой исход и 4xx
+// вне закрытого списка — неопределённость: резерв остаётся reserved,
+// повтор — message_in_progress без CreatePost. Контроль — «любой 4xx —
+// aborted»: резерв записанного поста отменён, пост лежит на надгробии.
+func TestConv930Unconfirmed4xxKeepsReservation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		written bool
+		err     *model.AppError
+	}{
+		{"post-save-permalink-404", true, &model.AppError{Id: mmChannelNotFoundErrorID, Where: "GetChannel", StatusCode: http.StatusNotFound}},
+		{"post-save-other-4xx", true, &model.AppError{Id: "api.context.permissions.app_error", Where: "SanitizePostMetadataForUser", StatusCode: http.StatusForbidden}},
+		{"unlisted-4xx", false, &model.AppError{Id: "api.post.create_post.root_id.app_error", Where: "createPost", StatusCode: http.StatusBadRequest}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGroupRig(t, 2000)
+			a := r.id.person(pidA)
+			id := r.group(t, a)
+			r.mm.mu.Lock()
+			if tc.written {
+				r.mm.postCreateThenFailOnCall, r.mm.postLostErr = r.mm.postCalls+1, tc.err
+			} else {
+				r.mm.postRejectOnCall = r.mm.postCalls + 1
+				r.mm.postRejectID, r.mm.postRejectWhere, r.mm.postRejectStatus = tc.err.Id, tc.err.Where, tc.err.StatusCode
+			}
+			r.mm.mu.Unlock()
+			cid := newRequestID()
+			require.Equal(t, convErrTemporarilyUnavail, r.send(t, a, id, cid, "x").Error)
+			rows := r.msgRows(t, id, cid)
+			require.Len(t, rows, 1)
+			require.Equal(t, "reserved", rows[0].State, "неподтверждённый отказ не отменяет резерв")
+			calls, h := r.postCallCount(), r.posH(t, id)
+			require.Equal(t, errMessageInProgress, r.send(t, a, id, cid, "x").Error)
+			require.Equal(t, calls, r.postCallCount())
+			require.Equal(t, h, r.posH(t, id))
+			if tc.written {
+				require.Equal(t, 1, r.count(t, `SELECT count(*) FROM posts p JOIN engram_conversation c ON c.carrier_channel_id = p.channelid
+WHERE c.conversation_id = $1 AND p.createat = $2 AND p.props->>'engram_client_msg_id' = $3`, id, rows[0].Pos, cid),
+					"пост записан на позиции открытого резерва — его найдёт сверка")
+			}
+		})
 	}
 }
 
@@ -978,5 +1035,141 @@ func TestConvXvsSConcurrentRemoveAndSend(t *testing.T) {
 			require.Equal(t, convErrNoAccess, resp.Error)
 			require.Equal(t, 0, r.count(t, `SELECT count(*) FROM engram_position WHERE conversation_id = $1 AND item_kind = 'message'`, id))
 		}
+	}
+}
+
+// ── опережение позиции над часами (ADR-101 §5.4, §9) ─────────────────────────
+
+type convLogCapture struct {
+	mu   sync.Mutex
+	recs []map[string]any
+}
+
+func (c *convLogCapture) log(msg string, kv ...any) {
+	if msg != convPositionLeadLog {
+		return
+	}
+	rec := map[string]any{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		rec[kv[i].(string)] = kv[i+1]
+	}
+	c.mu.Lock()
+	c.recs = append(c.recs, rec)
+	c.mu.Unlock()
+}
+
+func (c *convLogCapture) take() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := c.recs
+	c.recs = nil
+	return out
+}
+
+// Позиция, опередившая часы Bridge (P = H + 1 > часы), журналируется одной
+// записью на выдачу — у 930 и у изменений 903–921; при часах впереди H
+// записей нет. Формула позиции не меняется. Контроль — убрать вызов
+// observePositionLead из 930 или из транзакции изменения: записи нет.
+func TestConvPositionLeadLogged(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	logs := &convLogCapture{}
+	r.svc.logger = logs.log
+	a := r.id.person(pidA)
+	r.id.person(pidB)
+	id := r.group(t, a)
+	clock := func() int64 { return time.Now().UnixMilli() }
+
+	m := r.mustSend(t, a, id, newRequestID(), "часы впереди H")
+	r.mustDo(t, a, ActionConversationMembersAdd, reqOf(id, "photon_ids", []string{pidB}))
+	require.Empty(t, logs.take(), "часы не отстают от H — опережения нет")
+
+	// Часы Bridge отстали на минуту (шаг назад, другой узел).
+	const lag = 60 * 1000
+	lagged := clock() - lag
+	r.svc.now = func() int64 { return lagged }
+
+	h := r.posH(t, id)
+	m = r.mustSend(t, a, id, newRequestID(), "часы позади H")
+	require.Equal(t, h+1, m.CreatedAt, "формула не изменилась: P = H + 1")
+	recs := logs.take()
+	require.Len(t, recs, 1)
+	require.Equal(t, "930", recs[0]["op"])
+	require.Equal(t, id, recs[0]["conversation_id"])
+	require.Equal(t, m.CreatedAt, recs[0]["pos"])
+	require.Equal(t, lagged, recs[0]["clock"])
+	require.Equal(t, m.CreatedAt-lagged, recs[0]["lead_ms"])
+	require.Greater(t, recs[0]["lead_ms"].(int64), int64(lag/2))
+
+	h = r.posH(t, id)
+	r.mustDo(t, a, ActionConversationMemberRemove, reqOf(id, "photon_id", pidB))
+	recs = logs.take()
+	require.Len(t, recs, 1, "одна запись на выдачу изменения")
+	require.Equal(t, strconv.Itoa(ActionConversationMemberRemove), recs[0]["op"])
+	require.Equal(t, h+1, recs[0]["pos"])
+	require.Equal(t, h+1-lagged, recs[0]["lead_ms"])
+
+	// Изменение без событий (920 с целью не в active — changed:false)
+	// позиций не выдаёт — записи нет.
+	r.mustDo(t, a, ActionConversationRoleSet, reqOf(id, "photon_id", pidB, "role", "admin"))
+	require.Empty(t, logs.take())
+}
+
+// 900: финализация выдаёт позиции created/member_added по той же формуле;
+// при H впереди часов — запись с op "900". У нового разговора H = 0, и
+// вызовом 900 этого не достичь, поэтому финализация зовётся напрямую на
+// строке creating с H впереди часов. Контроль — убрать вызов из
+// finalizeCreate.
+func TestConvPositionLeadLoggedOnCreate(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	logs := &convLogCapture{}
+	r.svc.logger = logs.log
+	a := r.id.person(pidA)
+	src := r.group(t, a)
+	require.Empty(t, logs.take(), "900 при H = 0 опережения не даёт")
+
+	now := time.Now().UnixMilli()
+	r.svc.now = func() int64 { return now }
+	h := now + 60*1000
+	id := "lead-" + newRequestID()
+	_, err := r.db.Exec(`INSERT INTO engram_conversation (conversation_id, kind, state, title, description,
+history_policy, version, created_at, created_by, member_count, last_activity_at, position_h, carrier_state, carrier_team,
+carrier_name, reserved_at)
+SELECT $2, kind, 'creating', title, description, history_policy, 0, created_at, created_by, 0, 0, $3, 'reserved',
+carrier_team, carrier_name || '-lead', reserved_at FROM engram_conversation WHERE conversation_id = $1`, src, id, h)
+	require.NoError(t, err)
+	require.NoError(t, r.svc.finalizeCreate(context.Background(), id, pidA, nil))
+	recs := logs.take()
+	require.Len(t, recs, 1)
+	require.Equal(t, "900", recs[0]["op"])
+	require.Equal(t, h+1, recs[0]["pos"])
+	require.Equal(t, now, recs[0]["clock"])
+	require.Equal(t, h+1-now, recs[0]["lead_ms"])
+}
+
+// createPostRejected — закрытый список ошибок 9.11.18 до записи поста.
+// 4xx вне списка и тот же Id с другим Where — неопределённость. Без
+// PostgreSQL.
+func TestCreatePostRejectedClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  *model.AppError
+		want bool
+	}{
+		{"nil", nil, false},
+		{"is_valid.msg", &model.AppError{Id: mmPostTooLongErrorID, Where: "Post.IsValid", StatusCode: 400}, true},
+		{"is_valid.other", &model.AppError{Id: "model.post.is_valid.props.app_error", Where: "Post.IsValid", StatusCode: 400}, true},
+		{"hook-reject", &model.AppError{Id: "Post rejected by plugin. spam", Where: "createPost", StatusCode: 400}, true},
+		{"hook-dismiss", &model.AppError{Id: plugin.DismissPostError, Where: "createPost", StatusCode: 400}, true},
+		{"carrier-missing", &model.AppError{Id: mmChannelNotFoundErrorID, Where: "CreatePostMissingChannel", StatusCode: 404}, true},
+		{"missing-account", &model.AppError{Id: mmMissingAccountErrorID, Where: "CreatePost", StatusCode: 404}, true},
+		{"permalink-404-after-save", &model.AppError{Id: mmChannelNotFoundErrorID, Where: "GetChannel", StatusCode: 404}, false},
+		{"unlisted-400", &model.AppError{Id: "api.post.create_post.root_id.app_error", Where: "createPost", StatusCode: 400}, false},
+		{"unlisted-403", &model.AppError{Id: "api.context.permissions.app_error", StatusCode: 403}, false},
+		{"listed-id-5xx", &model.AppError{Id: mmPostTooLongErrorID, Where: "Post.IsValid", StatusCode: 500}, false},
+		{"store-500", &model.AppError{Id: "app.post.save.app_error", Where: "CreatePost", StatusCode: 500}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, createPostRejected(tc.err))
+		})
 	}
 }

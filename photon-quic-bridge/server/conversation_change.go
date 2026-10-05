@@ -160,7 +160,8 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 
 	c.nextVersion = c.version + 1
 	// P = max(часы Bridge, H + 1) (ADR-101 §5.1).
-	c.nextPos = s.now()
+	clock := s.now()
+	c.nextPos = clock
 	if c.h+1 > c.nextPos {
 		c.nextPos = c.h + 1
 	}
@@ -213,7 +214,13 @@ WHERE conversation_id = $1`, c.convID, c.nextVersion, newH, c.memberCount); err 
 WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, spec.action, spec.requestID, body); err != nil {
 		return nil, "", nil, err
 	}
-	return body, "", nil, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, "", nil, err
+	}
+	if changed && len(c.ats) > 0 {
+		s.observePositionLead(fmt.Sprint(spec.action), c.convID, c.ats[0], clock)
+	}
+	return body, "", nil, nil
 }
 
 // convSnapshotData — маркер: ответ операции — {conversation: Snapshot}.

@@ -88,13 +88,33 @@ Session переходит к следующему.
   закрыта гонка «чужой резерв появился и отменён между §3.2 и §3.3», и
   нарушение `engram_position_key_live` не приходится узнавать по тексту
   ошибки RPC-драйвера;
-- 930, исход `CreatePost`: `AppError` 4xx — однозначный отказ (`aborted`;
-  отказ по длине — `message_too_long`); иная `AppError` или `nil`-пост
-  (клиент RPC плагина при обрыве отдаёт `nil, nil`) — неопределённость,
-  резерв остаётся `reserved`. Отказ без успеха — `temporarily_unavailable`;
+- 930, исход `CreatePost` (contract §3.4): однозначный отказ (`aborted`;
+  отказ по длине — `message_too_long`) — только закрытый список ошибок
+  Mattermost 9.11.18, возникающих **до** записи поста: `Post.IsValid`
+  (`model.post.is_valid.*`), отказ хука `MessageWillBePosted`,
+  `app.channel.get.existing.app_error` с `Where = CreatePostMissingChannel`,
+  `app.user.missing_account.const` с `Where = CreatePost`. 4xx сам по себе
+  отказом не считается: после `Post().Save` `SanitizePostMetadataForUser`
+  отвечает 404 `app.channel.get.existing.app_error` (`Where = GetChannel`)
+  на permalink в тексте — пост уже записан. Любая другая `AppError` или
+  `nil`-пост (клиент RPC плагина при обрыве отдаёт `nil, nil`) —
+  неопределённость, резерв остаётся `reserved`. Отказ без успеха —
+  `temporarily_unavailable`;
 - 930: переход в `published` и `last_activity_at` — одной транзакцией;
-- не сделано: журнал опережения `created_at` над часами (ADR-101 §5.4, §9)
-  — порог спецификация не задаёт.
+- опережение `created_at` над часами (ADR-101 §5.4, §9): после фиксации
+  каждой выдачи позиций — 900 (финализация), 903–921, 930 — при
+  `P > часы` пишется предупреждение `position ahead of Bridge clock`
+  (`op`, `conversation_id`, `pos`, `clock`, `lead_ms`); одна запись на
+  выдачу, сдвиги `P+1…P+k−1` внутри одного изменения записью не считаются.
+  Порога и реакции нет — ADR-101 §8 отдаёт их спецификации «по замеру».
+
+**Открыто по срезу 5 (найдено после `be28efe`, не исправлено):**
+`TestConvP6ConcurrentPair` (acceptance P6) падает примерно в половине
+прогонов: проигравший отправитель получает `message_in_progress` вместо
+`idempotency_conflict`. Причина — `lookupSendKey`: проверка владельца ключа
+и поиск повтора — два оператора, и второй (`state <> 'aborted'`, без
+`sender = $3`) видит чужой резерв, зафиксированный между ними. Воспроизведено
+на `be28efe` (21 из 40) и после исправлений blocker'ов (22 из 40).
 
 ## Предыстория: состояние на 2026-09-30
 

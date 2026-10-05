@@ -457,7 +457,8 @@ WHERE conversation_id = $1 FOR UPDATE`, convID).Scan(&state, &title, &desc, &h);
 		events = append(events, convEventBody{Event: "member_added", ActorPhotonID: creatorPID, TargetPhotonID: m, Version: 1})
 	}
 	// Позиции P..P+k−1 из H (ADR-101 §5.1, §5.2): P = max(часы Bridge, H+1).
-	p := s.now()
+	clock := s.now()
+	p := clock
 	if h+1 > p {
 		p = h + 1
 	}
@@ -495,7 +496,11 @@ state, opened_version, open_at) VALUES ($1, $2, 1, $3, 'active', 1, $4)`, convID
 position_h = $3 WHERE conversation_id = $1`, convID, len(all), p+int64(len(events))-1); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.observePositionLead("900", convID, p, clock)
+	return nil
 }
 
 // writePendingEvents — E2–E4 (§4): каждое незаписанное событие разговора —

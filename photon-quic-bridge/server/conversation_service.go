@@ -236,3 +236,20 @@ func (s *convService) convFailFor(op string, err error) Response {
 	s.logger("[Photon][Conv] "+op+" failed", "error", err.Error())
 	return convFail(convErrTemporarilyUnavail)
 }
+
+const convPositionLeadLog = "[Photon][Conv] position ahead of Bridge clock"
+
+// observePositionLead — ADR-101 §5.4, §9: «опережение `created_at` над
+// часами журналируется». Вызывается после фиксации транзакции, выдавшей
+// позиции P..P+k−1 по P = max(часы Bridge, H + 1); clock — значение часов,
+// подставленное в формулу. Опережение — P > clock: H + 1 обогнал часы
+// (шаг назад, расхождение узлов). Сдвиги P+1..P+k−1 внутри одной выдачи —
+// последовательность событий одного изменения (ADR-101 §5.2), а не
+// отставание часов; если из-за них следующая выдача обгонит часы, её
+// опережение журналируется этой же функцией. Порог и реакцию источники не
+// задают (ADR-101 §8: «спецификацией по замеру») — только наблюдение.
+func (s *convService) observePositionLead(op, convID string, pos, clock int64) {
+	if pos > clock {
+		s.logger(convPositionLeadLog, "op", op, "conversation_id", convID, "pos", pos, "clock", clock, "lead_ms", pos-clock)
+	}
+}
