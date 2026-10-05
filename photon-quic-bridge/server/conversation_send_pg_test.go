@@ -899,6 +899,74 @@ VALUES ($1, 1, 'message', $2, 'aborted', $3, '\x00', 1)`, id, cid, pidA)
 	require.Equal(t, pidA, rows[0].Sender)
 }
 
+// interleaveQuerier — выполняет после первого запроса between: так
+// конкурентная фиксация встаёт ровно между проверкой владельца ключа и
+// поиском повтора в lookupSendKey — детерминированно, без расписания.
+type interleaveQuerier struct {
+	convQuerier
+	calls   int
+	between func()
+}
+
+func (q *interleaveQuerier) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	row := q.convQuerier.QueryRowContext(ctx, query, args...)
+	q.calls++
+	if q.calls == 1 {
+		q.between()
+	}
+	return row
+}
+
+// Чужой резерв того же ключа зафиксирован между проверкой владельца и
+// поиском повтора (lookupSendKey — два оператора): он не считается своим
+// повтором (не message_in_progress), резерв отвергает ключ под строкой H, а
+// следующий проход §3.2 даёт idempotency_conflict (ADR-102 §2). Это
+// детерминированная форма гонки TestConvP6ConcurrentPair. Контроль — поиск
+// повтора без sender = $3: message_in_progress.
+func TestConvP6ForeignReservationBetweenOwnerCheckAndRetryLookup(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	a := r.id.person(pidA)
+	b := r.id.person(pidB)
+	id := r.group(t, a, pidB)
+	ctx := context.Background()
+	for _, state := range []string{"reserved", "published"} {
+		t.Run(state, func(t *testing.T) {
+			cid := newRequestID()
+			hash := []byte("hash-b")
+			q := &interleaveQuerier{convQuerier: r.db, between: func() {
+				// Резерв A, как его делает reserveMessage: позиция из H.
+				var pos int64
+				require.NoError(t, r.db.QueryRow(`UPDATE engram_conversation SET position_h = position_h + 1
+WHERE conversation_id = $1 RETURNING position_h`, id).Scan(&pos))
+				postID := sql.NullString{String: "post-a", Valid: state == "published"}
+				_, err := r.db.Exec(`INSERT INTO engram_position (conversation_id, pos, item_kind, item_key, state, sender, payload_hash, reserved_at, post_id)
+VALUES ($1, $2, 'message', $3, $4, $5, '\x00', 1, $6)`, id, pos, cid, state, pidA, postID)
+				require.NoError(t, err)
+			}}
+			slot, code, done, err := lookupSendKey(ctx, q, id, pidB, cid, hash)
+			require.NoError(t, err)
+			require.Equal(t, 2, q.calls, "между операторами вставлен чужой резерв")
+			require.Empty(t, code, "чужой резерв — не свой повтор")
+			require.False(t, done)
+			require.False(t, slot.found)
+
+			// Шаги цикла admitAndReserve: резерв отвергает ключ, повтор §3.2.
+			_, again, err := r.svc.reserveMessage(ctx, id, pidB, cid, hash)
+			require.NoError(t, err)
+			require.True(t, again, "резерв под строкой H видит чужой ключ")
+			_, code, _, err = lookupSendKey(ctx, r.db, id, pidB, cid, hash)
+			require.NoError(t, err)
+			require.Equal(t, convErrIdempotency, code)
+
+			rows := r.msgRows(t, id, cid)
+			require.Len(t, rows, 1)
+			require.Equal(t, pidA, rows[0].Sender)
+			require.Equal(t, state, rows[0].State, "чужой резерв не изменён")
+			require.Equal(t, convErrIdempotency, r.send(t, b, id, cid, "b").Error)
+		})
+	}
+}
+
 // ── P8: I1/I2 со смещёнными часами (contract §6.2) ───────────────────────────
 
 // Сообщения внутри периодов отправителя при часах, расходящихся с

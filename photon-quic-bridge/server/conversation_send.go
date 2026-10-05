@@ -216,8 +216,12 @@ WHERE conversation_id = $1 AND item_kind = 'message' AND item_key = $2 AND sende
 	var state, postID string
 	var gotHash []byte
 	var pos int64
+	// Только свои резервы: чужой, зафиксированный после проверки владельца
+	// (два оператора — два снимка READ COMMITTED), повтором не считается.
+	// Его увидит проверка ключа под блокировкой строки H в reserveMessage, и
+	// следующий проход §3.2 ответит idempotency_conflict (ADR-102 §2).
 	err = q.QueryRowContext(ctx, `SELECT state, pos, payload_hash, COALESCE(post_id, '') FROM engram_position
-WHERE conversation_id = $1 AND item_kind = 'message' AND item_key = $2 AND state <> 'aborted'`, convID, cid).
+WHERE conversation_id = $1 AND item_kind = 'message' AND item_key = $2 AND sender = $3 AND state <> 'aborted'`, convID, cid, pid).
 		Scan(&state, &pos, &gotHash, &postID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Нет вовсе или только свои надгробия: пост на позиции с надгробием
