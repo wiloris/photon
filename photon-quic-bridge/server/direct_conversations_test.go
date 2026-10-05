@@ -105,6 +105,22 @@ func TestInboxEmpty(t *testing.T) {
 	require.Equal(t, []string{""}, r.conv.teamArgs, "каналы берутся без команды — teamId пустой")
 }
 
+// Настоящий Mattermost 9.11 на пользователя без единого канала отвечает не
+// пустым списком, а ошибкой app.channel.get_channels.not_found.app_error (404;
+// app/channel.go, GetChannelsForTeamForUser). Для 215 это «пусто» (ADR-084,
+// acceptance), а не message_failed. Найдено на стенде 2026-10-05: у каждого
+// нового пользователя «Чаты» показывали «Ошибка сервера: message_failed».
+func TestInboxEmptyWhenMattermostReportsNoChannels(t *testing.T) {
+	r := newConvRig(t)
+	a := r.party(t, "a")
+	r.conv.channelsErr = model.NewAppError("GetChannelsForUser", mmNoChannelsErrorID, nil, "", 404)
+	require.Empty(t, conversationsOf(t, r.inbox(t, a, nil)))
+
+	// Иной отказ с тем же статусом — по-прежнему сбой Mattermost (ADR-084 §2.5).
+	r.conv.channelsErr = model.NewAppError("GetChannelsForUser", "app.channel.get_channels.get.app_error", nil, "", 404)
+	require.Equal(t, dmFail(errMessageFailed), r.inbox(t, a, nil))
+}
+
 // Главный сценарий ADR-084: B пишет A, A не знает PhotonID B — и видит.
 func TestInboxShowsConversationStartedByPeer(t *testing.T) {
 	r := newConvRig(t)

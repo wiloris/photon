@@ -39,6 +39,11 @@ type listDirectConversationsPayload struct {
 	Limit *int `json:"limit"`
 }
 
+// mmNoChannelsErrorID — ответ GetChannelsForTeamForUser пользователю без
+// каналов (Mattermost 9.11, server/channels/app/channel.go: store.ErrNotFound →
+// "app.channel.get_channels.not_found.app_error", 404).
+const mmNoChannelsErrorID = "app.channel.get_channels.not_found.app_error"
+
 // conversationAPI — операции Mattermost, нужные списку. Узкий интерфейс —
 // граница для тестового дублёра.
 type conversationAPI interface {
@@ -81,8 +86,14 @@ func listDirectConversations(d conversationDeps, callerID string, raw json.RawMe
 	// Пустой teamId — все каналы участия, без членства в команде (ADR-084 §1).
 	channels, appErr := d.api.GetChannelsForTeamForUser("", callerID, false)
 	if appErr != nil {
-		d.logger("[Photon][Inbox] GetChannelsForTeamForUser failed", "error", appErr.Error())
-		return dmFail(errMessageFailed)
+		// Нет ни одного канала — Mattermost отвечает этой ошибкой, а не пустым
+		// списком; для 215 это пустой результат (ADR-084, acceptance «пусто»).
+		// Любой другой отказ — сбой Mattermost (§2.5).
+		if appErr.Id != mmNoChannelsErrorID {
+			d.logger("[Photon][Inbox] GetChannelsForTeamForUser failed", "error", appErr.Error())
+			return dmFail(errMessageFailed)
+		}
+		channels = nil
 	}
 	direct := make([]*model.Channel, 0, len(channels))
 	for _, ch := range channels {
