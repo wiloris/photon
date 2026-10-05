@@ -22,6 +22,7 @@
 | M3 | 940 (Conversation, назад) и 219 (DM legacy, назад) | 105 | — |
 | M4 | 906 разархивирование; 907 личное состояние; 902 порядок/скрытие | 106 | v4 |
 | M5 | 913–916 приглашения, событие `member_joined`, `invite_invalid` | 107 этап 1 | v5 |
+| M6 | 917/918 в `enum Action` и authz; `visibility` в 900/903/Snapshot; каталог 917; вступление 918 | 107 этап 2 | v6 |
 
 Каждый срез — один commit на своей ветке от вершины предыдущего; PG-тесты на настоящем PostgreSQL
 (`tools/pgtest`), `-race` на изменённых пакетах, `go vet`, `gofmt`.
@@ -96,6 +97,36 @@
 - **Тесты:** гонка двух вступающих при `max_uses=1` → ровно один; все причины → один код; токен не в логах
   (проверка журнала теста); хэш в таблице; since_join для вступившего.
 
+## 5a. M6 — публичные разговоры (ADR-107 этап 2)
+
+Добавлено 2026-10-06 по решению владельца ADR-107 Q1 («этап 2 — следующим»), Q3, Q4; выведено orchestrator, новых
+решений не содержит. Отмечено «реализация» — то, что ADR оставил исполнителю.
+
+- **Коды:** 917 `DIRECTORY_SEARCH`, 918 `JOIN_PUBLIC` в `enum Action` (резерв ADR-099 §2.3, свободны; как M1 —
+  без oneof-payload, перегенерация `photon.pb.go` тем же protoc), `ResourceFor` → ConversationResource, authz
+  «аутентифицирован», `TestAuthzCoversEveryAction` зелёный.
+- **Схема v6:** `engram_conversation.visibility text NOT NULL DEFAULT 'private'`, ограничение
+  `visibility IN ('private','public')`; существующие строки — `private`.
+- **900:** необязательное `visibility` (`private` по умолчанию); при `public` поле `history_policy` можно опустить —
+  тогда `full` (ADR-107 Q3); при `private` `history_policy` обязательно, как было (запросы без `visibility` —
+  байт в байт прежнее поведение, тесты 900 без изменений). `visibility` входит в хэш ключа §10.2 только когда
+  передано (реализация: хэш прежних запросов не меняется).
+- **903:** необязательное `visibility`; право `conversation.update`; изменение — в событии `metadata_changed`
+  (поле `visibility`), версия +1; на `direct` 903 уже `invalid_request` (M2). **Snapshot** и ListItem 902
+  получают `visibility`. 905 создаёт `private`.
+- **917** `{query, cursor?, limit?}` → `{conversations:[{conversation_id, title, description, member_count}],
+  next_cursor?}`: только `public` и не архивные; без состава и ленты (ADR-107 §2.5); подстрока названия без учёта
+  регистра (Q4); `query` после обрезки 1..64 символа, иначе `invalid_request`; `limit` 1..50, по умолчанию 20,
+  иначе `invalid_limit`; порядок `(created_at DESC, conversation_id)`, курсор непрозрачный keyset (реализация).
+  Вызывающему участие не нужно; закрытые не видны никогда.
+- **918** `{request_id, conversation_id}` → `{conversation: Snapshot}`: как 916 (ключ §10.2, X, новый период
+  `member`, событие `member_joined` без `invite_id`, версия +1, уже участник — снимок без события), но для
+  `public`; `private` или нет такого → `conversation_not_found` (ADR-107 §2.6, ADR-098 §8); архив →
+  `conversation_archived`. Ограничение частоты — общее с 916 (ADR-107 §3).
+- **Тесты:** 900/903 без `visibility` — прежние тесты без изменений; `public` без `history_policy` → `full`;
+  917 не возвращает `private`/архивные, регистр, курсор без дублей; 918 на `private` неотличим от несуществующего;
+  гонка двух 918 — два разных периода, `member_count` +2; since_join для вступившего по 918.
+
 ## 6. Клиент (engram-android, слой данных; экраны — в фазе UI)
 
 | срез | содержание |
@@ -104,6 +135,7 @@
 | A2 | 219/940 → 802 `dir:"before"` (Core уже умеет, ADR-065 §2) |
 | A3 | кодек 906/907, порядок и скрытие в модели списка |
 | A4 | кодек 913–916 |
+| A5 | кодек 917/918, `visibility` в 900/903/Snapshot/ListItem |
 
 ## 7. Найдено при выводе контракта
 
