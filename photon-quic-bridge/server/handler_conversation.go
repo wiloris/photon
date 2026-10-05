@@ -18,8 +18,7 @@ const convCallTimeout = 60 * time.Second
 // ConversationHandler — сотня 900: групповые разговоры ENGRAM (ADR-099).
 //
 // service == nil — схема Bridge не готова (ADR-100 §2.6): каждый код v1
-// отвечает temporarily_unavailable. Реализованы 900–921 и 930; 931 до своего
-// среза отвечает так же — честный отказ, а не ложный успех.
+// отвечает temporarily_unavailable. Реализованы 900–921, 930 и 931.
 type ConversationHandler struct {
 	plugin  *Plugin
 	service *convService
@@ -48,15 +47,14 @@ func (h *ConversationHandler) Handle(userID string, action int, raw json.RawMess
 	case ActionConversationCreate, ActionConversationGet, ActionConversationList,
 		ActionConversationUpdate, ActionConversationArchive,
 		ActionConversationMembersAdd, ActionConversationMemberRemove, ActionConversationLeave,
-		ActionConversationRoleSet, ActionConversationOwnerTransfer, ActionConversationSend:
+		ActionConversationRoleSet, ActionConversationOwnerTransfer, ActionConversationSend,
+		ActionConversationSync:
 		if h.service == nil {
 			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
 		defer cancel()
 		return h.service.dispatch(ctx, userID, action, raw)
-	case ActionConversationSync:
-		return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 	}
@@ -87,6 +85,8 @@ func (s *convService) dispatch(ctx context.Context, userID string, action int, r
 		return s.transferOwner(ctx, userID, raw)
 	case ActionConversationSend:
 		return s.sendMessage(ctx, userID, raw)
+	case ActionConversationSync:
+		return s.syncConversation(ctx, userID, raw)
 	}
 	return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 }

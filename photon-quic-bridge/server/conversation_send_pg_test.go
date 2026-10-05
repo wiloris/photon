@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -111,18 +112,11 @@ AND p.props->>'engram_client_msg_id' = $4`, convID, m.ID, m.CreatedAt, m.ClientM
 AND state = 'published'`, convID, m.ClientMsgID), 1, "не больше одной опубликованной позиции на ключ")
 }
 
-// reconcileKey — заменитель сверки среза 6 (contract §3.6) в тестах:
-// открытый резерв ключа закрывается одним условным оператором — пост с
-// CreateAt = позиция и ключом найден → published, иначе → aborted.
+// reconcileKey — сверка среза 6 (contract §3.6) по одному ключу: боевой
+// closeAbandonedMessages без порога давности (все открытые резервы ключа).
 func (r *groupRig) reconcileKey(t *testing.T, convID, cid string) {
 	t.Helper()
-	_, err := r.db.Exec(`UPDATE engram_position pp SET
-  state = CASE WHEN f.id IS NULL THEN 'aborted' ELSE 'published' END, post_id = f.id
-FROM engram_conversation c LEFT JOIN LATERAL (
-  SELECT id FROM posts WHERE channelid = c.carrier_channel_id AND deleteat = 0
-  AND createat = (SELECT pos FROM engram_position WHERE conversation_id = $1 AND item_key = $2 AND state = 'reserved')
-  AND props->>'engram_client_msg_id' = $2 ORDER BY id LIMIT 1) f ON true
-WHERE c.conversation_id = $1 AND pp.conversation_id = $1 AND pp.item_key = $2 AND pp.state = 'reserved'`, convID, cid)
+	_, _, err := r.svc.closeAbandonedMessages(context.Background(), convID, math.MaxInt64, cid)
 	require.NoError(t, err)
 }
 
