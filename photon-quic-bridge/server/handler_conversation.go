@@ -55,6 +55,11 @@ func (h *ConversationHandler) Handle(userID string, action int, raw json.RawMess
 		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
 		defer cancel()
 		return h.service.dispatch(ctx, userID, action, raw)
+	case ActionConversationOpenDirect, ActionConversationUnarchive, ActionConversationMemberStateSet,
+		ActionConversationInviteCreate, ActionConversationInviteRevoke, ActionConversationInviteList,
+		ActionConversationJoinByInvite, ActionConversationHistoryBefore:
+		// Messaging v2, срез M1: код принят, поведения нет — честный отказ, не ложный успех (ADR-100 §2.6).
+		return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 	}

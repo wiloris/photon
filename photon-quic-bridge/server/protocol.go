@@ -79,6 +79,8 @@ const (
 	// синхронизация с непрозрачным курсором.
 	ActionSendDirectMessageV2  = int(photonpb.Action_ACTION_SEND_DIRECT_MESSAGE_V2)
 	ActionListDirectMessagesV2 = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES_V2)
+	// ADR-105: DM «назад» (M1 — только код и заглушка).
+	ActionListDirectMessagesBefore = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES_BEFORE)
 
 	// Входящие: список разговоров 1:1 (ADR-084).
 	ActionListDirectConversations = int(photonpb.Action_ACTION_LIST_DIRECT_CONVERSATIONS)
@@ -169,6 +171,16 @@ const (
 	ActionConversationOwnerTransfer = int(photonpb.Action_ACTION_CONVERSATION_OWNER_TRANSFER)
 	ActionConversationSend          = int(photonpb.Action_ACTION_CONVERSATION_SEND)
 	ActionConversationSync          = int(photonpb.Action_ACTION_CONVERSATION_SYNC)
+
+	// Messaging v2 (ADR-104–107), срез M1: коды и заглушки без поведения.
+	ActionConversationOpenDirect     = int(photonpb.Action_ACTION_CONVERSATION_OPEN_DIRECT)
+	ActionConversationUnarchive      = int(photonpb.Action_ACTION_CONVERSATION_UNARCHIVE)
+	ActionConversationMemberStateSet = int(photonpb.Action_ACTION_CONVERSATION_MEMBER_STATE_SET)
+	ActionConversationInviteCreate   = int(photonpb.Action_ACTION_CONVERSATION_INVITE_CREATE)
+	ActionConversationInviteRevoke   = int(photonpb.Action_ACTION_CONVERSATION_INVITE_REVOKE)
+	ActionConversationInviteList     = int(photonpb.Action_ACTION_CONVERSATION_INVITE_LIST)
+	ActionConversationJoinByInvite   = int(photonpb.Action_ACTION_CONVERSATION_JOIN_BY_INVITE)
+	ActionConversationHistoryBefore  = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

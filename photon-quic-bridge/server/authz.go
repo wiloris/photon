@@ -525,6 +525,8 @@ var rules = map[int]rule{
 		permSys(model.PermissionCreateDirectChannel),
 		ifChannel(permChan(model.PermissionCreatePost), authenticated()))},
 	ActionListDirectMessagesV2: {objDirectPeer, ifChannel(readC(), authenticated())},
+	// ADR-105: 219 — доступ как у 218 (контракт Messaging v2 §3).
+	ActionListDirectMessagesBefore: {objDirectPeer, ifChannel(readC(), authenticated())},
 	// ADR-084 §2.1: объекта во входе нет; список — только каналы участия.
 	ActionListDirectConversations: {objNone, authenticated()},
 
@@ -622,6 +624,16 @@ var rules = map[int]rule{
 	ActionConversationOwnerTransfer: {objNone, authenticated()},
 	ActionConversationSend:          {objNone, authenticated()},
 	ActionConversationSync:          {objNone, authenticated()},
+
+	// Messaging v2 (ADR-104–107): то же правило (ADR-099 §2.4), доступ решает обработчик.
+	ActionConversationOpenDirect:     {objNone, authenticated()},
+	ActionConversationUnarchive:      {objNone, authenticated()},
+	ActionConversationMemberStateSet: {objNone, authenticated()},
+	ActionConversationInviteCreate:   {objNone, authenticated()},
+	ActionConversationInviteRevoke:   {objNone, authenticated()},
+	ActionConversationInviteList:     {objNone, authenticated()},
+	ActionConversationJoinByInvite:   {objNone, authenticated()},
+	ActionConversationHistoryBefore:  {objNone, authenticated()},
 }
 
 // authorize — единственная точка принятия решения. Вызывается Dispatcher'ом до

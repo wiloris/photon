@@ -58,6 +58,9 @@ func (h *UserHandler) Handle(userID string, action int, raw json.RawMessage) Res
 		return sendDirectMessageV2(h.directMessageV2Deps(), userID, raw)
 	case ActionListDirectMessagesV2:
 		return listDirectMessagesV2(h.directMessageV2Deps(), userID, raw)
+	case ActionListDirectMessagesBefore:
+		// ADR-105, срез M1: заглушка до M3.
+		return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 	case ActionListDirectConversations:
 		return listDirectConversations(h.conversationDeps(), userID, raw)
 	default:

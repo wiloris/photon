@@ -143,6 +143,8 @@ enum Action {
   // начале прохода. 213/214 не меняются.
   ACTION_SEND_DIRECT_MESSAGE_V2  = 217;
   ACTION_LIST_DIRECT_MESSAGES_V2 = 218;
+  // ADR-105: страница DM «назад» от якоря, доступ как у 218. Поведение — срез M3.
+  ACTION_LIST_DIRECT_MESSAGES_BEFORE = 219;
 
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
@@ -261,13 +263,25 @@ enum Action {
   ACTION_CONVERSATION_LIST           = 902;
   ACTION_CONVERSATION_UPDATE         = 903;
   ACTION_CONVERSATION_ARCHIVE        = 904;
+  // ADR-104: открыть/найти личный разговор по паре участников.
+  ACTION_CONVERSATION_OPEN_DIRECT    = 905;
+  // ADR-106: разархивирование; личное состояние участника (скрыт/закреплён/без звука).
+  ACTION_CONVERSATION_UNARCHIVE      = 906;
+  ACTION_CONVERSATION_MEMBER_STATE_SET = 907;
   ACTION_CONVERSATION_MEMBERS_ADD    = 910;
   ACTION_CONVERSATION_MEMBER_REMOVE  = 911;
   ACTION_CONVERSATION_LEAVE          = 912;
+  // ADR-107 этап 1: приглашения-ссылки.
+  ACTION_CONVERSATION_INVITE_CREATE  = 913;
+  ACTION_CONVERSATION_INVITE_REVOKE  = 914;
+  ACTION_CONVERSATION_INVITE_LIST    = 915;
+  ACTION_CONVERSATION_JOIN_BY_INVITE = 916;
   ACTION_CONVERSATION_ROLE_SET       = 920;
   ACTION_CONVERSATION_OWNER_TRANSFER = 921;
   ACTION_CONVERSATION_SEND           = 930;
   ACTION_CONVERSATION_SYNC           = 931;
+  // ADR-105: страница истории «назад» от якоря.
+  ACTION_CONVERSATION_HISTORY_BEFORE = 940;
 }
 
 enum EventType {
