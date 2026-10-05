@@ -126,9 +126,9 @@ WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, spec.action, spe
 	}
 
 	c := &convChange{tx: tx, convID: spec.conversationID, callerPID: pid}
-	var state string
-	err = tx.QueryRowContext(ctx, `SELECT state, version, member_count, position_h FROM engram_conversation
-WHERE conversation_id = $1 FOR UPDATE`, spec.conversationID).Scan(&state, &c.version, &c.memberCount, &c.h)
+	var state, kind string
+	err = tx.QueryRowContext(ctx, `SELECT state, kind, version, member_count, position_h FROM engram_conversation
+WHERE conversation_id = $1 FOR UPDATE`, spec.conversationID).Scan(&state, &kind, &c.version, &c.memberCount, &c.h)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && state == "creating") {
 		return nil, convErrConversationNF, nil, nil
 	}
@@ -147,6 +147,11 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 	}
 	if periodState != "active" {
 		return nil, convErrNoAccess, nil, nil
+	}
+	// direct не меняется ни одним из 903/904/910–912/920/921: оба участника
+	// всегда active (ADR-104 §3.1); после доступа, ADR-099 §11.
+	if kind == "direct" {
+		return nil, convErrInvalidRequest, nil, nil
 	}
 	if state == "archived" {
 		return nil, convErrArchived, nil, nil

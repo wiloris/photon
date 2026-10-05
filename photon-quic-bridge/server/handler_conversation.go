@@ -18,7 +18,7 @@ const convCallTimeout = 60 * time.Second
 // ConversationHandler — сотня 900: групповые разговоры ENGRAM (ADR-099).
 //
 // service == nil — схема Bridge не готова (ADR-100 §2.6): каждый код v1
-// отвечает temporarily_unavailable. Реализованы 900–921, 930 и 931.
+// отвечает temporarily_unavailable. Реализованы 900–921, 930, 931 и 905.
 type ConversationHandler struct {
 	plugin  *Plugin
 	service *convService
@@ -48,14 +48,14 @@ func (h *ConversationHandler) Handle(userID string, action int, raw json.RawMess
 		ActionConversationUpdate, ActionConversationArchive,
 		ActionConversationMembersAdd, ActionConversationMemberRemove, ActionConversationLeave,
 		ActionConversationRoleSet, ActionConversationOwnerTransfer, ActionConversationSend,
-		ActionConversationSync:
+		ActionConversationSync, ActionConversationOpenDirect:
 		if h.service == nil {
 			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
 		defer cancel()
 		return h.service.dispatch(ctx, userID, action, raw)
-	case ActionConversationOpenDirect, ActionConversationUnarchive, ActionConversationMemberStateSet,
+	case ActionConversationUnarchive, ActionConversationMemberStateSet,
 		ActionConversationInviteCreate, ActionConversationInviteRevoke, ActionConversationInviteList,
 		ActionConversationJoinByInvite, ActionConversationHistoryBefore:
 		// Messaging v2, срез M1: код принят, поведения нет — честный отказ, не ложный успех (ADR-100 §2.6).
@@ -92,6 +92,8 @@ func (s *convService) dispatch(ctx context.Context, userID string, action int, r
 		return s.sendMessage(ctx, userID, raw)
 	case ActionConversationSync:
 		return s.syncConversation(ctx, userID, raw)
+	case ActionConversationOpenDirect:
+		return s.openDirect(ctx, userID, raw)
 	}
 	return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 }

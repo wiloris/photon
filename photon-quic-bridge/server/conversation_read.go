@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 )
@@ -56,6 +57,11 @@ type ConvListItem struct {
 	MemberCount         int    `json:"member_count"`
 	MyRole              string `json:"my_role"`
 	LastActivityAt      int64  `json:"last_activity_at"`
+	// PeerPhotonID — второй участник; только у direct (ADR-104 §3.1).
+	PeerPhotonID string `json:"peer_photon_id,omitempty"`
+	// LastItem — последний видимый вызывающему элемент ленты (ADR-099 §9.3,
+	// видимость как у 931); null, если видимых элементов нет.
+	LastItem any `json:"last_item"`
 }
 
 type ConvListResponse struct {
@@ -120,7 +126,8 @@ func (s *convService) listConversations(ctx context.Context, callerID string, ra
 		return Response{OK: true, Data: out}
 	}
 
-	q := `SELECT c.conversation_id, c.title, c.state, c.version, c.member_count, m.role, c.last_activity_at
+	q := `SELECT c.conversation_id, c.kind, c.title, c.state, c.version, c.member_count, m.role, c.last_activity_at,
+       c.history_policy, c.carrier_channel_id
 FROM engram_member_period m
 CROSS JOIN LATERAL (SELECT * FROM engram_conversation c
                     WHERE c.conversation_id = m.conversation_id LIMIT 1) c
@@ -138,14 +145,21 @@ WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived
 		return s.convFailFor("902 list", err)
 	}
 	defer rows.Close()
+	type listMeta struct{ policy, channelID string }
+	var metas []listMeta
 	for rows.Next() {
-		it := ConvListItem{Kind: "group"}
-		if err := rows.Scan(&it.ConversationID, &it.Title, &it.State, &it.ConversationVersion,
-			&it.MemberCount, &it.MyRole, &it.LastActivityAt); err != nil {
+		var it ConvListItem
+		var policy string
+		var channelID sql.NullString
+		if err := rows.Scan(&it.ConversationID, &it.Kind, &it.Title, &it.State, &it.ConversationVersion,
+			&it.MemberCount, &it.MyRole, &it.LastActivityAt, &policy, &channelID); err != nil {
+			rows.Close()
 			return s.convFailFor("902 scan", err)
 		}
 		out.Conversations = append(out.Conversations, it)
+		metas = append(metas, listMeta{policy, channelID.String})
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return s.convFailFor("902 rows", err)
 	}
@@ -154,5 +168,53 @@ WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived
 		last := out.Conversations[limit-1]
 		out.NextCursor = encodeListCursor(convListCursor{A: last.LastActivityAt, C: last.ConversationID})
 	}
+	for i := range out.Conversations {
+		it := &out.Conversations[i]
+		if it.Kind == "direct" {
+			var peer string
+			if err := s.db.QueryRowContext(ctx, `SELECT photon_id FROM engram_member_period
+WHERE conversation_id = $1 AND state = 'active' AND photon_id <> $2 ORDER BY photon_id LIMIT 1`, it.ConversationID, pid).Scan(&peer); err != nil {
+				return s.convFailFor("902 peer", err)
+			}
+			it.PeerPhotonID = peer
+		}
+		item, err := s.lastVisibleItem(ctx, it.ConversationID, metas[i].channelID, metas[i].policy, pid)
+		if err != nil {
+			return s.convFailFor("902 last_item", err)
+		}
+		it.LastItem = item
+	}
 	return Response{OK: true, Data: out}
+}
+
+// lastVisibleItem — самый новый элемент ленты, видимый вызывающему: те же
+// периоды и тот же оператор, что у 931 (ADR-099 §9.4). nil — видимых элементов
+// нет. Читается без S-блокировки: список не обещает снимка, а элемент —
+// самый новый ниже барьера на момент запроса.
+func (s *convService) lastVisibleItem(ctx context.Context, convID, channelID, policy, pid string) (any, error) {
+	if channelID == "" {
+		return nil, nil
+	}
+	var periods []convPeriodBounds
+	visibleFrom := int64(0)
+	if policy == "since_join" {
+		var err error
+		periods, err = callerPeriods(ctx, s.db, convID, pid)
+		if err != nil {
+			return nil, err
+		}
+		if len(periods) == 0 {
+			return nil, nil
+		}
+		visibleFrom = periods[0].open
+	}
+	_, rows, err := readConvFeed(ctx, s.db, convID, channelID, feedNewest, visibleFrom, 1, periods)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	it, ok := convItemOf(rows[0], pid)
+	if !ok {
+		return nil, nil
+	}
+	return it, nil
 }

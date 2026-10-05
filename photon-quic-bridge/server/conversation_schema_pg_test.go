@@ -233,3 +233,56 @@ func TestConvSchemaCheckOnEmptySchema(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, strings.Contains(err.Error(), "нет таблицы engram_schema"), err.Error())
 }
+
+// v3 (M2): миграция v2→v3 на базе с данными, вид direct, пара.
+func TestConvSchemaV3UpgradeFromV2(t *testing.T) {
+	ctx := context.Background()
+	db := pgOpen(t, convSchema(t, true))
+	_, err := db.Exec(`CREATE TABLE engram_schema (version int NOT NULL)`)
+	require.NoError(t, err)
+	for v := 0; v < 2; v++ {
+		_, err = db.Exec(convMigrations[v])
+		require.NoError(t, err)
+	}
+	_, err = db.Exec(`INSERT INTO engram_schema (version) VALUES (2)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO engram_service_team (team_name, state, created_at) VALUES ('t', 'created', 1)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO engram_conversation (conversation_id, kind, state, title, history_policy, version, created_at,
+created_by, member_count, last_activity_at, carrier_state, carrier_team, carrier_name, reserved_at)
+VALUES ('g1', 'group', 'active', 'g', 'full', 1, 1, 'p', 1, 1, 'reserved', 't', 'c-g1', 1)`)
+	require.NoError(t, err)
+
+	require.NoError(t, migrateConversationSchema(ctx, db, 5*time.Second, 10*time.Millisecond))
+	require.NoError(t, checkConversationSchema(ctx, db, "postgres"))
+	var n int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM engram_conversation WHERE conversation_id = 'g1'`).Scan(&n))
+	require.Equal(t, 1, n, "данные пережили миграцию")
+
+	ins := `INSERT INTO engram_conversation (conversation_id, kind, state, title, history_policy, version, created_at,
+created_by, member_count, last_activity_at, carrier_state, carrier_team, carrier_name, reserved_at)
+VALUES ($1, $2, 'creating', '', 'full', 0, 1, 'p', 0, 0, 'reserved', 't', $3, 1)`
+	_, err = db.Exec(ins, "d1", "direct", "c-d1")
+	require.NoError(t, err)
+	_, err = db.Exec(ins, "x1", "other", "c-x1")
+	require.Error(t, err, "неизвестный вид по-прежнему отвергается")
+
+	_, err = db.Exec(`INSERT INTO engram_direct_pair VALUES ('1', '2', 'd1')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO engram_direct_pair VALUES ('1', '2', 'd2')`)
+	require.Error(t, err, "пара — один разговор")
+	_, err = db.Exec(`INSERT INTO engram_direct_pair VALUES ('3', '4', 'd1')`)
+	require.Error(t, err, "разговор — одна пара")
+	_, err = db.Exec(`INSERT INTO engram_direct_pair VALUES ('6', '5', 'd3')`)
+	require.Error(t, err, "low < high")
+
+	// Проверка схемы замечает потерю пары и ограничения вида.
+	_, err = db.Exec(`ALTER TABLE engram_direct_pair DROP CONSTRAINT engram_direct_pair_conversation_id_key`)
+	require.NoError(t, err)
+	require.ErrorContains(t, checkConversationSchema(ctx, db, "postgres"), "engram_direct_pair_conversation_id_key")
+	_, err = db.Exec(`ALTER TABLE engram_direct_pair ADD CONSTRAINT engram_direct_pair_conversation_id_key UNIQUE (conversation_id)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`ALTER TABLE engram_conversation DROP CONSTRAINT engram_conversation_kind_check`)
+	require.NoError(t, err)
+	require.ErrorContains(t, checkConversationSchema(ctx, db, "postgres"), "не допускает direct")
+}

@@ -272,24 +272,9 @@ WHERE team_name = $1 AND state = 'created'`, team)
 // completeCreate — шаги 2–6 §6.1 под X(разговор): носитель, привязка, T2,
 // события, T3. Повтор продолжает с первого незавершённого шага.
 func (s *convService) completeCreate(ctx context.Context, callerID, creatorPID, convID string, p convCreatePayload, members []string) (json.RawMessage, error) {
-	release, err := s.holdLock(ctx, convLockKey(convID))
-	if err != nil {
+	if err := s.completeCarrier(ctx, callerID, creatorPID, convID, members); err != nil {
 		return nil, err
 	}
-	channelID, err := s.ensureCarrierChannel(ctx, convID)
-	if err != nil {
-		release()
-		return nil, err
-	}
-	if err := s.finalizeCreate(ctx, convID, creatorPID, members); err != nil {
-		release()
-		return nil, err
-	}
-	if err := s.writePendingEvents(ctx, convID, channelID, map[string]string{creatorPID: callerID}); err != nil {
-		release()
-		return nil, err
-	}
-	release()
 
 	// T3 — ключ done; ответ только после записи событий (ADR-099 §4).
 	snap, err := snapshotFor(ctx, s.db, convID, creatorPID)
@@ -305,6 +290,24 @@ WHERE photon_id = $1 AND action = $2 AND request_id = $3`, creatorPID, ActionCon
 		return nil, err
 	}
 	return body, nil
+}
+
+// completeCarrier — шаги 2–5 §6.1 под X(разговор): носитель, привязка, T2 и
+// запись событий. Общий для 900 и 905.
+func (s *convService) completeCarrier(ctx context.Context, callerID, creatorPID, convID string, members []string) error {
+	release, err := s.holdLock(ctx, convLockKey(convID))
+	if err != nil {
+		return err
+	}
+	defer release()
+	channelID, err := s.ensureCarrierChannel(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if err := s.finalizeCreate(ctx, convID, creatorPID, members); err != nil {
+		return err
+	}
+	return s.writePendingEvents(ctx, convID, channelID, map[string]string{creatorPID: callerID})
 }
 
 // ensureCarrierChannel — шаги 2–3 §6.1: канал-носитель и привязка.
@@ -443,10 +446,10 @@ func (s *convService) finalizeCreate(ctx context.Context, convID, creatorPID str
 		return err
 	}
 	defer tx.Rollback()
-	var state, title, desc string
+	var state, kind, title, desc string
 	var h int64
-	if err := tx.QueryRowContext(ctx, `SELECT state, title, description, position_h FROM engram_conversation
-WHERE conversation_id = $1 FOR UPDATE`, convID).Scan(&state, &title, &desc, &h); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT state, kind, title, description, position_h FROM engram_conversation
+WHERE conversation_id = $1 FOR UPDATE`, convID).Scan(&state, &kind, &title, &desc, &h); err != nil {
 		return err
 	}
 	if state != "creating" {
@@ -484,8 +487,8 @@ VALUES ($1, $2, 'event', $3, 'reserved', $4)`, convID, at, key, s.now()); err !=
 	all := append([]string{creatorPID}, members...)
 	for i, pid := range all {
 		role := "member"
-		if i == 0 {
-			role = "owner"
+		if i == 0 && kind == "group" {
+			role = "owner" // в direct оба участника member (ADR-104 §3.1)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO engram_member_period (conversation_id, photon_id, period_no, role,
 state, opened_version, open_at) VALUES ($1, $2, 1, $3, 'active', 1, $4)`, convID, pid, role, p); err != nil {

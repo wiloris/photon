@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 2
+const convSchemaVersion = 3
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -130,6 +130,20 @@ CREATE INDEX engram_position_key_all
 	// v2 — отметка первой попытки CreateTeam служебной команды
 	// (conversation-storage.md §6.0.3). Доказательством владения не является.
 	`ALTER TABLE engram_service_team ADD COLUMN create_attempted_at bigint;`,
+	// v3 — direct-разговоры (ADR-104 §3.2): вид direct и пара участников.
+	// low_pid < high_pid — строки канонического PhotonID; пара принадлежит
+	// ровно одному разговору в обе стороны.
+	`
+ALTER TABLE engram_conversation DROP CONSTRAINT engram_conversation_kind_check;
+ALTER TABLE engram_conversation ADD CONSTRAINT engram_conversation_kind_check CHECK (kind IN ('group','direct'));
+CREATE TABLE engram_direct_pair (
+  low_pid         text NOT NULL,
+  high_pid        text NOT NULL,
+  conversation_id text NOT NULL UNIQUE,
+  PRIMARY KEY (low_pid, high_pid),
+  CHECK (low_pid < high_pid)
+);
+`,
 }
 
 var (
@@ -244,10 +258,11 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы v1.
+// convSchemaTables — таблицы схемы (v1 и v3).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
+	"engram_direct_pair",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -273,6 +288,9 @@ var convSchemaIndexes = map[string]convIndexSpec{
 	"engram_position_open_age": {"engram_position", "(reserved_at)", false, "reserved"},
 	// владелец ключа во всех состояниях, включая надгробия (ADR-102 §2)
 	"engram_position_key_all": {"engram_position", "(conversation_id, item_key)", false, ""},
+	// пара direct → один разговор, и разговор → одна пара (ADR-104 §3.2)
+	"engram_direct_pair_pkey":                {"engram_direct_pair", "(low_pid, high_pid)", true, ""},
+	"engram_direct_pair_conversation_id_key": {"engram_direct_pair", "(conversation_id)", true, ""},
 }
 
 // checkConversationSchema — проверка при активации (ADR-100 §2.6): драйвер,
@@ -326,6 +344,15 @@ WHERE table_schema = current_schema() AND table_name = 'engram_conversation' AND
 	}
 	if hType.String != "bigint" {
 		problems = append(problems, fmt.Sprintf("engram_conversation.position_h: тип %q, ожидался \"bigint\"", hType.String))
+	}
+
+	var kindDef sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+WHERE c.conrelid = to_regclass('engram_conversation') AND c.conname = 'engram_conversation_kind_check'`).Scan(&kindDef); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("conversation: чтение схемы: %w", err)
+	}
+	if !strings.Contains(kindDef.String, "'direct'") {
+		problems = append(problems, fmt.Sprintf("engram_conversation.kind: ограничение %q не допускает direct", kindDef.String))
 	}
 
 	type idx struct {
