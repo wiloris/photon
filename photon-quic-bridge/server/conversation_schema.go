@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 3
+const convSchemaVersion = 4
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -143,6 +143,20 @@ CREATE TABLE engram_direct_pair (
   PRIMARY KEY (low_pid, high_pid),
   CHECK (low_pid < high_pid)
 );
+`,
+	// v4 — личное состояние участника (ADR-106 §2.2). Не участие и не права;
+	// частичный индекс — подсчёт закреплённых одного участника (предел 5).
+	`
+CREATE TABLE engram_member_state (
+  conversation_id text   NOT NULL,
+  photon_id       text   NOT NULL,
+  hidden_at       bigint,
+  pinned_at       bigint,
+  muted_until     bigint,
+  updated_at      bigint NOT NULL,
+  PRIMARY KEY (conversation_id, photon_id)
+);
+CREATE INDEX engram_member_state_pinned ON engram_member_state (photon_id) WHERE pinned_at IS NOT NULL;
 `,
 }
 
@@ -262,7 +276,7 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
-	"engram_direct_pair",
+	"engram_direct_pair", "engram_member_state",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -291,6 +305,8 @@ var convSchemaIndexes = map[string]convIndexSpec{
 	// пара direct → один разговор, и разговор → одна пара (ADR-104 §3.2)
 	"engram_direct_pair_pkey":                {"engram_direct_pair", "(low_pid, high_pid)", true, ""},
 	"engram_direct_pair_conversation_id_key": {"engram_direct_pair", "(conversation_id)", true, ""},
+	// закреплённые одного участника (ADR-106 Q4)
+	"engram_member_state_pinned": {"engram_member_state", "(photon_id)", false, "pinned_at IS NOT NULL"},
 }
 
 // checkConversationSchema — проверка при активации (ADR-100 §2.6): драйвер,

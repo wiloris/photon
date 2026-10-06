@@ -32,8 +32,10 @@ type convChange struct {
 	version     int64 // текущая
 	nextVersion int64 // версия этого изменения
 	memberCount int
-	h           int64 // H на входе
-	nextPos     int64 // следующая позиция для события
+	kind        string // вид разговора
+	archived    bool   // состояние на входе
+	h           int64  // H на входе
+	nextPos     int64  // следующая позиция для события
 	events      []convEventBody
 	ats         []int64
 }
@@ -60,6 +62,10 @@ type convChangeSpec struct {
 	hash            []byte
 	permission      string // "" — право не нужно (912)
 	expectedVersion *int64
+	// allowArchived — изменение допустимо над архивным разговором; только 906
+	// (ADR-106 §2.1). Он же применяется к direct как «нет изменения»: direct
+	// не архивируется никогда (ADR-106 §2.6).
+	allowArchived bool
 }
 
 var convRoleRank = map[string]int{"owner": 3, "admin": 2, "member": 1}
@@ -150,13 +156,14 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 	}
 	// direct не меняется ни одним из 903/904/910–912/920/921: оба участника
 	// всегда active (ADR-104 §3.1); после доступа, ADR-099 §11.
-	if kind == "direct" {
+	if kind == "direct" && !spec.allowArchived {
 		return nil, convErrInvalidRequest, nil, nil
 	}
-	if state == "archived" {
+	if state == "archived" && !spec.allowArchived {
 		return nil, convErrArchived, nil, nil
 	}
-	if spec.permission != "" && !convHasPermission(c.callerRole, spec.permission) {
+	c.kind, c.archived = kind, state == "archived"
+	if kind != "direct" && spec.permission != "" && !convHasPermission(c.callerRole, spec.permission) {
 		return nil, convErrForbidden, nil, nil
 	}
 	if spec.expectedVersion != nil && *spec.expectedVersion != c.version {
@@ -370,6 +377,41 @@ func (s *convService) archiveConversation(ctx context.Context, callerID string, 
 			return nil, false, "", err
 		}
 		c.addEvent(convEventBody{Event: "archived", ActorPhotonID: c.callerPID})
+		return convSnapshotData{}, true, "", nil
+	})
+}
+
+// ── 906 UNARCHIVE ────────────────────────────────────────────────────────────
+
+type convUnarchivePayload struct {
+	RequestID       string `json:"request_id"`
+	ConversationID  string `json:"conversation_id"`
+	ExpectedVersion *int64 `json:"expected_version"`
+}
+
+// unarchiveConversation — 906: ADR-106 §2.1, contract §4. Не архивный (и
+// direct, который не архивируется) — «нет изменения»: снимок без события и без
+// версии. Разговор без active-участников недостижим: вызывающий не проходит
+// участие в changeTx.
+func (s *convService) unarchiveConversation(ctx context.Context, callerID string, raw json.RawMessage) Response {
+	var p convUnarchivePayload
+	if !decodeStrict(raw, &p) || !uuidRe.MatchString(p.RequestID) || p.ConversationID == "" {
+		return convFail(convErrInvalidRequest)
+	}
+	canon := map[string]any{"conversation_id": p.ConversationID}
+	if p.ExpectedVersion != nil {
+		canon["expected_version"] = *p.ExpectedVersion
+	}
+	spec := convChangeSpec{action: ActionConversationUnarchive, requestID: p.RequestID, conversationID: p.ConversationID,
+		hash: convHash(canon), permission: "conversation.archive", expectedVersion: p.ExpectedVersion, allowArchived: true}
+	return s.runChange(ctx, callerID, spec, func(ctx context.Context, c *convChange) (any, bool, string, error) {
+		if c.kind == "direct" || !c.archived {
+			return convSnapshotData{}, false, "", nil
+		}
+		if _, err := c.tx.ExecContext(ctx, `UPDATE engram_conversation SET state = 'active' WHERE conversation_id = $1`, c.convID); err != nil {
+			return nil, false, "", err
+		}
+		c.addEvent(convEventBody{Event: "unarchived", ActorPhotonID: c.callerPID})
 		return convSnapshotData{}, true, "", nil
 	})
 }

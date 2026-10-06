@@ -45,6 +45,8 @@ func (s *convService) getConversation(ctx context.Context, callerID string, raw 
 type convListPayload struct {
 	Cursor *string `json:"cursor"`
 	Limit  *int    `json:"limit"`
+	// IncludeHidden — вернуть и скрытые разговоры (ADR-106 §2.4).
+	IncludeHidden bool `json:"include_hidden"`
 }
 
 // ConvListItem — краткое описание без состава (ADR-099 §6).
@@ -62,6 +64,9 @@ type ConvListItem struct {
 	// LastItem — последний видимый вызывающему элемент ленты (ADR-099 §9.3,
 	// видимость как у 931); null, если видимых элементов нет.
 	LastItem any `json:"last_item"`
+	// MemberState — личное состояние вызывающего; hidden — действующее по
+	// правилу чтения (contract §4), не сохранённый флаг.
+	MemberState ConvMemberState `json:"member_state"`
 }
 
 type ConvListResponse struct {
@@ -126,46 +131,69 @@ func (s *convService) listConversations(ctx context.Context, callerID string, ra
 		return Response{OK: true, Data: out}
 	}
 
-	q := `SELECT c.conversation_id, c.kind, c.title, c.state, c.version, c.member_count, m.role, c.last_activity_at,
-       c.history_policy, c.carrier_channel_id
+	// Скрыт, если hidden_at задан и (после него не было активности ИЛИ разговор
+	// заглушён): contract §4, «возврат скрытого» — правило чтения.
+	now := s.now()
+	const hiddenExpr = `(ms.hidden_at IS NOT NULL AND (c.last_activity_at <= ms.hidden_at OR COALESCE(ms.muted_until > $2, false)))`
+	base := `SELECT c.conversation_id, c.kind, c.title, c.state, c.version, c.member_count, m.role, c.last_activity_at,
+       c.history_policy, c.carrier_channel_id, ` + hiddenExpr + `, ms.pinned_at, ms.muted_until
 FROM engram_member_period m
 CROSS JOIN LATERAL (SELECT * FROM engram_conversation c
                     WHERE c.conversation_id = m.conversation_id LIMIT 1) c
-WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived')`
-	args := []any{pid}
-	if after != nil {
-		q += ` AND (c.last_activity_at, c.conversation_id) < ($3, $4)`
-		args = append(args, limit+1, after.A, after.C)
-	} else {
-		args = append(args, limit+1)
-	}
-	q += ` ORDER BY c.last_activity_at DESC, c.conversation_id DESC LIMIT $2`
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return s.convFailFor("902 list", err)
-	}
-	defer rows.Close()
+LEFT JOIN engram_member_state ms ON ms.conversation_id = m.conversation_id AND ms.photon_id = m.photon_id
+WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived')
+  AND ($3 OR NOT ` + hiddenExpr + `)`
 	type listMeta struct{ policy, channelID string }
 	var metas []listMeta
-	for rows.Next() {
-		var it ConvListItem
-		var policy string
-		var channelID sql.NullString
-		if err := rows.Scan(&it.ConversationID, &it.Kind, &it.Title, &it.State, &it.ConversationVersion,
-			&it.MemberCount, &it.MyRole, &it.LastActivityAt, &policy, &channelID); err != nil {
-			rows.Close()
-			return s.convFailFor("902 scan", err)
+	collect := func(q string, args ...any) error {
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return err
 		}
-		out.Conversations = append(out.Conversations, it)
-		metas = append(metas, listMeta{policy, channelID.String})
+		defer rows.Close()
+		for rows.Next() {
+			var it ConvListItem
+			var policy string
+			var channelID sql.NullString
+			var pinned, muted sql.NullInt64
+			if err := rows.Scan(&it.ConversationID, &it.Kind, &it.Title, &it.State, &it.ConversationVersion,
+				&it.MemberCount, &it.MyRole, &it.LastActivityAt, &policy, &channelID,
+				&it.MemberState.Hidden, &pinned, &muted); err != nil {
+				return err
+			}
+			if pinned.Valid {
+				it.MemberState.PinnedAt = &pinned.Int64
+			}
+			if muted.Valid {
+				it.MemberState.MutedUntil = &muted.Int64
+			}
+			out.Conversations = append(out.Conversations, it)
+			metas = append(metas, listMeta{policy, channelID.String})
+		}
+		return rows.Err()
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return s.convFailFor("902 rows", err)
+	// Закреплённые (≤ 5) — первой страницей целиком; курсор идёт по
+	// незакреплённым (contract §4, «реализация»).
+	if after == nil {
+		if err := collect(base+` AND ms.pinned_at IS NOT NULL ORDER BY ms.pinned_at DESC, c.conversation_id DESC`,
+			pid, now, p.IncludeHidden); err != nil {
+			return s.convFailFor("902 pinned", err)
+		}
 	}
-	if len(out.Conversations) > limit {
-		out.Conversations = out.Conversations[:limit]
-		last := out.Conversations[limit-1]
+	nPinned := len(out.Conversations)
+	q := base + ` AND ms.pinned_at IS NULL`
+	args := []any{pid, now, p.IncludeHidden, limit + 1}
+	if after != nil {
+		q += ` AND (c.last_activity_at, c.conversation_id) < ($5, $6)`
+		args = append(args, after.A, after.C)
+	}
+	q += ` ORDER BY c.last_activity_at DESC, c.conversation_id DESC LIMIT $4`
+	if err := collect(q, args...); err != nil {
+		return s.convFailFor("902 list", err)
+	}
+	if len(out.Conversations)-nPinned > limit {
+		out.Conversations = out.Conversations[:nPinned+limit]
+		last := out.Conversations[nPinned+limit-1]
 		out.NextCursor = encodeListCursor(convListCursor{A: last.LastActivityAt, C: last.ConversationID})
 	}
 	for i := range out.Conversations {
