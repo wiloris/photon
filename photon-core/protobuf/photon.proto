@@ -285,6 +285,9 @@ enum Action {
   ACTION_CONVERSATION_OWNER_TRANSFER = 921;
   ACTION_CONVERSATION_SEND           = 930;
   ACTION_CONVERSATION_SYNC           = 931;
+  // ADR-109: правка и удаление для всех — события ленты.
+  ACTION_CONVERSATION_MESSAGE_EDIT   = 932;
+  ACTION_CONVERSATION_MESSAGE_DELETE = 933;
   // ADR-105: страница истории «назад» от якоря.
   ACTION_CONVERSATION_HISTORY_BEFORE = 940;
 }

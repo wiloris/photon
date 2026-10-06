@@ -106,7 +106,7 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 	}
 	resp := ConvHistoryResponse{Items: []any{}, AtStart: atStart}
 	for _, r := range rows {
-		it, ok := convItemOf(r, pid)
+		it, ok := convItemOf(r, pid, periods)
 		if !ok {
 			s.logger("[Photon][Conv] 940 skipped post without reservation or event body", "post_pos", r.createAt)
 			continue

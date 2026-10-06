@@ -183,6 +183,8 @@ const (
 	ActionConversationDirectorySearch = int(photonpb.Action_ACTION_CONVERSATION_DIRECTORY_SEARCH)
 	ActionConversationJoinPublic      = int(photonpb.Action_ACTION_CONVERSATION_JOIN_PUBLIC)
 	ActionConversationMarkRead        = int(photonpb.Action_ACTION_CONVERSATION_MARK_READ)
+	ActionConversationMessageEdit     = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_EDIT)
+	ActionConversationMessageDelete   = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_DELETE)
 	ActionConversationHistoryBefore   = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
 )
 

@@ -84,7 +84,7 @@ SELECT count(*) FROM (
                       WHERE t.conversation_id = $1 AND t.pos = p.createat AND t.state = 'aborted')
     ORDER BY p.createat, p.id) x
   JOIN engram_position r ON r.conversation_id = $1 AND r.pos = x.createat
-  WHERE x.type = '' AND r.item_kind = 'message' AND r.state = 'published'
+  WHERE x.type = '' AND r.item_kind = 'message' AND r.state = 'published' AND r.deleted_at IS NULL
     AND r.sender IS NOT NULL AND r.sender <> '' AND r.sender <> $4
     AND (x.createat > $6 OR (x.createat = $6 AND x.id COLLATE "C" > $7))
   LIMIT ` + fmt.Sprint(convUnreadProbe) + `) y`

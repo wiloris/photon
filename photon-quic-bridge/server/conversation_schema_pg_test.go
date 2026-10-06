@@ -61,6 +61,25 @@ func TestConvSchemaFreshMigrationPassesCheck(t *testing.T) {
 	require.Equal(t, convSchemaVersion, v)
 }
 
+// v8 (ADR-109): прежние строки позиций получают deleted_at NULL и edit_version 0.
+func TestConvSchemaV8DefaultsForExistingPositions(t *testing.T) {
+	db := convMigrated(t)
+	_, err := db.Exec(`INSERT INTO engram_service_team (team_name, state, created_at) VALUES ('t1', 'created', 1)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO engram_conversation (conversation_id, kind, state, title, history_policy, version,
+created_at, created_by, member_count, last_activity_at, carrier_state, carrier_team, carrier_name, reserved_at)
+VALUES ('c1', 'group', 'active', 'T', 'full', 1, 1, 'p', 1, 1, 'reserved', 't1', 'c-c1', 1)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO engram_position (conversation_id, pos, item_kind, item_key, state, sender, reserved_at)
+VALUES ('c1', 5, 'message', 'k', 'published', 's', 1)`)
+	require.NoError(t, err)
+	var del sql.NullInt64
+	var ev int
+	require.NoError(t, db.QueryRow(`SELECT deleted_at, edit_version FROM engram_position WHERE conversation_id = 'c1'`).Scan(&del, &ev))
+	require.False(t, del.Valid)
+	require.Equal(t, 0, ev)
+}
+
 func TestConvSchemaMigrationIsIdempotent(t *testing.T) {
 	db := convMigrated(t)
 	require.NoError(t, migrateConversationSchema(context.Background(), db, 5*time.Second, 10*time.Millisecond))
@@ -142,6 +161,9 @@ CREATE INDEX engram_position_key_all ON engram_position (conversation_id, item_k
 		{"нет барьерного индекса", `DROP INDEX engram_position_open`, "нет индекса engram_position_open"},
 		{"position_h не bigint", `ALTER TABLE engram_conversation ALTER COLUMN position_h TYPE int`, "position_h"},
 		{"нет таблицы резервов", `DROP TABLE engram_position`, "нет таблицы engram_position"},
+		{"v8: нет таблицы правок", `DROP TABLE engram_item_edit`, "нет таблицы engram_item_edit"},
+		{"v8: нет deleted_at", `ALTER TABLE engram_position DROP COLUMN deleted_at`, "engram_position.deleted_at"},
+		{"v8: edit_version не int", `ALTER TABLE engram_position ALTER COLUMN edit_version TYPE bigint`, "engram_position.edit_version"},
 		{"версия ниже", `UPDATE engram_schema SET version = 0`, "версия схемы 0"},
 	}
 	for _, tc := range cases {

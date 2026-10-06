@@ -43,6 +43,8 @@ type fakeConvMM struct {
 	postCreateThenFailOnCall int
 	postCalls                int
 	memberFail               int
+	deleteCalls              int // вызовов DeletePost
+	deletePostFail           int // отказать столько вызовов DeletePost
 
 	// 930 — исходы CreatePost поста сообщения (номер вызова с 1).
 	postRejectOnCall int    // однозначный отказ 4xx, пост не записан
@@ -267,6 +269,27 @@ VALUES ($1, $2, $3, $4, $4, 0, $5, $6, $7::jsonb)`, out.Id, out.ChannelId, out.U
 		return nil, convAppErr("app.post.create_post.lost_response", http.StatusInternalServerError)
 	}
 	return out, nil
+}
+
+// DeletePost — мягкое удаление Mattermost: строка остаётся, deleteat != 0.
+// deletePostFail — сколько вызовов подряд отказать (пост остаётся живым).
+func (f *fakeConvMM) DeletePost(postID string) *model.AppError {
+	f.mu.Lock()
+	f.deleteCalls++
+	if f.deletePostFail > 0 {
+		f.deletePostFail--
+		f.mu.Unlock()
+		return convAppErr("app.post.delete.app_error", http.StatusInternalServerError)
+	}
+	f.mu.Unlock()
+	res, err := f.db.Exec(`UPDATE posts SET deleteat = $2 WHERE id = $1 AND deleteat = 0`, postID, model.GetMillis())
+	if err != nil {
+		return convAppErr("store", http.StatusInternalServerError)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return convAppErr("app.post.get.app_error", http.StatusNotFound)
+	}
+	return nil
 }
 
 // checkMessagePost — S10 (ADR-101 §5.1, §5.1a): пост сообщения группы

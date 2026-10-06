@@ -38,6 +38,25 @@ type ConvMessageItem struct {
 	AuthorPhotonID string `json:"author_photon_id"`
 	Text           string `json:"text"`
 	ClientMsgID    string `json:"client_msg_id,omitempty"` // только у своих
+	// ADR-109 §2.4–2.5: ответ и пересылка; у обычного сообщения их нет.
+	ReplyTo       string             `json:"reply_to,omitempty"`
+	ForwardedFrom *ConvForwardedFrom `json:"forwarded_from,omitempty"`
+}
+
+// ConvForwardedFrom — происхождение пересланного сообщения (ADR-109 §2.5):
+// без ссылки на исходный разговор — его состав не раскрывается.
+type ConvForwardedFrom struct {
+	AuthorPhotonID string `json:"author_photon_id"`
+	CreatedAt      int64  `json:"created_at"`
+}
+
+// ConvTombstoneItem — удалённое для всех сообщение на своей позиции
+// (ADR-109 §2.2): без автора, текста и полей ответа и пересылки.
+type ConvTombstoneItem struct {
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	CreatedAt int64  `json:"created_at"`
+	Deleted   bool   `json:"deleted"`
 }
 
 type ConvEventItem struct {
@@ -52,6 +71,9 @@ type ConvEventItem struct {
 	Description         string `json:"description,omitempty"`
 	InviteID            string `json:"invite_id,omitempty"`
 	Visibility          string `json:"visibility,omitempty"`
+	TargetID            string `json:"target_id,omitempty"`    // message_edited, message_deleted
+	Text                string `json:"text,omitempty"`         // message_edited
+	EditVersion         int    `json:"edit_version,omitempty"` // message_edited
 	ConversationVersion int64  `json:"conversation_version"`
 }
 
@@ -112,21 +134,47 @@ func convFeedSQL(mode convFeedMode, periods int) string {
 		}
 		filter = " AND (" + strings.Join(parts, " OR ") + ")"
 	}
+	// Вторая ветка — надгробия (ADR-109 §2.2): пост удалённого сообщения в
+	// Mattermost мягко удалён (или ещё не удалён — удаление поста идёт после
+	// отметки в БД), поэтому элемент берётся из engram_position.deleted_at, а
+	// не из поста. Первая ветка такие позиции пропускает — один элемент на
+	// позицию. Каждая ветка ограничена $4, итог — тоже.
+	var tombFilter string
+	if periods > 1 {
+		parts := make([]string, periods)
+		for i := range parts {
+			parts[i] = fmt.Sprintf("(d.pos >= $%d AND d.pos <= $%d)", 6+2*i, 7+2*i)
+		}
+		tombFilter = " AND (" + strings.Join(parts, " OR ") + ")"
+	}
 	return `WITH b AS (
   SELECT COALESCE(
     (SELECT pos FROM engram_position WHERE conversation_id = $1 AND state = 'reserved' ORDER BY pos LIMIT 1),
     (SELECT position_h + 1 FROM engram_conversation WHERE conversation_id = $1)) AS bar)
-SELECT b.bar, x.id, x.createat, x.type, x.message, x.event, r.sender, r.item_key
+SELECT b.bar, x.id, x.createat, x.type, x.message, x.event, x.reply_to, x.fwd, x.del, r.sender, r.item_key
 FROM b
 LEFT JOIN LATERAL (
-  SELECT DISTINCT ON (p.createat) p.id, p.createat, p.type, p.message, (p.props->'engram_event')::text AS event
-  FROM posts p
-  WHERE p.channelid = $2 AND p.deleteat = 0 AND p.type IN ('', 'custom_engram_event')
-    AND p.createat >= $3 AND p.createat < LEAST(b.bar, $5)` + filter + `
-    AND NOT EXISTS (SELECT 1 FROM engram_position t
-                    WHERE t.conversation_id = $1 AND t.pos = p.createat AND t.state = 'aborted')
-  ORDER BY p.createat ` + order + `, p.id ASC
-  LIMIT $4) x ON true
+  SELECT u.id, u.createat, u.type, u.message, u.event, u.reply_to, u.fwd, u.del FROM (
+    (SELECT DISTINCT ON (p.createat) p.id, p.createat, p.type, p.message, (p.props->'engram_event')::text AS event,
+       (p.props->>'engram_reply_to') AS reply_to, (p.props->'engram_forwarded_from')::text AS fwd, false AS del
+     FROM posts p
+     WHERE p.channelid = $2 AND p.deleteat = 0 AND p.type IN ('', 'custom_engram_event')
+       AND p.createat >= $3 AND p.createat < LEAST(b.bar, $5)` + filter + `
+       AND NOT EXISTS (SELECT 1 FROM engram_position t
+                       WHERE t.conversation_id = $1 AND t.pos = p.createat AND t.state = 'aborted')
+       AND NOT EXISTS (SELECT 1 FROM engram_position g
+                       WHERE g.conversation_id = $1 AND g.pos = p.createat AND g.deleted_at IS NOT NULL)
+     ORDER BY p.createat ` + order + `, p.id ASC
+     LIMIT $4)
+    UNION ALL
+    (SELECT d.post_id, d.pos, ''::text, ''::text, NULL::text, NULL::text, NULL::text, true
+     FROM engram_position d
+     WHERE d.conversation_id = $1 AND d.item_kind = 'message' AND d.state = 'published'
+       AND d.deleted_at IS NOT NULL AND d.post_id IS NOT NULL
+       AND d.pos >= $3 AND d.pos < LEAST(b.bar, $5)` + tombFilter + `
+     ORDER BY d.pos ` + order + `
+     LIMIT $4)
+  ) u ORDER BY u.createat ` + order + `, u.id ASC LIMIT $4) x ON true
 LEFT JOIN engram_position r ON r.conversation_id = $1 AND r.pos = x.createat
 ORDER BY x.createat ` + order
 }
@@ -134,6 +182,8 @@ ORDER BY x.createat ` + order
 // convFeedRow — строка страницы до сборки элемента.
 type convFeedRow struct {
 	id, typ, message, event, sender, itemKey string
+	replyTo, forwardedFrom                   string // props поста: ADR-109 §2.4–2.5
+	deleted                                  bool   // надгробие: engram_position.deleted_at (ADR-109 §2.2)
 	createAt                                 int64
 }
 
@@ -174,9 +224,10 @@ func runConvFeedBelow(ctx context.Context, q convQuerier, sqlText, convID, chann
 	var out []convFeedRow
 	for rows.Next() {
 		var b int64
-		var id, typ, msg, ev, sender, key sql.NullString
+		var id, typ, msg, ev, reply, fwd, sender, key sql.NullString
 		var at sql.NullInt64
-		if err := rows.Scan(&b, &id, &at, &typ, &msg, &ev, &sender, &key); err != nil {
+		var del sql.NullBool
+		if err := rows.Scan(&b, &id, &at, &typ, &msg, &ev, &reply, &fwd, &del, &sender, &key); err != nil {
 			return 0, nil, err
 		}
 		bar = b
@@ -184,7 +235,8 @@ func runConvFeedBelow(ctx context.Context, q convQuerier, sqlText, convID, chann
 			continue // пустая страница: LEFT JOIN вернул только барьер
 		}
 		out = append(out, convFeedRow{id: id.String, createAt: at.Int64, typ: typ.String, message: msg.String,
-			event: ev.String, sender: sender.String, itemKey: key.String})
+			event: ev.String, sender: sender.String, itemKey: key.String,
+			replyTo: reply.String, forwardedFrom: fwd.String, deleted: del.Bool})
 	}
 	return bar, out, rows.Err()
 }
@@ -330,7 +382,7 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 	_ = bar // барьер уже учтён в самом операторе: выше него строк нет
 
 	for _, r := range rows {
-		it, ok := convItemOf(r, pid)
+		it, ok := convItemOf(r, pid, periods)
 		if !ok {
 			s.logger("[Photon][Conv] 931 skipped post without reservation or event body", "post_pos", r.createAt)
 			continue
@@ -356,14 +408,27 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 }
 
 // convItemOf собирает элемент ленты (ADR-099 §9.3). false — пост без
-// резерва автора или без тела события: такой элемент не выдаётся.
-func convItemOf(r convFeedRow, callerPID string) (any, bool) {
+// резерва автора или без тела события: такой элемент не выдаётся. periods —
+// периоды вызывающего при since_join (nil — лента видна целиком): событие
+// правки или удаления о сообщении вне периодов не выдаётся, иначе правка
+// раскрыла бы текст до вступления (contract §5b.2).
+func convItemOf(r convFeedRow, callerPID string, periods []convPeriodBounds) (any, bool) {
 	switch r.typ {
 	case "":
+		if r.deleted {
+			return ConvTombstoneItem{Kind: "message", ID: r.id, CreatedAt: r.createAt, Deleted: true}, true
+		}
 		if r.sender == "" {
 			return nil, false
 		}
-		it := ConvMessageItem{Kind: "message", ID: r.id, CreatedAt: r.createAt, AuthorPhotonID: r.sender, Text: r.message}
+		it := ConvMessageItem{Kind: "message", ID: r.id, CreatedAt: r.createAt, AuthorPhotonID: r.sender, Text: r.message,
+			ReplyTo: r.replyTo}
+		if r.forwardedFrom != "" {
+			var f ConvForwardedFrom
+			if json.Unmarshal([]byte(r.forwardedFrom), &f) == nil {
+				it.ForwardedFrom = &f
+			}
+		}
 		if r.sender == callerPID {
 			it.ClientMsgID = r.itemKey
 		}
@@ -373,9 +438,24 @@ func convItemOf(r convFeedRow, callerPID string) (any, bool) {
 		if r.event == "" || json.Unmarshal([]byte(r.event), &ev) != nil || ev.Event == "" {
 			return nil, false
 		}
+		if ev.TargetID != "" && len(periods) > 0 && !inPeriods(periods, ev.TargetPos) {
+			return nil, false
+		}
 		return ConvEventItem{Kind: "event", ID: r.id, CreatedAt: r.createAt, Event: ev.Event, ActorPhotonID: ev.ActorPhotonID,
 			TargetPhotonID: ev.TargetPhotonID, Role: ev.Role, Title: ev.Title, Description: ev.Description, InviteID: ev.InviteID, Visibility: ev.Visibility,
+			TargetID: ev.TargetID, Text: ev.Text, EditVersion: ev.EditVersion,
 			ConversationVersion: ev.Version}, true
 	}
 	return nil, false
+}
+
+// inPeriods — позиция pos лежит в одном из периодов вызывающего: границы
+// входят (ADR-099 §9.4).
+func inPeriods(periods []convPeriodBounds, pos int64) bool {
+	for _, p := range periods {
+		if pos >= p.open && pos <= p.close {
+			return true
+		}
+	}
+	return false
 }

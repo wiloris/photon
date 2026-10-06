@@ -452,7 +452,14 @@ type convEventBody struct {
 	Description    string `json:"description,omitempty"`
 	InviteID       string `json:"invite_id,omitempty"`
 	Visibility     string `json:"visibility,omitempty"`
-	Version        int64  `json:"conversation_version"`
+	// ADR-109: события правки и удаления. target_id — id сообщения;
+	// target_pos — его позиция, нужна только Bridge (видимость при
+	// since_join) и в элемент ленты не попадает.
+	TargetID    string `json:"target_id,omitempty"`
+	TargetPos   int64  `json:"target_pos,omitempty"`
+	Text        string `json:"text,omitempty"`
+	EditVersion int    `json:"edit_version,omitempty"`
+	Version     int64  `json:"conversation_version"`
 }
 
 // finalizeCreate — T2 (§6.1 шаг 4): если разговор ещё creating — периоды,

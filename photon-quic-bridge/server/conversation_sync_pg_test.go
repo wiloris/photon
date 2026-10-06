@@ -49,6 +49,8 @@ func itemID(it any) string {
 		return v.ID
 	case ConvEventItem:
 		return v.ID
+	case ConvTombstoneItem:
+		return v.ID
 	}
 	return ""
 }
@@ -58,6 +60,8 @@ func itemAt(it any) int64 {
 	case ConvMessageItem:
 		return v.CreatedAt
 	case ConvEventItem:
+		return v.CreatedAt
+	case ConvTombstoneItem:
 		return v.CreatedAt
 	}
 	return 0
@@ -71,6 +75,8 @@ func itemName(it any) string {
 		return "msg:" + v.Text
 	case ConvEventItem:
 		return "event:" + v.Event
+	case ConvTombstoneItem:
+		return "tombstone"
 	}
 	return "?"
 }

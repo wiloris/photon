@@ -24,6 +24,7 @@ const (
 	convErrInvalidCursor      = "invalid_cursor"
 	convErrInvalidLimit       = "invalid_limit"
 	convErrIdempotency        = "idempotency_conflict"
+	convErrMessageDeleted     = "message_deleted"
 	convErrTemporarilyUnavail = errCodeTemporarilyUnavailable
 )
 
@@ -43,6 +44,9 @@ const (
 	convEventPostType    = "custom_engram_event"
 	propEngramEvent      = "engram_event"
 	propEngramEventKey   = "engram_event_key"
+	// ADR-109 §2.4–2.5: ответ и пересылка хранятся в props поста-носителя.
+	propEngramReplyTo       = "engram_reply_to"
+	propEngramForwardedFrom = "engram_forwarded_from"
 )
 
 // convMM — вызовы Mattermost, которыми пользуются 900–902 и распределитель.
@@ -54,6 +58,7 @@ type convMM interface {
 	CreateChannel(channel *model.Channel) (*model.Channel, *model.AppError)
 	GetChannelByName(teamID, name string, includeDeleted bool) (*model.Channel, *model.AppError)
 	CreatePost(post *model.Post) (*model.Post, *model.AppError)
+	DeletePost(postID string) *model.AppError
 	GetConfig() *model.Config
 }
 
@@ -136,8 +141,8 @@ var carrierTeamsLockKey = advisoryKey("photon:carrier-teams")
 
 // convPermissions — права ролей v1 (ADR-099 §7.1), в порядке таблицы.
 var convPermissions = map[string][]string{
-	"owner":  {"conversation.update", "conversation.archive", "members.add", "members.remove", "roles.manage", "owner.transfer", "messages.send", "messages.read"},
-	"admin":  {"conversation.update", "members.add", "members.remove", "messages.send", "messages.read"},
+	"owner":  {"conversation.update", "conversation.archive", "members.add", "members.remove", "roles.manage", "owner.transfer", "messages.send", "messages.read", "messages.delete_any"},
+	"admin":  {"conversation.update", "members.add", "members.remove", "messages.send", "messages.read", "messages.delete_any"},
 	"member": {"messages.send", "messages.read"},
 }
 

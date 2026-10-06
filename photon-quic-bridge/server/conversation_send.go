@@ -35,6 +35,34 @@ type convSendPayload struct {
 	ConversationID string `json:"conversation_id"`
 	Text           string `json:"text"`
 	ClientMsgID    string `json:"client_msg_id"`
+	// ADR-109 §2.4–2.5: необязательные ответ и пересылка. Отсутствуют —
+	// прежнее поведение байт в байт, хэш ключа не меняется.
+	ReplyTo       *string                `json:"reply_to"`
+	ForwardedFrom *convForwardedFromWire `json:"forwarded_from"`
+}
+
+type convForwardedFromWire struct {
+	AuthorPhotonID string `json:"author_photon_id"`
+	CreatedAt      int64  `json:"created_at"`
+}
+
+// convSendHash — хэш содержания 930 для ключа §10.2. Без reply_to и
+// forwarded_from — SHA-256 текста, как до ADR-109 (ключи, созданные прежними
+// клиентами, остаются повторяемыми); переданные поля входят в хэш, и только
+// они.
+func convSendHash(p convSendPayload) []byte {
+	if p.ReplyTo == nil && p.ForwardedFrom == nil {
+		sum := sha256.Sum256([]byte(p.Text))
+		return sum[:]
+	}
+	canon := map[string]any{"text": p.Text}
+	if p.ReplyTo != nil {
+		canon["reply_to"] = *p.ReplyTo
+	}
+	if p.ForwardedFrom != nil {
+		canon["forwarded_from"] = map[string]any{"author_photon_id": p.ForwardedFrom.AuthorPhotonID, "created_at": p.ForwardedFrom.CreatedAt}
+	}
+	return convHash(canon)
 }
 
 // ConvMessage — сообщение ответа 930 (ADR-099 §9.1). id — непрозрачный id
@@ -46,6 +74,9 @@ type ConvMessage struct {
 	Text           string `json:"text"`
 	CreatedAt      int64  `json:"created_at"`
 	ClientMsgID    string `json:"client_msg_id"`
+	// ADR-109: как в элементе ленты; у обычного сообщения их нет.
+	ReplyTo       string             `json:"reply_to,omitempty"`
+	ForwardedFrom *ConvForwardedFrom `json:"forwarded_from,omitempty"`
 }
 
 type ConvSendResponse struct {
@@ -86,6 +117,14 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 	if countLinks(p.Text) > dmMaxLinks {
 		return convFail(errMessageTooManyLinks)
 	}
+	// Форма ответа и пересылки (ADR-109 §2.4–2.5): только форма; ссылка
+	// reply_to проверяется после доступа, под S.
+	if p.ReplyTo != nil && *p.ReplyTo == "" {
+		return convFail(convErrInvalidRequest)
+	}
+	if f := p.ForwardedFrom; f != nil && (!isCanonicalPhotonID(f.AuthorPhotonID) || f.CreatedAt <= 0) {
+		return convFail(convErrInvalidRequest)
+	}
 	pid, _, found, err := ownPhotonID(s.registry, s.users, callerID)
 	if err != nil {
 		return s.convFailFor("930 caller", err)
@@ -106,8 +145,7 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 	}
 	defer releaseSend()
 
-	sum := sha256.Sum256([]byte(p.Text))
-	slot, code, err := s.admitAndReserve(ctx, p.ConversationID, pid, cid, sum[:])
+	slot, code, err := s.admitAndReserve(ctx, p.ConversationID, pid, cid, convSendHash(p), p.ReplyTo)
 	if err != nil {
 		return s.convFailFor("930 reserve", err)
 	}
@@ -115,11 +153,20 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 		return convFail(code)
 	}
 	msg := ConvMessage{AuthorPhotonID: pid, Text: p.Text, CreatedAt: slot.pos, ClientMsgID: cid}
+	extra := map[string]any{}
+	if p.ReplyTo != nil {
+		msg.ReplyTo = *p.ReplyTo
+		extra[propEngramReplyTo] = *p.ReplyTo
+	}
+	if f := p.ForwardedFrom; f != nil {
+		msg.ForwardedFrom = &ConvForwardedFrom{AuthorPhotonID: f.AuthorPhotonID, CreatedAt: f.CreatedAt}
+		extra[propEngramForwardedFrom] = map[string]any{"author_photon_id": f.AuthorPhotonID, "created_at": f.CreatedAt}
+	}
 	if slot.found {
 		msg.ID = slot.postID
 		return Response{OK: true, Data: ConvSendResponse{Message: msg}}
 	}
-	postID, code := s.publishMessage(ctx, callerID, p.ConversationID, cid, p.Text, slot)
+	postID, code := s.publishMessage(ctx, callerID, p.ConversationID, cid, p.Text, slot, extra)
 	if code != "" {
 		return convFail(code)
 	}
@@ -132,7 +179,7 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 // выходе из функции — после COMMIT транзакции резерва, никак не раньше:
 // иначе изменение, зафиксированное между проверкой права и резервом,
 // встало бы раньше сообщения (ADR-101 §5.3).
-func (s *convService) admitAndReserve(ctx context.Context, convID, pid, cid string, hash []byte) (convSendSlot, string, error) {
+func (s *convService) admitAndReserve(ctx context.Context, convID, pid, cid string, hash []byte, replyTo *string) (convSendSlot, string, error) {
 	releaseS, err := s.holdSharedLock(ctx, convLockKey(convID))
 	if err != nil {
 		return convSendSlot{}, "", err
@@ -143,11 +190,25 @@ func (s *convService) admitAndReserve(ctx context.Context, convID, pid, cid stri
 	if err != nil || code != "" {
 		return convSendSlot{}, code, err
 	}
+	replyChecked := false
 	for attempt := 0; attempt < convSendReserveAttempts; attempt++ {
 		slot, code, done, err := lookupSendKey(ctx, s.db, convID, pid, cid, hash)
 		if err != nil || code != "" || done {
 			slot.channelID = channelID
 			return slot, code, err
+		}
+		// Ответ (ADR-109 §2.4): элемент-сообщение этого разговора, видимый
+		// автору и не удалённый. После поиска повтора: повтор уже
+		// выполненного запроса не зависит от судьбы целевого сообщения.
+		if replyTo != nil && !replyChecked {
+			t, err := lookupVisibleMessage(ctx, s.db, convID, pid, *replyTo)
+			if err != nil {
+				return convSendSlot{}, "", err
+			}
+			if t == nil || t.deleted {
+				return convSendSlot{}, convErrInvalidRequest, nil
+			}
+			replyChecked = true
 		}
 		pos, again, err := s.reserveMessage(ctx, convID, pid, cid, hash)
 		if err != nil {
@@ -290,11 +351,14 @@ VALUES ($1, $2, 'message', $3, 'reserved', $4, $5, $6)`, convID, pos, cid, pid, 
 
 // publishMessage — contract §3.4–§3.5. Возвращает id поста или код отказа;
 // успех сообщается только после условного перехода reserved → published.
-func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid, text string, slot convSendSlot) (string, string) {
+func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid, text string, slot convSendSlot, extra map[string]any) (string, string) {
 	// PendingPostId не задаётся (contract §3.4: либо не задаётся, либо
 	// ключ + позиция): дедупликация Mattermost по нему не сверяет CreateAt.
 	post := &model.Post{ChannelId: slot.channelID, UserId: callerID, Message: text, CreateAt: slot.pos}
 	post.AddProp(dmPropClientMsgID, cid)
+	for k, v := range extra {
+		post.AddProp(k, v)
+	}
 	created, appErr := s.mm.CreatePost(post)
 	switch {
 	case createPostRejected(appErr):

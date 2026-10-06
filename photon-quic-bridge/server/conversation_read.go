@@ -255,7 +255,7 @@ func (s *convService) lastVisibleItem(ctx context.Context, convID, channelID, po
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	it, ok := convItemOf(rows[0], pid)
+	it, ok := convItemOf(rows[0], pid, periods)
 	if !ok {
 		return nil, nil
 	}

@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 7
+const convSchemaVersion = 8
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -193,6 +193,21 @@ CREATE TABLE engram_read_state (
   PRIMARY KEY (conversation_id, photon_id)
 );
 `,
+	// v8 — правка и удаление для всех (ADR-109 §2.1–2.2; contract §5b.2):
+	// отметка удаления и счётчик правок на позиции сообщения; текущий текст
+	// после правки — отдельная таблица (пост-носитель при правке не меняется).
+	`
+ALTER TABLE engram_position ADD COLUMN deleted_at bigint;
+ALTER TABLE engram_position ADD COLUMN edit_version int NOT NULL DEFAULT 0;
+CREATE TABLE engram_item_edit (
+  conversation_id text   NOT NULL,
+  item_id         text   NOT NULL,
+  text            text   NOT NULL,
+  edit_version    int    NOT NULL,
+  updated_at      bigint NOT NULL,
+  PRIMARY KEY (conversation_id, item_id)
+);
+`,
 }
 
 var (
@@ -307,11 +322,11 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы (v1–v7).
+// convSchemaTables — таблицы схемы (v1–v8).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
-	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state",
+	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state", "engram_item_edit",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -398,6 +413,18 @@ WHERE table_schema = current_schema() AND table_name = 'engram_conversation' AND
 	}
 	if hType.String != "bigint" {
 		problems = append(problems, fmt.Sprintf("engram_conversation.position_h: тип %q, ожидался \"bigint\"", hType.String))
+	}
+
+	// v8: колонки позиции сообщения для правки и удаления (ADR-109).
+	for _, col := range []struct{ name, typ string }{{"deleted_at", "bigint"}, {"edit_version", "integer"}} {
+		var colType sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name = 'engram_position' AND column_name = $1`, col.name).Scan(&colType); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("conversation: чтение схемы: %w", err)
+		}
+		if colType.String != col.typ {
+			problems = append(problems, fmt.Sprintf("engram_position.%s: тип %q, ожидался %q", col.name, colType.String, col.typ))
+		}
 	}
 
 	var kindDef sql.NullString

@@ -38,6 +38,9 @@ type convChange struct {
 	nextPos     int64  // следующая позиция для события
 	events      []convEventBody
 	ats         []int64
+	// itemEvent — события элемента ленты (932, 933): версия разговора не
+	// растёт (ADR-099 §10.1), событие несёт текущую.
+	itemEvent bool
 }
 
 // addEvent — событие изменения: позиция из H (P, P+1, … в порядке событий).
@@ -66,6 +69,11 @@ type convChangeSpec struct {
 	// (ADR-106 §2.1). Он же применяется к direct как «нет изменения»: direct
 	// не архивируется никогда (ADR-106 §2.6).
 	allowArchived bool
+	// allowDirect — изменение допустимо в direct (932, 933: ADR-104 §3.1,
+	// ADR-109 — одна модель для direct и групп).
+	allowDirect bool
+	// itemEvent — событие элемента ленты, не меняющее разговор (932, 933).
+	itemEvent bool
 }
 
 var convRoleRank = map[string]int{"owner": 3, "admin": 2, "member": 1}
@@ -156,7 +164,7 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 	}
 	// direct не меняется ни одним из 903/904/910–912/920/921: оба участника
 	// всегда active (ADR-104 §3.1); после доступа, ADR-099 §11.
-	if kind == "direct" && !spec.allowArchived {
+	if kind == "direct" && !spec.allowArchived && !spec.allowDirect {
 		return nil, convErrInvalidRequest, nil, nil
 	}
 	if state == "archived" && !spec.allowArchived {
@@ -171,6 +179,9 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 	}
 
 	c.nextVersion = c.version + 1
+	if spec.itemEvent {
+		c.nextVersion, c.itemEvent = c.version, true
+	}
 	// P = max(часы Bridge, H + 1) (ADR-101 §5.1).
 	clock := s.now()
 	c.nextPos = clock
@@ -219,14 +230,25 @@ WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, spec.action, spe
 // (ADR-101 §5.1, §5.2); общая для runChange и 916.
 func (s *convService) persistChange(ctx context.Context, c *convChange) error {
 	tx := c.tx
+	// События элементов ленты не меняют версию, поэтому несколько событий
+	// одной версии различаются seq: нумерация продолжает занятую (ADR-109,
+	// contract §5b.2). Для изменений разговора seq начинается с нуля.
+	seqBase := 0
+	if c.itemEvent {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq) + 1, 0) FROM engram_event
+WHERE conversation_id = $1 AND version = $2`, c.convID, c.nextVersion).Scan(&seqBase); err != nil {
+			return err
+		}
+	}
 	for i, ev := range c.events {
 		body, err := json.Marshal(ev)
 		if err != nil {
 			return err
 		}
-		key := fmt.Sprintf("%s:%d:%d", c.convID, c.nextVersion, i)
+		seq := seqBase + i
+		key := fmt.Sprintf("%s:%d:%d", c.convID, c.nextVersion, seq)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO engram_event (conversation_id, version, seq, event, at, state)
-	VALUES ($1, $2, $3, $4, $5, 'pending')`, c.convID, c.nextVersion, i, body, c.ats[i]); err != nil {
+	VALUES ($1, $2, $3, $4, $5, 'pending')`, c.convID, c.nextVersion, seq, body, c.ats[i]); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO engram_position (conversation_id, pos, item_kind, item_key, state, reserved_at)
