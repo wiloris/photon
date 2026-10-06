@@ -319,6 +319,7 @@ type convUpdatePayload struct {
 	ExpectedVersion *int64  `json:"expected_version"`
 	Title           *string `json:"title"`
 	Description     *string `json:"description"`
+	Visibility      *string `json:"visibility"`
 }
 
 func (s *convService) updateConversation(ctx context.Context, callerID string, raw json.RawMessage) Response {
@@ -332,9 +333,15 @@ func (s *convService) updateConversation(ctx context.Context, callerID string, r
 	if p.Description != nil && utf8.RuneCountInString(*p.Description) > convDescriptionMaxRunes {
 		return convFail(convErrInvalidRequest)
 	}
+	if p.Visibility != nil && *p.Visibility != "private" && *p.Visibility != "public" {
+		return convFail(convErrInvalidRequest)
+	}
 	canon := map[string]any{"conversation_id": p.ConversationID}
 	if p.ExpectedVersion != nil {
 		canon["expected_version"] = *p.ExpectedVersion
+	}
+	if p.Visibility != nil {
+		canon["visibility"] = *p.Visibility
 	}
 	if p.Title != nil {
 		canon["title"] = *p.Title
@@ -345,8 +352,8 @@ func (s *convService) updateConversation(ctx context.Context, callerID string, r
 	spec := convChangeSpec{action: ActionConversationUpdate, requestID: p.RequestID, conversationID: p.ConversationID,
 		hash: convHash(canon), permission: "conversation.update", expectedVersion: p.ExpectedVersion}
 	return s.runChange(ctx, callerID, spec, func(ctx context.Context, c *convChange) (any, bool, string, error) {
-		var title, desc string
-		if err := c.tx.QueryRowContext(ctx, `SELECT title, description FROM engram_conversation WHERE conversation_id = $1`, c.convID).Scan(&title, &desc); err != nil {
+		var title, desc, visibility string
+		if err := c.tx.QueryRowContext(ctx, `SELECT title, description, visibility FROM engram_conversation WHERE conversation_id = $1`, c.convID).Scan(&title, &desc, &visibility); err != nil {
 			return nil, false, "", err
 		}
 		ev := convEventBody{Event: "metadata_changed", ActorPhotonID: c.callerPID}
@@ -357,10 +364,13 @@ func (s *convService) updateConversation(ctx context.Context, callerID string, r
 		if p.Description != nil && *p.Description != desc {
 			desc, ev.Description, changed = *p.Description, *p.Description, true
 		}
+		if p.Visibility != nil && *p.Visibility != visibility {
+			visibility, ev.Visibility, changed = *p.Visibility, *p.Visibility, true
+		}
 		if !changed {
 			return convSnapshotData{}, false, "", nil
 		}
-		if _, err := c.tx.ExecContext(ctx, `UPDATE engram_conversation SET title = $2, description = $3 WHERE conversation_id = $1`, c.convID, title, desc); err != nil {
+		if _, err := c.tx.ExecContext(ctx, `UPDATE engram_conversation SET title = $2, description = $3, visibility = $4 WHERE conversation_id = $1`, c.convID, title, desc, visibility); err != nil {
 			return nil, false, "", err
 		}
 		c.addEvent(ev)

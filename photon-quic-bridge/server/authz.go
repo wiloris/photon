@@ -626,14 +626,16 @@ var rules = map[int]rule{
 	ActionConversationSync:          {objNone, authenticated()},
 
 	// Messaging v2 (ADR-104–107): то же правило (ADR-099 §2.4), доступ решает обработчик.
-	ActionConversationOpenDirect:     {objNone, authenticated()},
-	ActionConversationUnarchive:      {objNone, authenticated()},
-	ActionConversationMemberStateSet: {objNone, authenticated()},
-	ActionConversationInviteCreate:   {objNone, authenticated()},
-	ActionConversationInviteRevoke:   {objNone, authenticated()},
-	ActionConversationInviteList:     {objNone, authenticated()},
-	ActionConversationJoinByInvite:   {objNone, authenticated()},
-	ActionConversationHistoryBefore:  {objNone, authenticated()},
+	ActionConversationOpenDirect:      {objNone, authenticated()},
+	ActionConversationUnarchive:       {objNone, authenticated()},
+	ActionConversationMemberStateSet:  {objNone, authenticated()},
+	ActionConversationInviteCreate:    {objNone, authenticated()},
+	ActionConversationInviteRevoke:    {objNone, authenticated()},
+	ActionConversationInviteList:      {objNone, authenticated()},
+	ActionConversationJoinByInvite:    {objNone, authenticated()},
+	ActionConversationDirectorySearch: {objNone, authenticated()},
+	ActionConversationJoinPublic:      {objNone, authenticated()},
+	ActionConversationHistoryBefore:   {objNone, authenticated()},
 }
 
 // authorize — единственная точка принятия решения. Вызывается Dispatcher'ом до

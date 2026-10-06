@@ -55,6 +55,7 @@ type ConvListItem struct {
 	Kind                string `json:"kind"`
 	Title               string `json:"title"`
 	State               string `json:"state"`
+	Visibility          string `json:"visibility"`
 	ConversationVersion int64  `json:"conversation_version"`
 	MemberCount         int    `json:"member_count"`
 	MyRole              string `json:"my_role"`
@@ -136,7 +137,7 @@ func (s *convService) listConversations(ctx context.Context, callerID string, ra
 	now := s.now()
 	const hiddenExpr = `(ms.hidden_at IS NOT NULL AND (c.last_activity_at <= ms.hidden_at OR COALESCE(ms.muted_until > $2, false)))`
 	base := `SELECT c.conversation_id, c.kind, c.title, c.state, c.version, c.member_count, m.role, c.last_activity_at,
-       c.history_policy, c.carrier_channel_id, ` + hiddenExpr + `, ms.pinned_at, ms.muted_until
+       c.history_policy, c.carrier_channel_id, c.visibility, ` + hiddenExpr + `, ms.pinned_at, ms.muted_until
 FROM engram_member_period m
 CROSS JOIN LATERAL (SELECT * FROM engram_conversation c
                     WHERE c.conversation_id = m.conversation_id LIMIT 1) c
@@ -157,7 +158,7 @@ WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived
 			var channelID sql.NullString
 			var pinned, muted sql.NullInt64
 			if err := rows.Scan(&it.ConversationID, &it.Kind, &it.Title, &it.State, &it.ConversationVersion,
-				&it.MemberCount, &it.MyRole, &it.LastActivityAt, &policy, &channelID,
+				&it.MemberCount, &it.MyRole, &it.LastActivityAt, &policy, &channelID, &it.Visibility,
 				&it.MemberState.Hidden, &pinned, &muted); err != nil {
 				return err
 			}

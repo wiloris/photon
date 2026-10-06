@@ -173,14 +173,16 @@ const (
 	ActionConversationSync          = int(photonpb.Action_ACTION_CONVERSATION_SYNC)
 
 	// Messaging v2 (ADR-104–107), срез M1: коды и заглушки без поведения.
-	ActionConversationOpenDirect     = int(photonpb.Action_ACTION_CONVERSATION_OPEN_DIRECT)
-	ActionConversationUnarchive      = int(photonpb.Action_ACTION_CONVERSATION_UNARCHIVE)
-	ActionConversationMemberStateSet = int(photonpb.Action_ACTION_CONVERSATION_MEMBER_STATE_SET)
-	ActionConversationInviteCreate   = int(photonpb.Action_ACTION_CONVERSATION_INVITE_CREATE)
-	ActionConversationInviteRevoke   = int(photonpb.Action_ACTION_CONVERSATION_INVITE_REVOKE)
-	ActionConversationInviteList     = int(photonpb.Action_ACTION_CONVERSATION_INVITE_LIST)
-	ActionConversationJoinByInvite   = int(photonpb.Action_ACTION_CONVERSATION_JOIN_BY_INVITE)
-	ActionConversationHistoryBefore  = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
+	ActionConversationOpenDirect      = int(photonpb.Action_ACTION_CONVERSATION_OPEN_DIRECT)
+	ActionConversationUnarchive       = int(photonpb.Action_ACTION_CONVERSATION_UNARCHIVE)
+	ActionConversationMemberStateSet  = int(photonpb.Action_ACTION_CONVERSATION_MEMBER_STATE_SET)
+	ActionConversationInviteCreate    = int(photonpb.Action_ACTION_CONVERSATION_INVITE_CREATE)
+	ActionConversationInviteRevoke    = int(photonpb.Action_ACTION_CONVERSATION_INVITE_REVOKE)
+	ActionConversationInviteList      = int(photonpb.Action_ACTION_CONVERSATION_INVITE_LIST)
+	ActionConversationJoinByInvite    = int(photonpb.Action_ACTION_CONVERSATION_JOIN_BY_INVITE)
+	ActionConversationDirectorySearch = int(photonpb.Action_ACTION_CONVERSATION_DIRECTORY_SEARCH)
+	ActionConversationJoinPublic      = int(photonpb.Action_ACTION_CONVERSATION_JOIN_PUBLIC)
+	ActionConversationHistoryBefore   = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

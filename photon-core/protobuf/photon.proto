@@ -251,7 +251,7 @@ enum Action {
   ACTION_OUTBOX_LIST     = 812;
 
   // ── ConversationResource (900-999), ADR-099 §2.2 ──────────────────────────
-  // Групповые разговоры ENGRAM (ADR-098). 905-909, 913-919, 922-929 и
+  // Групповые разговоры ENGRAM (ADR-098). 905-909, 919, 922-929 и
   // 932-999 зарезервированы без семантики (ADR-099 §2.3).
   //
   // Payload'ы этих кодов в oneof PhotonRequest/PhotonResponse НЕ
@@ -276,6 +276,9 @@ enum Action {
   ACTION_CONVERSATION_INVITE_REVOKE  = 914;
   ACTION_CONVERSATION_INVITE_LIST    = 915;
   ACTION_CONVERSATION_JOIN_BY_INVITE = 916;
+  // ADR-107 этап 2: публичные разговоры — каталог и вступление.
+  ACTION_CONVERSATION_DIRECTORY_SEARCH = 917;
+  ACTION_CONVERSATION_JOIN_PUBLIC    = 918;
   ACTION_CONVERSATION_ROLE_SET       = 920;
   ACTION_CONVERSATION_OWNER_TRANSFER = 921;
   ACTION_CONVERSATION_SEND           = 930;

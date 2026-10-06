@@ -155,6 +155,7 @@ type ConvSnapshot struct {
 	Description         string `json:"description"`
 	State               string `json:"state"`
 	HistoryPolicy       string `json:"history_policy"`
+	Visibility          string `json:"visibility"`
 	ConversationVersion int64  `json:"conversation_version"`
 	CreatedAt           int64  `json:"created_at"`
 	CreatedBy           string `json:"created_by"`
@@ -184,8 +185,8 @@ func snapshotFor(ctx context.Context, q convQuerier, conversationID, callerPID s
 	var r ConvSnapshotResponse
 	c := &r.Conversation
 	if err := q.QueryRowContext(ctx, `SELECT conversation_id, kind, title, description, state, history_policy,
-version, created_at, created_by, member_count FROM engram_conversation WHERE conversation_id = $1`, conversationID).
-		Scan(&c.ConversationID, &c.Kind, &c.Title, &c.Description, &c.State, &c.HistoryPolicy,
+visibility, version, created_at, created_by, member_count FROM engram_conversation WHERE conversation_id = $1`, conversationID).
+		Scan(&c.ConversationID, &c.Kind, &c.Title, &c.Description, &c.State, &c.HistoryPolicy, &c.Visibility,
 			&c.ConversationVersion, &c.CreatedAt, &c.CreatedBy, &c.MemberCount); err != nil {
 		return r, err
 	}

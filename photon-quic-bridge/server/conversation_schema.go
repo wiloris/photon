@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 5
+const convSchemaVersion = 6
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -173,6 +173,12 @@ CREATE TABLE engram_invite (
   revoked_at      bigint
 );
 CREATE INDEX engram_invite_conversation ON engram_invite (conversation_id);
+`,
+	// v6 — публичные разговоры (ADR-107 этап 2): правило visibility; прежние
+	// строки — private.
+	`
+ALTER TABLE engram_conversation ADD COLUMN visibility text NOT NULL DEFAULT 'private';
+ALTER TABLE engram_conversation ADD CONSTRAINT engram_conversation_visibility_check CHECK (visibility IN ('private','public'));
 `,
 }
 

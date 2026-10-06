@@ -31,6 +31,7 @@ type convCreatePayload struct {
 	Title           string    `json:"title"`
 	Description     *string   `json:"description"`
 	HistoryPolicy   string    `json:"history_policy"`
+	Visibility      *string   `json:"visibility"`
 	MemberPhotonIDs *[]string `json:"member_photon_ids"`
 }
 
@@ -56,6 +57,10 @@ func canonicalCreateHash(p convCreatePayload) []byte {
 	if p.Description != nil {
 		canon["description"] = *p.Description
 	}
+	// visibility входит в хэш только когда передано: хэш прежних запросов не меняется.
+	if p.Visibility != nil {
+		canon["visibility"] = *p.Visibility
+	}
 	b, _ := json.Marshal(canon) // ключи map сериализуются отсортированными
 	h := sha256.Sum256(b)
 	return h[:]
@@ -76,6 +81,13 @@ func parseCreate(raw json.RawMessage) (convCreatePayload, bool) {
 	}
 	if p.Description != nil && utf8.RuneCountInString(*p.Description) > convDescriptionMaxRunes {
 		return p, false
+	}
+	if p.Visibility != nil && *p.Visibility != "private" && *p.Visibility != "public" {
+		return p, false
+	}
+	// public без history_policy — full (ADR-107 Q3); private — обязательно, как было.
+	if p.HistoryPolicy == "" && p.Visibility != nil && *p.Visibility == "public" {
+		p.HistoryPolicy = "full"
 	}
 	if p.HistoryPolicy != "full" && p.HistoryPolicy != "since_join" {
 		return p, false
@@ -241,10 +253,14 @@ VALUES ($1, $2, $3, $4, 'pending', $5) ON CONFLICT DO NOTHING`, pid, ActionConve
 	if p.Description != nil {
 		desc = *p.Description
 	}
+	visibility := "private"
+	if p.Visibility != nil {
+		visibility = *p.Visibility
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO engram_conversation (conversation_id, kind, state, title, description,
 history_policy, version, created_at, created_by, member_count, last_activity_at, carrier_state, carrier_team,
-carrier_name, reserved_at) VALUES ($1, 'group', 'creating', $2, $3, $4, 0, $5, $6, 0, 0, 'reserved', $7, $8, $5)`,
-		convID, p.Title, desc, p.HistoryPolicy, now, pid, team, carrierChannelPrefix+convID); err != nil {
+carrier_name, reserved_at, visibility) VALUES ($1, 'group', 'creating', $2, $3, $4, 0, $5, $6, 0, 0, 'reserved', $7, $8, $5, $9)`,
+		convID, p.Title, desc, p.HistoryPolicy, now, pid, team, carrierChannelPrefix+convID, visibility); err != nil {
 		return "", true, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE engram_request SET conversation_id = $4
@@ -435,6 +451,7 @@ type convEventBody struct {
 	Title          string `json:"title,omitempty"`
 	Description    string `json:"description,omitempty"`
 	InviteID       string `json:"invite_id,omitempty"`
+	Visibility     string `json:"visibility,omitempty"`
 	Version        int64  `json:"conversation_version"`
 }
 

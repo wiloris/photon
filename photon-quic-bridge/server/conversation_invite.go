@@ -273,7 +273,7 @@ func (s *convService) joinByInvite(ctx context.Context, callerID string, raw jso
 
 	// Повтор по §10.2 — первым: выполненный запрос отвечает сохранённым,
 	// даже если приглашение уже отозвано или исчерпано.
-	if data, code, done, err := s.joinStoredKey(ctx, s.db, pid, p.RequestID, reqHash); err != nil {
+	if data, code, done, err := s.joinStoredKey(ctx, s.db, ActionConversationJoinByInvite, pid, p.RequestID, reqHash); err != nil {
 		return s.convFailFor("916 key", err)
 	} else if code != "" {
 		return convFail(code)
@@ -310,11 +310,11 @@ func (s *convService) joinByInvite(ctx context.Context, callerID string, raw jso
 
 // joinStoredKey читает ключ §10.2: done — сохранённый ответ; code —
 // idempotency_conflict; ни того ни другого — ключа нет.
-func (s *convService) joinStoredKey(ctx context.Context, q convQuerier, pid, requestID string, reqHash []byte) (json.RawMessage, string, bool, error) {
+func (s *convService) joinStoredKey(ctx context.Context, q convQuerier, action int, pid, requestID string, reqHash []byte) (json.RawMessage, string, bool, error) {
 	var gotHash, response []byte
 	var state string
 	err := q.QueryRowContext(ctx, `SELECT payload_hash, state, response FROM engram_request
-WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, ActionConversationJoinByInvite, requestID).Scan(&gotHash, &state, &response)
+WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, action, requestID).Scan(&gotHash, &state, &response)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", false, nil
 	}
@@ -343,7 +343,7 @@ VALUES ($1, $2, $3, $4, NULL, 'pending', $5) ON CONFLICT DO NOTHING`, pid, Actio
 		return nil, "", err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		data, code, done, err := s.joinStoredKey(ctx, tx, pid, requestID, reqHash)
+		data, code, done, err := s.joinStoredKey(ctx, tx, ActionConversationJoinByInvite, pid, requestID, reqHash)
 		if err != nil || code != "" {
 			return nil, code, err
 		}
