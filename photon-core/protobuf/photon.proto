@@ -268,6 +268,8 @@ enum Action {
   // ADR-106: разархивирование; личное состояние участника (скрыт/закреплён/без звука).
   ACTION_CONVERSATION_UNARCHIVE      = 906;
   ACTION_CONVERSATION_MEMBER_STATE_SET = 907;
+  // ADR-108: позиция прочтения участника и счётчик непрочитанного.
+  ACTION_CONVERSATION_MARK_READ      = 908;
   ACTION_CONVERSATION_MEMBERS_ADD    = 910;
   ACTION_CONVERSATION_MEMBER_REMOVE  = 911;
   ACTION_CONVERSATION_LEAVE          = 912;

@@ -635,6 +635,7 @@ var rules = map[int]rule{
 	ActionConversationJoinByInvite:    {objNone, authenticated()},
 	ActionConversationDirectorySearch: {objNone, authenticated()},
 	ActionConversationJoinPublic:      {objNone, authenticated()},
+	ActionConversationMarkRead:        {objNone, authenticated()},
 	ActionConversationHistoryBefore:   {objNone, authenticated()},
 }
 

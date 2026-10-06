@@ -68,6 +68,11 @@ type ConvListItem struct {
 	// MemberState — личное состояние вызывающего; hidden — действующее по
 	// правилу чтения (contract §4), не сохранённый флаг.
 	MemberState ConvMemberState `json:"member_state"`
+	// ReadUpTo — позиция прочтения вызывающего; null, если отметки нет
+	// (ADR-108 §2.4). UnreadCount — чужие опубликованные сообщения новее неё,
+	// не больше 999.
+	ReadUpTo    *dmWirePosition `json:"read_up_to"`
+	UnreadCount int             `json:"unread_count"`
 }
 
 type ConvListResponse struct {
@@ -137,11 +142,13 @@ func (s *convService) listConversations(ctx context.Context, callerID string, ra
 	now := s.now()
 	const hiddenExpr = `(ms.hidden_at IS NOT NULL AND (c.last_activity_at <= ms.hidden_at OR COALESCE(ms.muted_until > $2, false)))`
 	base := `SELECT c.conversation_id, c.kind, c.title, c.state, c.version, c.member_count, m.role, c.last_activity_at,
-       c.history_policy, c.carrier_channel_id, c.visibility, ` + hiddenExpr + `, ms.pinned_at, ms.muted_until
+       c.history_policy, c.carrier_channel_id, c.visibility, ` + hiddenExpr + `, ms.pinned_at, ms.muted_until,
+       rs.read_created_at, rs.read_id
 FROM engram_member_period m
 CROSS JOIN LATERAL (SELECT * FROM engram_conversation c
                     WHERE c.conversation_id = m.conversation_id LIMIT 1) c
 LEFT JOIN engram_member_state ms ON ms.conversation_id = m.conversation_id AND ms.photon_id = m.photon_id
+LEFT JOIN engram_read_state rs ON rs.conversation_id = m.conversation_id AND rs.photon_id = m.photon_id
 WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived')
   AND ($3 OR NOT ` + hiddenExpr + `)`
 	type listMeta struct{ policy, channelID string }
@@ -156,10 +163,11 @@ WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived
 			var it ConvListItem
 			var policy string
 			var channelID sql.NullString
-			var pinned, muted sql.NullInt64
+			var pinned, muted, readAt sql.NullInt64
+			var readID sql.NullString
 			if err := rows.Scan(&it.ConversationID, &it.Kind, &it.Title, &it.State, &it.ConversationVersion,
 				&it.MemberCount, &it.MyRole, &it.LastActivityAt, &policy, &channelID, &it.Visibility,
-				&it.MemberState.Hidden, &pinned, &muted); err != nil {
+				&it.MemberState.Hidden, &pinned, &muted, &readAt, &readID); err != nil {
 				return err
 			}
 			if pinned.Valid {
@@ -167,6 +175,9 @@ WHERE m.photon_id = $1 AND m.state = 'active' AND c.state IN ('active','archived
 			}
 			if muted.Valid {
 				it.MemberState.MutedUntil = &muted.Int64
+			}
+			if readAt.Valid && readID.Valid {
+				it.ReadUpTo = &dmWirePosition{CreatedAt: readAt.Int64, ID: readID.String}
 			}
 			out.Conversations = append(out.Conversations, it)
 			metas = append(metas, listMeta{policy, channelID.String})
@@ -212,6 +223,9 @@ WHERE conversation_id = $1 AND state = 'active' AND photon_id <> $2 ORDER BY pho
 			return s.convFailFor("902 last_item", err)
 		}
 		it.LastItem = item
+		if it.UnreadCount, err = s.unreadCount(ctx, s.db, it.ConversationID, metas[i].channelID, metas[i].policy, pid, it.ReadUpTo); err != nil {
+			return s.convFailFor("902 unread", err)
+		}
 	}
 	return Response{OK: true, Data: out}
 }

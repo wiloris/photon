@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 6
+const convSchemaVersion = 7
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -180,6 +180,19 @@ CREATE INDEX engram_invite_conversation ON engram_invite (conversation_id);
 ALTER TABLE engram_conversation ADD COLUMN visibility text NOT NULL DEFAULT 'private';
 ALTER TABLE engram_conversation ADD CONSTRAINT engram_conversation_visibility_check CHECK (visibility IN ('private','public'));
 `,
+	// v7 — позиция прочтения участника (ADR-108 §2.1; contract §5b.1):
+	// отдельная таблица, а не столбцы engram_member_state — у них разный
+	// смысл updated_at.
+	`
+CREATE TABLE engram_read_state (
+  conversation_id text   NOT NULL,
+  photon_id       text   NOT NULL,
+  read_created_at bigint NOT NULL,
+  read_id         text   NOT NULL,
+  updated_at      bigint NOT NULL,
+  PRIMARY KEY (conversation_id, photon_id)
+);
+`,
 }
 
 var (
@@ -294,11 +307,11 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы (v1 и v3).
+// convSchemaTables — таблицы схемы (v1–v7).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
-	"engram_direct_pair", "engram_member_state", "engram_invite",
+	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
