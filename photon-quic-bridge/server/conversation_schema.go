@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 4
+const convSchemaVersion = 5
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -158,6 +158,22 @@ CREATE TABLE engram_member_state (
 );
 CREATE INDEX engram_member_state_pinned ON engram_member_state (photon_id) WHERE pinned_at IS NOT NULL;
 `,
+	// v5 — приглашения по ссылке (ADR-107 этап 1). Хранится только SHA-256
+	// токена; токен 128 бит виден лишь в ответе 913 и в сохранённом ответе ключа.
+	`
+CREATE TABLE engram_invite (
+  invite_id       text   PRIMARY KEY,
+  conversation_id text   NOT NULL,
+  token_hash      bytea  NOT NULL UNIQUE,
+  created_by      text,
+  created_at      bigint,
+  expires_at      bigint,
+  max_uses        int,
+  uses            int    NOT NULL DEFAULT 0,
+  revoked_at      bigint
+);
+CREATE INDEX engram_invite_conversation ON engram_invite (conversation_id);
+`,
 }
 
 var (
@@ -276,7 +292,7 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
-	"engram_direct_pair", "engram_member_state",
+	"engram_direct_pair", "engram_member_state", "engram_invite",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -307,6 +323,9 @@ var convSchemaIndexes = map[string]convIndexSpec{
 	"engram_direct_pair_conversation_id_key": {"engram_direct_pair", "(conversation_id)", true, ""},
 	// закреплённые одного участника (ADR-106 Q4)
 	"engram_member_state_pinned": {"engram_member_state", "(photon_id)", false, "pinned_at IS NOT NULL"},
+	// приглашения: по разговору и по хэшу токена (ADR-107 этап 1)
+	"engram_invite_conversation":   {"engram_invite", "(conversation_id)", false, ""},
+	"engram_invite_token_hash_key": {"engram_invite", "(token_hash)", true, ""},
 }
 
 // checkConversationSchema — проверка при активации (ADR-100 §2.6): драйвер,

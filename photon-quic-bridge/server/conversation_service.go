@@ -69,6 +69,9 @@ type convService struct {
 	lockWait  time.Duration
 	pollEvery time.Duration
 	logger    func(msg string, keyValuePairs ...any)
+
+	// joinRL — предел попыток 916 (contract §5); создаётся при первом обращении.
+	joinRL *joinLimiter
 }
 
 var (

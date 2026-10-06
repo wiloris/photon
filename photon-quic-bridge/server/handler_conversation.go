@@ -18,7 +18,7 @@ const convCallTimeout = 60 * time.Second
 // ConversationHandler — сотня 900: групповые разговоры ENGRAM (ADR-099).
 //
 // service == nil — схема Bridge не готова (ADR-100 §2.6): каждый код v1
-// отвечает temporarily_unavailable. Реализованы 900–921, 930, 931, 905, 906, 907 и 940.
+// отвечает temporarily_unavailable. Реализованы 900–921 (включая 913–916), 930, 931, 905, 906, 907 и 940.
 type ConversationHandler struct {
 	plugin  *Plugin
 	service *convService
@@ -49,17 +49,15 @@ func (h *ConversationHandler) Handle(userID string, action int, raw json.RawMess
 		ActionConversationMembersAdd, ActionConversationMemberRemove, ActionConversationLeave,
 		ActionConversationRoleSet, ActionConversationOwnerTransfer, ActionConversationSend,
 		ActionConversationSync, ActionConversationOpenDirect, ActionConversationHistoryBefore,
-		ActionConversationUnarchive, ActionConversationMemberStateSet:
+		ActionConversationUnarchive, ActionConversationMemberStateSet,
+		ActionConversationInviteCreate, ActionConversationInviteRevoke, ActionConversationInviteList,
+		ActionConversationJoinByInvite:
 		if h.service == nil {
 			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
 		defer cancel()
 		return h.service.dispatch(ctx, userID, action, raw)
-	case ActionConversationInviteCreate, ActionConversationInviteRevoke, ActionConversationInviteList,
-		ActionConversationJoinByInvite:
-		// Messaging v2, срез M1: код принят, поведения нет — честный отказ, не ложный успех (ADR-100 §2.6).
-		return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 	}
@@ -100,6 +98,14 @@ func (s *convService) dispatch(ctx context.Context, userID string, action int, r
 		return s.unarchiveConversation(ctx, userID, raw)
 	case ActionConversationMemberStateSet:
 		return s.setMemberState(ctx, userID, raw)
+	case ActionConversationInviteCreate:
+		return s.createInvite(ctx, userID, raw)
+	case ActionConversationInviteRevoke:
+		return s.revokeInvite(ctx, userID, raw)
+	case ActionConversationInviteList:
+		return s.listInvites(ctx, userID, raw)
+	case ActionConversationJoinByInvite:
+		return s.joinByInvite(ctx, userID, raw)
 	}
 	return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 }

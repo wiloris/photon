@@ -434,6 +434,7 @@ type convEventBody struct {
 	Role           string `json:"role,omitempty"`
 	Title          string `json:"title,omitempty"`
 	Description    string `json:"description,omitempty"`
+	InviteID       string `json:"invite_id,omitempty"`
 	Version        int64  `json:"conversation_version"`
 }
 

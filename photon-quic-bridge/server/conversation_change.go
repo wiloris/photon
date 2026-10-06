@@ -186,27 +186,7 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 		return nil, code, nil, nil
 	}
 	if changed {
-		for i, ev := range c.events {
-			body, err := json.Marshal(ev)
-			if err != nil {
-				return nil, "", nil, err
-			}
-			key := fmt.Sprintf("%s:%d:%d", c.convID, c.nextVersion, i)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO engram_event (conversation_id, version, seq, event, at, state)
-VALUES ($1, $2, $3, $4, $5, 'pending')`, c.convID, c.nextVersion, i, body, c.ats[i]); err != nil {
-				return nil, "", nil, err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO engram_position (conversation_id, pos, item_kind, item_key, state, reserved_at)
-VALUES ($1, $2, 'event', $3, 'reserved', $4)`, c.convID, c.ats[i], key, s.now()); err != nil {
-				return nil, "", nil, err
-			}
-		}
-		newH := c.h
-		if len(c.ats) > 0 {
-			newH = c.ats[len(c.ats)-1]
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE engram_conversation SET version = $2, position_h = $3, member_count = $4
-WHERE conversation_id = $1`, c.convID, c.nextVersion, newH, c.memberCount); err != nil {
+		if err := s.persistChange(ctx, c); err != nil {
 			return nil, "", nil, err
 		}
 	}
@@ -233,6 +213,36 @@ WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, spec.action, spe
 		s.observePositionLead(fmt.Sprint(spec.action), c.convID, c.ats[0], clock)
 	}
 	return body, "", nil, nil
+}
+
+// persistChange — события изменения, их резервы позиций, version и H
+// (ADR-101 §5.1, §5.2); общая для runChange и 916.
+func (s *convService) persistChange(ctx context.Context, c *convChange) error {
+	tx := c.tx
+	for i, ev := range c.events {
+		body, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		key := fmt.Sprintf("%s:%d:%d", c.convID, c.nextVersion, i)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO engram_event (conversation_id, version, seq, event, at, state)
+	VALUES ($1, $2, $3, $4, $5, 'pending')`, c.convID, c.nextVersion, i, body, c.ats[i]); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO engram_position (conversation_id, pos, item_kind, item_key, state, reserved_at)
+	VALUES ($1, $2, 'event', $3, 'reserved', $4)`, c.convID, c.ats[i], key, s.now()); err != nil {
+			return err
+		}
+	}
+	newH := c.h
+	if len(c.ats) > 0 {
+		newH = c.ats[len(c.ats)-1]
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE engram_conversation SET version = $2, position_h = $3, member_count = $4
+	WHERE conversation_id = $1`, c.convID, c.nextVersion, newH, c.memberCount); err != nil {
+		return err
+	}
+	return nil
 }
 
 // convSnapshotData — маркер: ответ операции — {conversation: Snapshot}.

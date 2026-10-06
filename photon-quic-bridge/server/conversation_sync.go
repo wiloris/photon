@@ -50,6 +50,7 @@ type ConvEventItem struct {
 	Role                string `json:"role,omitempty"`
 	Title               string `json:"title,omitempty"`
 	Description         string `json:"description,omitempty"`
+	InviteID            string `json:"invite_id,omitempty"`
 	ConversationVersion int64  `json:"conversation_version"`
 }
 
@@ -372,7 +373,7 @@ func convItemOf(r convFeedRow, callerPID string) (any, bool) {
 			return nil, false
 		}
 		return ConvEventItem{Kind: "event", ID: r.id, CreatedAt: r.createAt, Event: ev.Event, ActorPhotonID: ev.ActorPhotonID,
-			TargetPhotonID: ev.TargetPhotonID, Role: ev.Role, Title: ev.Title, Description: ev.Description,
+			TargetPhotonID: ev.TargetPhotonID, Role: ev.Role, Title: ev.Title, Description: ev.Description, InviteID: ev.InviteID,
 			ConversationVersion: ev.Version}, true
 	}
 	return nil, false
