@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 // 907 MEMBER_STATE_SET — личное состояние участника (ADR-106 §2.2–2.3,
@@ -83,7 +82,7 @@ func (s *convService) setMemberState(ctx context.Context, callerID string, raw j
 	}
 	defer tx.Rollback()
 
-	code, err := memberStateAccess(ctx, tx, p.ConversationID, pid)
+	code, err := callerAccess(ctx, tx, p.ConversationID, pid)
 	if err != nil {
 		return s.convFailFor("907 access", err)
 	}
@@ -144,24 +143,4 @@ SET hidden_at = $3, pinned_at = $4, muted_until = $5, updated_at = $6`,
 		st.MutedUntil = &muted.Int64
 	}
 	return Response{OK: true, Data: ConvMemberStateResponse{MemberState: st}}
-}
-
-// memberStateAccess — доступ к 907 (ADR-106 §2.3): участник active либо бывший
-// участник архивного разговора.
-func memberStateAccess(ctx context.Context, q convQuerier, convID, pid string) (string, error) {
-	var pState, cState string
-	err := q.QueryRowContext(ctx, `SELECT p.state, c.state FROM engram_member_period p
-JOIN engram_conversation c ON c.conversation_id = p.conversation_id
-WHERE p.conversation_id = $1 AND p.photon_id = $2 AND c.state <> 'creating'
-ORDER BY p.period_no DESC LIMIT 1`, convID, pid).Scan(&pState, &cState)
-	if errors.Is(err, sql.ErrNoRows) {
-		return convErrConversationNF, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("member state access: %w", err)
-	}
-	if pState != "active" && cState != "archived" {
-		return convErrNoAccess, nil
-	}
-	return "", nil
 }

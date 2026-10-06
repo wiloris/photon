@@ -245,17 +245,23 @@ func TestLifecycleMemberState907Direct(t *testing.T) {
 	require.Nil(t, r.listAll(t, b)[0].MemberState.PinnedAt)
 }
 
-func TestLifecycleMemberState907FormerParticipantOfArchived(t *testing.T) {
+func TestLifecycleMemberState907ArchivedAccess(t *testing.T) {
 	r := newGroupRig(t, 2000)
 	a := r.id.person(pidA)
 	b := r.id.person(pidB)
-	id := r.group(t, a, pidB)
+	c := r.id.person(pidC)
+	id := r.group(t, a, pidB, pidC)
+	// (a) B удалён, пока разговор активен: и до, и после архивации — no_access
 	r.mustDo(t, a, ActionConversationMemberRemove, reqOf(id, "photon_id", pidB))
-	// пока разговор активен, бывший участник — no_access
 	require.Equal(t, convErrNoAccess, r.memberState(t, b, map[string]any{"conversation_id": id, "hidden": true}).Error)
 	r.mustDo(t, a, ActionConversationArchive, reqOf(id))
-	st := r.mustMemberState(t, b, map[string]any{"conversation_id": id, "hidden": true})
+	require.Equal(t, convErrNoAccess, r.memberState(t, b, map[string]any{"conversation_id": id, "hidden": true}).Error)
+	// (b) C был active в момент архивации — 907 проходит, 902 показывает состояние
+	st := r.mustMemberState(t, c, map[string]any{"conversation_id": id, "hidden": true})
 	require.True(t, st.Hidden)
+	items := r.listOpts(t, c, map[string]any{"include_hidden": true}).Conversations
+	require.Len(t, items, 1)
+	require.True(t, items[0].MemberState.Hidden)
 }
 
 func TestLifecycleHiddenReturnsAfterNewMessage(t *testing.T) {
