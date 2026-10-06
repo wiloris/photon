@@ -147,6 +147,10 @@ ON CONFLICT (conversation_id, item_id) DO UPDATE SET text = EXCLUDED.text, edit_
 			c.convID, p.ItemID, p.Text, version, s.now()); err != nil {
 			return nil, false, "", err
 		}
+		// Поиск видит актуальный текст (ADR-110 §2.2).
+		if err := upsertItemText(ctx, c.tx, c.convID, p.ItemID, t.pos, p.Text); err != nil {
+			return nil, false, "", err
+		}
 		at := c.addEvent(convEventBody{Event: "message_edited", ActorPhotonID: c.callerPID, TargetID: p.ItemID, TargetPos: t.pos,
 			Text: p.Text, EditVersion: version})
 		return ConvMutationResponse{Event: mutationEvent(c, at)}, true, "", nil
@@ -180,6 +184,11 @@ func (s *convService) deleteMessage(ctx context.Context, callerID string, raw js
 		}
 		if _, err := c.tx.ExecContext(ctx, `UPDATE engram_position SET deleted_at = $3 WHERE conversation_id = $1 AND pos = $2`,
 			c.convID, t.pos, s.now()); err != nil {
+			return nil, false, "", err
+		}
+		// Удалённое не ищется (ADR-110 §2.2).
+		if _, err := c.tx.ExecContext(ctx, `DELETE FROM engram_item_text WHERE conversation_id = $1 AND item_id = $2`,
+			c.convID, p.ItemID); err != nil {
 			return nil, false, "", err
 		}
 		at := c.addEvent(convEventBody{Event: "message_deleted", ActorPhotonID: c.callerPID, TargetID: p.ItemID, TargetPos: t.pos})

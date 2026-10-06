@@ -390,7 +390,7 @@ func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid,
 		return "", convErrTemporarilyUnavail
 	}
 
-	ok, err := s.markMessagePublished(ctx, convID, slot.pos, created.Id)
+	ok, err := s.markMessagePublished(ctx, convID, slot.pos, created.Id, text)
 	if err != nil {
 		s.logger("[Photon][Conv] 930 publish failed", "error", err.Error())
 		return "", convErrTemporarilyUnavail
@@ -452,7 +452,7 @@ WHERE conversation_id = $1 AND pos = $2 AND state = 'reserved'`, convID, pos); e
 
 // markMessagePublished — contract §3.5: условный переход и
 // last_activity_at одной транзакцией. false — резерв уже не reserved.
-func (s *convService) markMessagePublished(ctx context.Context, convID string, pos int64, postID string) (bool, error) {
+func (s *convService) markMessagePublished(ctx context.Context, convID string, pos int64, postID, text string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -468,6 +468,10 @@ WHERE conversation_id = $1 AND pos = $2 AND state = 'reserved'`, convID, pos, po
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE engram_conversation SET last_activity_at = GREATEST(last_activity_at, $2)
 WHERE conversation_id = $1`, convID, pos); err != nil {
+		return false, err
+	}
+	// Индекс текста поиска (ADR-110): в той же транзакции, что и видимость.
+	if err := upsertItemText(ctx, tx, convID, postID, pos, text); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()

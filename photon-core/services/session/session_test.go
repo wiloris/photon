@@ -357,7 +357,7 @@ func TestT8_ResourceForEachRangeAndBoundaries(t *testing.T) {
 		{900, "ConversationResource"}, {905, "ConversationResource"}, {931, "ConversationResource"},
 		{917, "ConversationResource"}, {918, "ConversationResource"},
 		{908, "ConversationResource"}, {932, "ConversationResource"}, {933, "ConversationResource"},
-		{940, "ConversationResource"},
+		{940, "ConversationResource"}, {941, "ConversationResource"},
 	}
 	for _, tc := range cases {
 		got, err := ResourceFor(tc.action)

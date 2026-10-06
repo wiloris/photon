@@ -290,6 +290,8 @@ enum Action {
   ACTION_CONVERSATION_MESSAGE_DELETE = 933;
   // ADR-105: страница истории «назад» от якоря.
   ACTION_CONVERSATION_HISTORY_BEFORE = 940;
+  // ADR-110: серверный поиск сообщений.
+  ACTION_CONVERSATION_SEARCH         = 941;
 }
 
 enum EventType {

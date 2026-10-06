@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 8
+const convSchemaVersion = 9
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -208,6 +208,26 @@ CREATE TABLE engram_item_edit (
   PRIMARY KEY (conversation_id, item_id)
 );
 `,
+	// v9 — серверный поиск сообщений (ADR-110 Q2; contract §5b.3): индекс
+	// нормализованного текста в таблице Bridge. Сам backfill уже
+	// опубликованных сообщений — Go-шаг convMigrationSteps[8]: нормализация
+	// (регистр, ё) должна быть той же, что у запроса, а lower() PostgreSQL
+	// зависит от локали базы.
+	`
+CREATE TABLE engram_item_text (
+  item_id         text   PRIMARY KEY,
+  conversation_id text   NOT NULL,
+  created_at      bigint NOT NULL,
+  text_norm       text   NOT NULL
+);
+CREATE INDEX engram_item_text_conv ON engram_item_text (conversation_id, created_at DESC, item_id);
+`,
+}
+
+// convMigrationSteps[i] — Go-шаг, выполняемый в той же транзакции сразу после
+// SQL миграции i→i+1.
+var convMigrationSteps = map[int]func(ctx context.Context, tx *sql.Tx) error{
+	8: backfillItemText,
 }
 
 var (
@@ -279,6 +299,11 @@ func migrateConversationSchema(ctx context.Context, db *sql.DB, wait, pollEvery 
 		if _, err = tx.ExecContext(ctx, convMigrations[v]); err != nil {
 			return fmt.Errorf("conversation: миграция %d→%d: %w", v, v+1, err)
 		}
+		if step := convMigrationSteps[v]; step != nil {
+			if err = step(ctx, tx); err != nil {
+				return fmt.Errorf("conversation: миграция %d→%d: %w", v, v+1, err)
+			}
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM engram_schema`); err != nil {
 		return err
@@ -322,11 +347,11 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы (v1–v8).
+// convSchemaTables — таблицы схемы (v1–v9).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
-	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state", "engram_item_edit",
+	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state", "engram_item_edit", "engram_item_text",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -360,6 +385,8 @@ var convSchemaIndexes = map[string]convIndexSpec{
 	// приглашения: по разговору и по хэшу токена (ADR-107 этап 1)
 	"engram_invite_conversation":   {"engram_invite", "(conversation_id)", false, ""},
 	"engram_invite_token_hash_key": {"engram_invite", "(token_hash)", true, ""},
+	// поиск сообщений (ADR-110)
+	"engram_item_text_conv": {"engram_item_text", "(conversation_id, created_at DESC, item_id)", false, ""},
 }
 
 // checkConversationSchema — проверка при активации (ADR-100 §2.6): драйвер,

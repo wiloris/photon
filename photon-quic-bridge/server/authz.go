@@ -639,6 +639,7 @@ var rules = map[int]rule{
 	ActionConversationMessageEdit:     {objNone, authenticated()},
 	ActionConversationMessageDelete:   {objNone, authenticated()},
 	ActionConversationHistoryBefore:   {objNone, authenticated()},
+	ActionConversationSearch:          {objNone, authenticated()},
 }
 
 // authorize — единственная точка принятия решения. Вызывается Dispatcher'ом до

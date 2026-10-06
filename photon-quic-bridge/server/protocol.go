@@ -186,6 +186,7 @@ const (
 	ActionConversationMessageEdit     = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_EDIT)
 	ActionConversationMessageDelete   = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_DELETE)
 	ActionConversationHistoryBefore   = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
+	ActionConversationSearch          = int(photonpb.Action_ACTION_CONVERSATION_SEARCH)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

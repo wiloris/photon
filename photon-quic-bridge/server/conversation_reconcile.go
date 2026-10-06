@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 )
 
@@ -71,7 +72,14 @@ func (s *convService) pendingEvents(ctx context.Context, convID string) (int, er
 // успел опубликовать, не трогается. itemKey != "" ограничивает проход одним
 // ключом (точечная сверка и тесты).
 func (s *convService) closeAbandonedMessages(ctx context.Context, convID string, abandonedBefore int64, itemKey string) (published, aborted int, err error) {
-	rows, err := s.db.QueryContext(ctx, `
+	// Одна транзакция: видимость сообщения (published) и его строка в индексе
+	// поиска (ADR-110) появляются вместе.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
 WITH open AS (
   SELECT pp.pos, pp.item_key, c.carrier_channel_id AS ch
   FROM engram_position pp JOIN engram_conversation c ON c.conversation_id = pp.conversation_id
@@ -86,28 +94,51 @@ closed AS (
     state = CASE WHEN f.id IS NULL THEN 'aborted' ELSE 'published' END, post_id = f.id
   FROM found f
   WHERE pp.conversation_id = $1 AND pp.pos = f.pos AND pp.state = 'reserved'
-  RETURNING pp.pos, pp.state),
+  RETURNING pp.pos, pp.state, pp.post_id),
 activity AS (
   UPDATE engram_conversation SET last_activity_at = GREATEST(last_activity_at, (SELECT max(pos) FROM closed WHERE state = 'published'))
   WHERE conversation_id = $1 AND EXISTS (SELECT 1 FROM closed WHERE state = 'published'))
-SELECT state, count(*) FROM closed GROUP BY state`, convID, abandonedBefore, itemKey)
+SELECT pos, state, post_id FROM closed`, convID, abandonedBefore, itemKey)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
+	type pub struct {
+		pos int64
+		id  string
+	}
+	var pubs []pub
 	for rows.Next() {
+		var pos int64
 		var st string
-		var n int
-		if err := rows.Scan(&st, &n); err != nil {
+		var postID sql.NullString
+		if err := rows.Scan(&pos, &st, &postID); err != nil {
+			rows.Close()
 			return 0, 0, err
 		}
 		if st == "published" {
-			published = n
+			published++
+			pubs = append(pubs, pub{pos, postID.String})
 		} else {
-			aborted = n
+			aborted++
 		}
 	}
-	return published, aborted, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	for _, pb := range pubs {
+		var msg string
+		if err := tx.QueryRowContext(ctx, `SELECT message FROM posts WHERE id = $1`, pb.id).Scan(&msg); err != nil {
+			return 0, 0, err
+		}
+		if err := upsertItemText(ctx, tx, convID, pb.id, pb.pos, msg); err != nil {
+			return 0, 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return published, aborted, nil
 }
 
 // reconcileOpen — проход по разговорам с незаписанными событиями или
