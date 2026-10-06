@@ -312,5 +312,16 @@ func TestAuthzLocalActionsAlwaysDenied(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, 13, n, "в сотне 800-899 ожидалось 13 кодов (800-812)")
+	require.Equal(t, 14, n, "в сотне 800-899 ожидалось 14 кодов (800-813)")
+}
+
+// TestAuthzLocalFeedClearRefused — ADR-112 п. 2.3: 813 сервер не исполняет.
+// Проверяется именно этот код, а не только перебор сотни: перебор берёт коды
+// из enum и молчал бы, если бы 813 из enum пропал.
+func TestAuthzLocalFeedClearRefused(t *testing.T) {
+	z := newFixture()
+	require.Equal(t, 813, ActionLocalFeedClear)
+	for _, subject := range []string{uA, uB} {
+		require.ErrorIs(t, z.authorize(subject, ActionLocalFeedClear, pl(t, map[string]string{"channel_id": cPub})), errForbidden)
+	}
 }

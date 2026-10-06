@@ -160,6 +160,7 @@ const (
 	ActionOutboxRetry      = int(photonpb.Action_ACTION_OUTBOX_RETRY)
 	ActionOutboxCancel     = int(photonpb.Action_ACTION_OUTBOX_CANCEL)
 	ActionOutboxList       = int(photonpb.Action_ACTION_OUTBOX_LIST)
+	ActionLocalFeedClear   = int(photonpb.Action_ACTION_LOCAL_FEED_CLEAR)
 
 	// ConversationResource (900-999), ADR-099 §2.2: групповые разговоры
 	// ENGRAM. Обработчик — ConversationHandler.

@@ -52,6 +52,7 @@ const (
 	actionOutboxRetry        = int32(photonpb.Action_ACTION_OUTBOX_RETRY)
 	actionOutboxCancel       = int32(photonpb.Action_ACTION_OUTBOX_CANCEL)
 	actionOutboxList         = int32(photonpb.Action_ACTION_OUTBOX_LIST)
+	actionLocalFeedClear     = int32(photonpb.Action_ACTION_LOCAL_FEED_CLEAR)
 )
 
 // storageSchemaVersion — версия схемы хранилища инстанса. Версия — файла, а
@@ -176,6 +177,8 @@ func (d *Dispatcher) localAction(ctx context.Context, action int32, payload []by
 		return feedCatalog(ctx, feed)
 	case actionLocalFeedCursor:
 		return feedCursor(ctx, feed, payload)
+	case actionLocalFeedClear:
+		return feedClear(ctx, feed, payload)
 	case actionOutboxEnqueue, actionOutboxLease, actionOutboxComplete, actionOutboxFail,
 		actionOutboxRetry, actionOutboxCancel, actionOutboxList:
 		return outboxAction(ctx, box, action, payload)
@@ -185,6 +188,34 @@ func (d *Dispatcher) localAction(ctx context.Context, action int32, payload []by
 	// между добавлением кода в enum и его реализацией. Молчать нельзя —
 	// клиент получил бы пустой успех.
 	return nil, fmt.Errorf("%w: %d", session.ErrUnknownAction, action)
+}
+
+// feedClearRequest — payload_json действия ACTION_LOCAL_FEED_CLEAR (ADR-112).
+type feedClearRequest struct {
+	ChannelID string `json:"channel_id"`
+}
+
+// feedClear — действие 813. Очищает ленту канала одной транзакцией; очередь
+// исходящих не трогается (ADR-112 п. 2.2).
+func feedClear(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte, error) {
+	var req feedClearRequest
+	if err := decodeRequest(payload, &req); err != nil {
+		return nil, err
+	}
+	if req.ChannelID == "" {
+		return nil, fmt.Errorf("%w: channel_id is required", session.ErrInvalidPayload)
+	}
+	n, err := feed.Clear(ctx, req.ChannelID)
+	if err != nil {
+		return nil, wrapFeedWriteError(err)
+	}
+	data, err := json.Marshal(struct {
+		Removed int `json:"removed"`
+	}{Removed: n})
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: encode clear result: %w", err)
+	}
+	return envelope(session.Response{OK: true, Data: data})
 }
 
 func feedPage(ctx context.Context, feed *localfeed.Store, payload []byte) ([]byte, error) {

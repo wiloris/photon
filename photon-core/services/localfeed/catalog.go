@@ -130,3 +130,43 @@ func (s *Store) Cursor(ctx context.Context, channelID string) ([]byte, bool, err
 	})
 	return out, found, err
 }
+
+// Clear удаляет всё, что Store хранит о канале, ОДНОЙ транзакцией: записи,
+// сегменты полноты, курсор и запись каталога (ADR-112 п. 2.1). Возвращает
+// число удалённых записей ленты. Повтор — 0, отсутствующие ключи не ошибка.
+//
+// Очередь исходящих (photon.outbox) — другой namespace и не затрагивается
+// (ADR-112 п. 2.2). Ключи собираются ДО удаления: изменять хранилище внутри
+// обхода порт не разрешает.
+func (s *Store) Clear(ctx context.Context, channelID string) (int, error) {
+	if err := validChannel(channelID); err != nil {
+		return 0, err
+	}
+	removed := 0
+	err := s.st.Update(ctx, func(tx ports.WriteTx) error {
+		removed = 0
+		var keys [][]byte
+		if err := tx.ForEachPrefix(Namespace, prefix(channelID), func(k, _ []byte) error {
+			keys = append(keys, append([]byte(nil), k...))
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range keys {
+			if err := tx.Delete(Namespace, k); err != nil {
+				return err
+			}
+		}
+		removed = len(keys)
+		for _, k := range [][]byte{segmentsKey(channelID), cursorKey(channelID), catalogKey(channelID)} {
+			if err := tx.Delete(Namespace, k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}

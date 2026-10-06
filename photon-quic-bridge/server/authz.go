@@ -600,6 +600,9 @@ var rules = map[int]rule{
 	ActionOutboxCancel:   {objNone, notServedHere()},
 	ActionOutboxList:     {objNone, notServedHere()},
 
+	// ── 813 (ADR-112): очистка локальной ленты, отказ всегда ──
+	ActionLocalFeedClear: {objNone, notServedHere()},
+
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},
 	ActionDownloadFile: {objFile, readC()},
