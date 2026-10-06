@@ -137,7 +137,9 @@ func TestInviteTokenNeverLoggedOnlyHashStored(t *testing.T) {
 	var stored []byte
 	require.NoError(t, r.db.QueryRow(`SELECT token_hash FROM engram_invite WHERE invite_id = $1`, iv.InviteID).Scan(&stored))
 	require.Equal(t, inviteTokenHash(iv.Token), stored)
-	require.Equal(t, 0, r.count(t, `SELECT count(*) FROM engram_invite WHERE convert_from(token_hash, 'SQL_ASCII') = $1`, iv.Token))
+	require.NotEqual(t, []byte(iv.Token), stored, "в таблице лежит сырой токен")
+	// Байты с байтами: без convert_from, результат не зависит от кодировки БД.
+	require.Equal(t, 0, r.count(t, `SELECT count(*) FROM engram_invite WHERE token_hash = convert_to($1, 'UTF8')`, iv.Token))
 	// 913 хранит токен в ответе ключа по замыслу; всё остальное — нет.
 	require.Zero(t, r.count(t, `SELECT count(*) FROM engram_event e WHERE e::text LIKE $1`, "%"+iv.Token+"%"))
 	require.Zero(t, r.count(t, `SELECT count(*) FROM engram_invite i WHERE i::text LIKE $1`, "%"+iv.Token+"%"))
