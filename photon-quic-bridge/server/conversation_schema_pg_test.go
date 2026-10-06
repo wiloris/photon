@@ -170,6 +170,7 @@ CREATE INDEX engram_position_key_all ON engram_position (conversation_id, item_k
 		{"v10: нет таблицы банов", `DROP TABLE engram_conversation_ban`, "нет таблицы engram_conversation_ban"},
 		{"v10: период не допускает banned", `ALTER TABLE engram_member_period DROP CONSTRAINT engram_member_period_state_check;
 ALTER TABLE engram_member_period ADD CONSTRAINT engram_member_period_state_check CHECK (state IN ('active','left','removed'))`, "не допускает banned"},
+		{"v11: нет таблицы реакций", `DROP TABLE engram_reaction`, "нет таблицы engram_reaction"},
 		{"версия ниже", `UPDATE engram_schema SET version = 0`, "версия схемы 0"},
 	}
 	for _, tc := range cases {

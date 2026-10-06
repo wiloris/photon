@@ -646,6 +646,7 @@ var rules = map[int]rule{
 	ActionConversationMarkRead:        {objNone, authenticated()},
 	ActionConversationMessageEdit:     {objNone, authenticated()},
 	ActionConversationMessageDelete:   {objNone, authenticated()},
+	ActionConversationReactionSet:     {objNone, authenticated()},
 	ActionConversationHistoryBefore:   {objNone, authenticated()},
 	ActionConversationSearch:          {objNone, authenticated()},
 	ActionConversationMemberBan:       {objNone, authenticated()},

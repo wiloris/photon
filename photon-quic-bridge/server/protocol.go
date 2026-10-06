@@ -190,6 +190,7 @@ const (
 	ActionConversationMarkRead        = int(photonpb.Action_ACTION_CONVERSATION_MARK_READ)
 	ActionConversationMessageEdit     = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_EDIT)
 	ActionConversationMessageDelete   = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_DELETE)
+	ActionConversationReactionSet     = int(photonpb.Action_ACTION_CONVERSATION_REACTION_SET)
 	ActionConversationHistoryBefore   = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
 	ActionConversationSearch          = int(photonpb.Action_ACTION_CONVERSATION_SEARCH)
 	ActionConversationMemberBan       = int(photonpb.Action_ACTION_CONVERSATION_MEMBER_BAN)

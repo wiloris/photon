@@ -18,7 +18,7 @@ var conversationCodesV1 = []int{900, 901, 902, 903, 904, 910, 911, 912, 920, 921
 
 // conversationCodesV2 — коды Messaging v2 (ADR-104–107, контракт §1 M1): в срезе M1
 // принимаются, но поведения нет — отвечают temporarily_unavailable.
-var conversationCodesV2 = []int{905, 906, 907, 908, 913, 914, 915, 916, 917, 918, 919, 932, 933, 940, 941}
+var conversationCodesV2 = []int{905, 906, 907, 908, 913, 914, 915, 916, 917, 918, 919, 932, 933, 934, 940, 941}
 
 // conversationCodesAccepted — полный принятый набор сотни 900.
 func conversationCodesAccepted() []int {
@@ -63,7 +63,7 @@ func TestConversationActionsRouteToConversationHandler(t *testing.T) {
 // неизвестного действия, отличимой от отказа авторизации (ADR-039 §8).
 func TestConversationReservedCodesStayUnknown(t *testing.T) {
 	d, _ := newDeniedDispatcher(t)
-	for _, code := range []int{909, 922, 929, 934, 950, 999} {
+	for _, code := range []int{909, 922, 929, 950, 999} {
 		resp := d.Dispatch(uB, HeaderFrame{Action: code}, json.RawMessage(`{}`))
 		require.False(t, resp.OK, "код %d", code)
 		require.Equal(t, fmt.Sprintf("unknown action: %d", code), resp.Error, "код %d", code)

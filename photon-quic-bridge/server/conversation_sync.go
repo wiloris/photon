@@ -71,9 +71,11 @@ type ConvEventItem struct {
 	Description         string `json:"description,omitempty"`
 	InviteID            string `json:"invite_id,omitempty"`
 	Visibility          string `json:"visibility,omitempty"`
-	TargetID            string `json:"target_id,omitempty"`    // message_edited, message_deleted
+	TargetID            string `json:"target_id,omitempty"`    // message_edited, message_deleted, reaction_changed
 	Text                string `json:"text,omitempty"`         // message_edited
 	EditVersion         int    `json:"edit_version,omitempty"` // message_edited
+	Reaction            string `json:"reaction,omitempty"`     // reaction_changed
+	On                  *bool  `json:"on,omitempty"`           // reaction_changed
 	ConversationVersion int64  `json:"conversation_version"`
 }
 
@@ -443,7 +445,7 @@ func convItemOf(r convFeedRow, callerPID string, periods []convPeriodBounds) (an
 		}
 		return ConvEventItem{Kind: "event", ID: r.id, CreatedAt: r.createAt, Event: ev.Event, ActorPhotonID: ev.ActorPhotonID,
 			TargetPhotonID: ev.TargetPhotonID, Role: ev.Role, Title: ev.Title, Description: ev.Description, InviteID: ev.InviteID, Visibility: ev.Visibility,
-			TargetID: ev.TargetID, Text: ev.Text, EditVersion: ev.EditVersion,
+			TargetID: ev.TargetID, Text: ev.Text, EditVersion: ev.EditVersion, Reaction: ev.Reaction, On: ev.On,
 			ConversationVersion: ev.Version}, true
 	}
 	return nil, false

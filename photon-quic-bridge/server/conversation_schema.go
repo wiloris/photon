@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 10
+const convSchemaVersion = 11
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -242,6 +242,17 @@ CREATE TABLE engram_conversation_ban (
 ALTER TABLE engram_member_period DROP CONSTRAINT engram_member_period_state_check;
 ALTER TABLE engram_member_period ADD CONSTRAINT engram_member_period_state_check CHECK (state IN ('active','left','removed','banned'));
 `,
+	// v11 — реакции (ADR-109 §2.3; contract §5b.5): множество
+	// (элемент, участник, реакция).
+	`
+CREATE TABLE engram_reaction (
+  item_id    text   NOT NULL,
+  photon_id  text   NOT NULL,
+  reaction   text   NOT NULL,
+  created_at bigint NOT NULL,
+  PRIMARY KEY (item_id, photon_id, reaction)
+);
+`,
 }
 
 // convMigrationSteps[i] — Go-шаг, выполняемый в той же транзакции сразу после
@@ -367,12 +378,12 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы (v1–v10).
+// convSchemaTables — таблицы схемы (v1–v11).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
 	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state", "engram_item_edit", "engram_item_text",
-	"engram_user_block", "engram_conversation_ban",
+	"engram_user_block", "engram_conversation_ban", "engram_reaction",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы

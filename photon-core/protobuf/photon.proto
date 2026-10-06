@@ -298,6 +298,8 @@ enum Action {
   // ADR-109: правка и удаление для всех — события ленты.
   ACTION_CONVERSATION_MESSAGE_EDIT   = 932;
   ACTION_CONVERSATION_MESSAGE_DELETE = 933;
+  // ADR-109 §2.3: реакция на сообщение (множество, без ключа идемпотентности).
+  ACTION_CONVERSATION_REACTION_SET   = 934;
   // ADR-105: страница истории «назад» от якоря.
   ACTION_CONVERSATION_HISTORY_BEFORE = 940;
   // ADR-110: серверный поиск сообщений.

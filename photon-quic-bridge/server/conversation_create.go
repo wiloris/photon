@@ -459,7 +459,11 @@ type convEventBody struct {
 	TargetPos   int64  `json:"target_pos,omitempty"`
 	Text        string `json:"text,omitempty"`
 	EditVersion int    `json:"edit_version,omitempty"`
-	Version     int64  `json:"conversation_version"`
+	// ADR-109 §2.3: reaction_changed. On — указатель: on=false должен
+	// попадать в событие, а не пропадать как нулевое значение.
+	Reaction string `json:"reaction,omitempty"`
+	On       *bool  `json:"on,omitempty"`
+	Version  int64  `json:"conversation_version"`
 }
 
 // finalizeCreate — T2 (§6.1 шаг 4): если разговор ещё creating — периоды,

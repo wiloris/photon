@@ -72,8 +72,11 @@ type convChangeSpec struct {
 	// allowDirect — изменение допустимо в direct (932, 933: ADR-104 §3.1,
 	// ADR-109 — одна модель для direct и групп).
 	allowDirect bool
-	// itemEvent — событие элемента ленты, не меняющее разговор (932, 933).
+	// itemEvent — событие элемента ленты, не меняющее разговор (932, 933, 934).
 	itemEvent bool
+	// keyless — изменение без ключа идемпотентности (934, ADR-109 §2.3):
+	// повтор безвреден по построению, engram_request не пишется.
+	keyless bool
 }
 
 var convRoleRank = map[string]int{"owner": 3, "admin": 2, "member": 1}
@@ -118,12 +121,18 @@ func (s *convService) changeTx(ctx context.Context, pid string, spec convChangeS
 	defer tx.Rollback()
 
 	// Повтор по §10.2 — первым, независимо от состояния и доступа.
-	res, err := tx.ExecContext(ctx, `INSERT INTO engram_request (photon_id, action, request_id, payload_hash, conversation_id, state, created_at)
+	// Без ключа (934) записи запроса нет.
+	dup := false
+	if !spec.keyless {
+		res, err := tx.ExecContext(ctx, `INSERT INTO engram_request (photon_id, action, request_id, payload_hash, conversation_id, state, created_at)
 VALUES ($1, $2, $3, $4, $5, 'pending', $6) ON CONFLICT DO NOTHING`, pid, spec.action, spec.requestID, spec.hash, spec.conversationID, s.now())
-	if err != nil {
-		return nil, "", nil, err
+		if err != nil {
+			return nil, "", nil, err
+		}
+		n, _ := res.RowsAffected()
+		dup = n == 0
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if dup {
 		var gotHash, response []byte
 		var state string
 		if err := tx.QueryRowContext(ctx, `SELECT payload_hash, state, response FROM engram_request
@@ -213,9 +222,11 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 	if err != nil {
 		return nil, "", nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE engram_request SET state = 'done', response = $4
+	if !spec.keyless {
+		if _, err := tx.ExecContext(ctx, `UPDATE engram_request SET state = 'done', response = $4
 WHERE photon_id = $1 AND action = $2 AND request_id = $3`, pid, spec.action, spec.requestID, body); err != nil {
-		return nil, "", nil, err
+			return nil, "", nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, "", nil, err
