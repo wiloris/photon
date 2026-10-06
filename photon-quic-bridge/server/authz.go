@@ -527,6 +527,11 @@ var rules = map[int]rule{
 	ActionListDirectMessagesV2: {objDirectPeer, ifChannel(readC(), authenticated())},
 	// ADR-105: 219 — доступ как у 218 (контракт Messaging v2 §3).
 	ActionListDirectMessagesBefore: {objDirectPeer, ifChannel(readC(), authenticated())},
+	// ADR-111: объекта Mattermost нет, субъект — только вызывающий; доступ
+	// и существование целевого PhotonID решает обработчик.
+	ActionUserBlock:     {objNone, authenticated()},
+	ActionUserUnblock:   {objNone, authenticated()},
+	ActionUserBlockList: {objNone, authenticated()},
 	// ADR-084 §2.1: объекта во входе нет; список — только каналы участия.
 	ActionListDirectConversations: {objNone, authenticated()},
 
@@ -640,6 +645,7 @@ var rules = map[int]rule{
 	ActionConversationMessageDelete:   {objNone, authenticated()},
 	ActionConversationHistoryBefore:   {objNone, authenticated()},
 	ActionConversationSearch:          {objNone, authenticated()},
+	ActionConversationMemberBan:       {objNone, authenticated()},
 }
 
 // authorize — единственная точка принятия решения. Вызывается Dispatcher'ом до

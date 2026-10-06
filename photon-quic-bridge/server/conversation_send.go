@@ -246,6 +246,20 @@ WHERE conversation_id = $1 AND photon_id = $2 ORDER BY period_no DESC LIMIT 1`, 
 	if periodState != "active" {
 		return "", convErrNoAccess, nil
 	}
+	// Блокировка в direct (ADR-111 §2.2, Q2): заблокированному — как
+	// недоступный разговор, без раскрытия причины; блокирующему — blocked.
+	// Первым — «собеседник заблокировал меня»: при взаимной блокировке
+	// причина не раскрывается.
+	peerBlockedMe, iBlockedPeer, err := directBlockState(ctx, q, convID, pid)
+	if err != nil {
+		return "", "", err
+	}
+	if peerBlockedMe {
+		return "", convErrConversationNF, nil
+	}
+	if iBlockedPeer {
+		return "", convErrBlocked, nil
+	}
 	if state == "archived" {
 		return "", convErrArchived, nil
 	}

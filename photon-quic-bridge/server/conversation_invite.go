@@ -382,6 +382,13 @@ WHERE conversation_id = $1 FOR UPDATE`, convID).Scan(&state, &c.kind, &c.version
 	if state == "creating" {
 		return nil, convErrInviteInvalid, nil
 	}
+	// Забаненный не возвращается по ссылке (ADR-111 §2.3); код тот же, что
+	// у прочих причин (ADR-107 §2.6).
+	if banned, err := conversationBanned(ctx, tx, convID, pid); err != nil {
+		return nil, "", err
+	} else if banned {
+		return nil, convErrInviteInvalid, nil
+	}
 	if state == "archived" {
 		return nil, convErrArchived, nil
 	}

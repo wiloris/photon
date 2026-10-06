@@ -42,17 +42,18 @@ func NewDispatcher(p *Plugin) *Dispatcher {
 		WithLiveness(postLivenessOracle(p.API, p.API))
 	z := newAuthz(p.API, store)
 	z.accounts = NewAccountRegistry(p.API) // objDirectPeer, ADR-082
+	conversation := newConversationHandler(p)
 	return &Dispatcher{
 		plugin:       p,
 		authz:        z,
 		post:         &PostHandler{plugin: p, media: mediaSvcInstance},
-		user:         &UserHandler{plugin: p},
+		user:         &UserHandler{plugin: p, conv: conversation.service},
 		channel:      &ChannelHandler{plugin: p},
 		engram:       NewEngramHandler(p), // инициализируем через конструктор (rate limiter)
 		file:         &FileHandler{plugin: p},
 		wall:         &WallHandler{plugin: p},
 		media:        &MediaHandler{plugin: p, media: mediaSvcInstance},
-		conversation: newConversationHandler(p),
+		conversation: conversation,
 		mediaService: mediaSvcInstance,
 	}
 }

@@ -145,6 +145,10 @@ enum Action {
   ACTION_LIST_DIRECT_MESSAGES_V2 = 218;
   // ADR-105: страница DM «назад» от якоря, доступ как у 218. Поведение — срез M3.
   ACTION_LIST_DIRECT_MESSAGES_BEFORE = 219;
+  // ADR-111: личная блокировка пользователя — поставить, снять, список.
+  ACTION_USER_BLOCK      = 220;
+  ACTION_USER_UNBLOCK    = 221;
+  ACTION_USER_BLOCK_LIST = 222;
 
   // ── ChannelResource (300-314) ───────────────────────────────────
   ACTION_LIST_CHANNELS                = 300;
@@ -281,6 +285,8 @@ enum Action {
   // ADR-107 этап 2: публичные разговоры — каталог и вступление.
   ACTION_CONVERSATION_DIRECTORY_SEARCH = 917;
   ACTION_CONVERSATION_JOIN_PUBLIC    = 918;
+  // ADR-111: бан (и снятие бана) PhotonID в разговоре.
+  ACTION_CONVERSATION_MEMBER_BAN     = 919;
   ACTION_CONVERSATION_ROLE_SET       = 920;
   ACTION_CONVERSATION_OWNER_TRANSFER = 921;
   ACTION_CONVERSATION_SEND           = 930;

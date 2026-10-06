@@ -81,6 +81,10 @@ const (
 	ActionListDirectMessagesV2 = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES_V2)
 	// ADR-105: DM «назад» (M1 — только код и заглушка).
 	ActionListDirectMessagesBefore = int(photonpb.Action_ACTION_LIST_DIRECT_MESSAGES_BEFORE)
+	// ADR-111: личные блокировки пользователей.
+	ActionUserBlock     = int(photonpb.Action_ACTION_USER_BLOCK)
+	ActionUserUnblock   = int(photonpb.Action_ACTION_USER_UNBLOCK)
+	ActionUserBlockList = int(photonpb.Action_ACTION_USER_BLOCK_LIST)
 
 	// Входящие: список разговоров 1:1 (ADR-084).
 	ActionListDirectConversations = int(photonpb.Action_ACTION_LIST_DIRECT_CONVERSATIONS)
@@ -187,6 +191,7 @@ const (
 	ActionConversationMessageDelete   = int(photonpb.Action_ACTION_CONVERSATION_MESSAGE_DELETE)
 	ActionConversationHistoryBefore   = int(photonpb.Action_ACTION_CONVERSATION_HISTORY_BEFORE)
 	ActionConversationSearch          = int(photonpb.Action_ACTION_CONVERSATION_SEARCH)
+	ActionConversationMemberBan       = int(photonpb.Action_ACTION_CONVERSATION_MEMBER_BAN)
 )
 
 // ── Push event names (server → client) ───────────────────────────────────────

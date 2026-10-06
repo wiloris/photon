@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -15,9 +16,12 @@ import (
 //	211=GetMyPhotonProfile, 212=FindByPhotonID (ADR-081, photon_profile.go),
 //	216=SetMyDisplayName (ADR-091, photon_profile.go),
 //	213=SendDirectMessage, 214=ListDirectMessages (ADR-082, direct_message.go),
-//	215=ListDirectConversations (ADR-084, direct_conversations.go)
+//	215=ListDirectConversations (ADR-084, direct_conversations.go),
+//	220=UserBlock, 221=UserUnblock, 222=UserBlockList (ADR-111, user_block.go)
 type UserHandler struct {
 	plugin *Plugin
+	// conv — сервис разговоров для 220–222 (ADR-111); nil — схема Bridge не готова.
+	conv *convService
 }
 
 func (h *UserHandler) Handle(userID string, action int, raw json.RawMessage) Response {
@@ -62,6 +66,13 @@ func (h *UserHandler) Handle(userID string, action int, raw json.RawMessage) Res
 		return listDirectMessagesBefore(h.directMessageV2Deps(), userID, raw)
 	case ActionListDirectConversations:
 		return listDirectConversations(h.conversationDeps(), userID, raw)
+	case ActionUserBlock, ActionUserUnblock, ActionUserBlockList:
+		if h.conv == nil {
+			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
+		defer cancel()
+		return h.conv.dispatch(ctx, userID, action, raw)
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("UserResource: unknown action %d", action)}
 	}

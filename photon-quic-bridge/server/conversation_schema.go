@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 9
+const convSchemaVersion = 10
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -222,6 +222,26 @@ CREATE TABLE engram_item_text (
 );
 CREATE INDEX engram_item_text_conv ON engram_item_text (conversation_id, created_at DESC, item_id);
 `,
+	// v10 — блокировки и бан (ADR-111; contract §5b.4): личная блокировка
+	// пользователя, бан PhotonID в разговоре и состояние banned периода
+	// участия (ограничение state пересоздаётся, как kind в v3).
+	`
+CREATE TABLE engram_user_block (
+  blocker_pid text   NOT NULL,
+  blocked_pid text   NOT NULL,
+  created_at  bigint NOT NULL,
+  PRIMARY KEY (blocker_pid, blocked_pid)
+);
+CREATE TABLE engram_conversation_ban (
+  conversation_id text   NOT NULL,
+  photon_id       text   NOT NULL,
+  banned_at       bigint NOT NULL,
+  banned_by       text   NOT NULL,
+  PRIMARY KEY (conversation_id, photon_id)
+);
+ALTER TABLE engram_member_period DROP CONSTRAINT engram_member_period_state_check;
+ALTER TABLE engram_member_period ADD CONSTRAINT engram_member_period_state_check CHECK (state IN ('active','left','removed','banned'));
+`,
 }
 
 // convMigrationSteps[i] — Go-шаг, выполняемый в той же транзакции сразу после
@@ -347,11 +367,12 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы (v1–v9).
+// convSchemaTables — таблицы схемы (v1–v10).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
 	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state", "engram_item_edit", "engram_item_text",
+	"engram_user_block", "engram_conversation_ban",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -461,6 +482,16 @@ WHERE c.conrelid = to_regclass('engram_conversation') AND c.conname = 'engram_co
 	}
 	if !strings.Contains(kindDef.String, "'direct'") {
 		problems = append(problems, fmt.Sprintf("engram_conversation.kind: ограничение %q не допускает direct", kindDef.String))
+	}
+
+	// v10: состояние banned периода участия (ADR-111).
+	var stateDef sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+WHERE c.conrelid = to_regclass('engram_member_period') AND c.conname = 'engram_member_period_state_check'`).Scan(&stateDef); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("conversation: чтение схемы: %w", err)
+	}
+	if !strings.Contains(stateDef.String, "'banned'") {
+		problems = append(problems, fmt.Sprintf("engram_member_period.state: ограничение %q не допускает banned", stateDef.String))
 	}
 
 	type idx struct {

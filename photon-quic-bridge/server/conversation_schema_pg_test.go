@@ -166,6 +166,10 @@ CREATE INDEX engram_position_key_all ON engram_position (conversation_id, item_k
 		{"v8: edit_version не int", `ALTER TABLE engram_position ALTER COLUMN edit_version TYPE bigint`, "engram_position.edit_version"},
 		{"v9: нет таблицы индекса текста", `DROP TABLE engram_item_text`, "нет таблицы engram_item_text"},
 		{"v9: нет индекса текста", `DROP INDEX engram_item_text_conv`, "нет индекса engram_item_text_conv"},
+		{"v10: нет таблицы блокировок", `DROP TABLE engram_user_block`, "нет таблицы engram_user_block"},
+		{"v10: нет таблицы банов", `DROP TABLE engram_conversation_ban`, "нет таблицы engram_conversation_ban"},
+		{"v10: период не допускает banned", `ALTER TABLE engram_member_period DROP CONSTRAINT engram_member_period_state_check;
+ALTER TABLE engram_member_period ADD CONSTRAINT engram_member_period_state_check CHECK (state IN ('active','left','removed'))`, "не допускает banned"},
 		{"версия ниже", `UPDATE engram_schema SET version = 0`, "версия схемы 0"},
 	}
 	for _, tc := range cases {

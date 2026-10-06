@@ -268,7 +268,8 @@ func TestM9MigrationBackfillsPublishedMessages(t *testing.T) {
 	r.mustDel(t, a, id, gone.ID)
 
 	// Состояние «до v9»: индекса нет, версия схемы 8.
-	_, err := r.db.Exec(`DROP TABLE engram_item_text`)
+	// Объекты v10 тоже убираются: миграция 8→10 создаёт их заново.
+	_, err := r.db.Exec(`DROP TABLE engram_item_text; DROP TABLE engram_user_block; DROP TABLE engram_conversation_ban`)
 	require.NoError(t, err)
 	_, err = r.db.Exec(`UPDATE engram_schema SET version = 8`)
 	require.NoError(t, err)

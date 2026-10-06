@@ -63,6 +63,13 @@ func (s *convService) openDirect(ctx context.Context, callerID string, raw json.
 	} else if code != "" {
 		return convFail(code)
 	}
+	// Собеседник заблокировал вызывающего (ADR-111 §2.2): как недоступный
+	// разговор — и при уже существующей паре, и при её отсутствии.
+	if blocked, err := userBlocked(ctx, s.db, p.PeerPhotonID, pid); err != nil {
+		return s.convFailFor("905 block", err)
+	} else if blocked {
+		return convFail(convErrConversationNF)
+	}
 	if s.botID == "" {
 		return s.convFailFor("905", errConvNoBot)
 	}

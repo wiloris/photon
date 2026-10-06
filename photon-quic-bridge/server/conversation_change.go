@@ -485,6 +485,23 @@ func (s *convService) addMembers(ctx context.Context, callerID string, raw json.
 		if err != nil || code != "" {
 			return nil, false, code, err
 		}
+		// Заблокировавший вызывающего неотличим от несуществующего (ADR-111
+		// §2.2, §4.1); забаненный в этом разговоре — forbidden: администратор
+		// о бане знает (contract §5b.4). Всё — до первого изменения.
+		for _, id := range ids {
+			if blocked, err := userBlocked(ctx, c.tx, id, c.callerPID); err != nil {
+				return nil, false, "", err
+			} else if blocked {
+				return nil, false, errPhotonIDNotFound, nil
+			}
+		}
+		for _, id := range ids {
+			if banned, err := conversationBanned(ctx, c.tx, c.convID, id); err != nil {
+				return nil, false, "", err
+			} else if banned {
+				return nil, false, convErrForbidden, nil
+			}
+		}
 		out := ConvMembersAddResponse{Added: []string{}, Already: []string{}}
 		for _, id := range ids {
 			role, err := activePeriod(ctx, c.tx, c.convID, id)

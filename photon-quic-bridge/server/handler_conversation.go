@@ -52,7 +52,8 @@ func (h *ConversationHandler) Handle(userID string, action int, raw json.RawMess
 		ActionConversationUnarchive, ActionConversationMemberStateSet,
 		ActionConversationInviteCreate, ActionConversationInviteRevoke, ActionConversationInviteList,
 		ActionConversationJoinByInvite, ActionConversationDirectorySearch, ActionConversationJoinPublic, ActionConversationMarkRead,
-		ActionConversationMessageEdit, ActionConversationMessageDelete, ActionConversationSearch:
+		ActionConversationMessageEdit, ActionConversationMessageDelete, ActionConversationSearch,
+		ActionConversationMemberBan:
 		if h.service == nil {
 			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
 		}
@@ -119,6 +120,14 @@ func (s *convService) dispatch(ctx context.Context, userID string, action int, r
 		return s.deleteMessage(ctx, userID, raw)
 	case ActionConversationSearch:
 		return s.searchMessages(ctx, userID, raw)
+	case ActionConversationMemberBan:
+		return s.banMember(ctx, userID, raw)
+	case ActionUserBlock:
+		return s.setUserBlock(ctx, userID, raw, true)
+	case ActionUserUnblock:
+		return s.setUserBlock(ctx, userID, raw, false)
+	case ActionUserBlockList:
+		return s.listUserBlocks(ctx, userID, raw)
 	}
 	return Response{OK: false, Error: fmt.Sprintf("ConversationResource: unknown action %d", action)}
 }
