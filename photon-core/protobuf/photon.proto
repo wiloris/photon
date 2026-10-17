@@ -258,6 +258,12 @@ enum Action {
   // одной транзакцией; outbox не затрагивается. Bridge отказывает (ADR-064 §2).
   ACTION_LOCAL_FEED_CLEAR = 813;
 
+  // Цель подписки на push (ADR-123 §2.3): endpoint и session_token
+  // QUIC-подписки работающего инстанса задаёт, меняет и снимает хост.
+  // Action-соединения не создаёт. Bridge отвечает отказом (ADR-064 §2).
+  // Контракт — photon-quic-bridge/docs/conversation-push.md §4.
+  ACTION_LOCAL_EVENTS_TARGET = 814;
+
   // ── ConversationResource (900-999), ADR-099 §2.2 ──────────────────────────
   // Групповые разговоры ENGRAM (ADR-098). 905-909, 919, 922-929 и
   // 932-999 зарезервированы без семантики (ADR-099 §2.3).

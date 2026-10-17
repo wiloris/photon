@@ -156,6 +156,10 @@ type feedPageRequest struct {
 // различать, откуда пришли данные, — форма конверта {ok,data,error} одна
 // (ADR-038, ADR-064 п. 2.4).
 func (d *Dispatcher) localAction(ctx context.Context, action int32, payload []byte) ([]byte, error) {
+	// Цель подписки от хранилища тоже не зависит (ADR-123 §2.3).
+	if action == actionLocalEventsTarget {
+		return d.eventsTarget(payload)
+	}
 	d.mu.Lock()
 	feed, box := d.feed, d.box
 	d.mu.Unlock()

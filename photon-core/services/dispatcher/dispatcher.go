@@ -71,6 +71,20 @@ type Dispatcher struct {
 	// раньше транспорта» держится, и второе поле было бы заведомым no-op.
 	pumpStarted bool
 
+	// Цель подписки (ADR-123 §2.3, events_target.go). target — под mu;
+	// targetGen растёт с каждой сменой; subCancel отменяет поколение текущей
+	// подписки; targetWake будит насос, ждущий цели. sink/onStop — адресат,
+	// запомненный StartEvents до появления цели. subTr — транспорт подписки
+	// инстанса без секции bridge, создаётся лениво при первой цели.
+	target     subTarget
+	targetGen  uint64
+	subCancel  context.CancelFunc
+	targetWake chan struct{}
+	sink       EventSink
+	onStop     func()
+	subTr      ports.Transport
+	ownSubTr   bool
+
 	// inflight считает и вызовы, и попытки подключения. Add происходит под
 	// mu, после проверки closed, — иначе Add мог бы случиться уже после
 	// Wait в Close.
@@ -98,7 +112,10 @@ type connectAttempt struct {
 func New(cfg Config) (*Dispatcher, error) {
 	cfg = cfg.withDefaults()
 
-	d := &Dispatcher{cfg: cfg}
+	d := &Dispatcher{cfg: cfg, targetWake: make(chan struct{}, 1)}
+	if cfg.Endpoint != "" {
+		d.target = subTarget{endpoint: cfg.Endpoint, token: cfg.SessionToken}
+	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 
 	// Хранилище открывается ДО сессии и независимо от неё: инстанс может
@@ -329,6 +346,12 @@ func (d *Dispatcher) Close() error {
 	}
 	if d.ownTransport && d.tr != nil {
 		if cerr := d.tr.Close(); err == nil {
+			err = cerr
+		}
+	}
+	// Транспорт подписки — после выхода насоса (inflight.Wait выше).
+	if d.ownSubTr && d.subTr != nil {
+		if cerr := d.subTr.Close(); err == nil {
 			err = cerr
 		}
 	}

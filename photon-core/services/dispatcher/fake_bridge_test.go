@@ -30,8 +30,9 @@ import (
 type fakeBridge struct {
 	mu sync.Mutex
 
-	connects int
-	conns    []*fakeConn
+	connects  int
+	conns     []*fakeConn
+	endpoints []ports.Endpoint
 	closed   bool
 
 	// connectGate, если не nil, удерживает Connect до закрытия канала или
@@ -61,6 +62,7 @@ func newFakeBridge() *fakeBridge {
 func (f *fakeBridge) Connect(ctx context.Context, ep ports.Endpoint) (ports.Connection, error) {
 	f.mu.Lock()
 	f.connects++
+	f.endpoints = append(f.endpoints, ep)
 	gate := f.connectGate
 	err := f.connectErr
 	f.mu.Unlock()
@@ -138,6 +140,7 @@ type fakeConn struct {
 	breakOnce sync.Once
 
 	mu      sync.Mutex
+	token   string // session_token кадра auth (цель подписки, ADR-123)
 	idx     int
 	openErr error
 	closed  bool
@@ -176,6 +179,10 @@ func (c *fakeConn) serve(idx int, srv net.Conn) {
 		if dec.Decode(&auth) != nil || dec.Decode(&mode) != nil {
 			return
 		}
+		tok, _ := auth["session_token"].(string)
+		c.mu.Lock()
+		c.token = tok
+		c.mu.Unlock()
 		// Режим фиксируется на СОЕДИНЕНИЕ (bridge-session.md §2.4), и сервер
 		// обязан подтвердить именно запрошенный: подписчик, получивший
 		// "ready", уходит ждать push туда, где сервер UniStream не откроет.
@@ -330,4 +337,16 @@ func newDispatcher(t *testing.T, br *fakeBridge, tune func(*Config)) *Dispatcher
 	}
 	t.Cleanup(func() { d.Close() })
 	return d
+}
+
+func (c *fakeConn) authToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token
+}
+
+func (c *fakeConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
