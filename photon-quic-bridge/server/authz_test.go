@@ -312,7 +312,7 @@ func TestAuthzLocalActionsAlwaysDenied(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, 14, n, "в сотне 800-899 ожидалось 14 кодов (800-813)")
+	require.Equal(t, 15, n, "в сотне 800-899 ожидалось 15 кодов (800-814)")
 }
 
 // TestAuthzLocalFeedClearRefused — ADR-112 п. 2.3: 813 сервер не исполняет.

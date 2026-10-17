@@ -37,6 +37,7 @@ func newConversationHandler(p *Plugin) *ConversationHandler {
 			lockWait:  10 * time.Second,
 			pollEvery: 50 * time.Millisecond,
 			logger:    p.API.LogWarn,
+			push:      p.pushEvent,
 		}
 	}
 	return h

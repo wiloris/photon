@@ -603,6 +603,9 @@ var rules = map[int]rule{
 	// ── 813 (ADR-112): очистка локальной ленты, отказ всегда ──
 	ActionLocalFeedClear: {objNone, notServedHere()},
 
+	// ── 814 (ADR-123 §2.3): цель подписки Core, отказ всегда ──
+	ActionLocalEventsTarget: {objNone, notServedHere()},
+
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},
 	ActionDownloadFile: {objFile, readC()},

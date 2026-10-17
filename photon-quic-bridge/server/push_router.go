@@ -41,6 +41,12 @@ func NewPushRouter(p *Plugin, registry *PushRegistry) *PushRouter {
 }
 
 func (r *PushRouter) Route(event PushEvent) {
+	// Событие разговора ENGRAM: аудиторию уже посчитал convService по
+	// таблицам участия (ADR-123 §2.2) — ровно одному адресату.
+	if event.To != "" {
+		r.sink.sendTo(event.To, event)
+		return
+	}
 	// Событие с известным адресатом (status_change): аудитория задана по
 	// построению, канала у события нет.
 	if event.UserID != "" {

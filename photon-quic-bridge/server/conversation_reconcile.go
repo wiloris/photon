@@ -126,17 +126,26 @@ SELECT pos, state, post_id FROM closed`, convID, abandonedBefore, itemKey)
 	if err := rows.Err(); err != nil {
 		return 0, 0, err
 	}
+	authors := map[string]bool{}
 	for _, pb := range pubs {
-		var msg string
-		if err := tx.QueryRowContext(ctx, `SELECT message FROM posts WHERE id = $1`, pb.id).Scan(&msg); err != nil {
+		var msg, author string
+		if err := tx.QueryRowContext(ctx, `SELECT message, userid FROM posts WHERE id = $1`, pb.id).Scan(&msg, &author); err != nil {
 			return 0, 0, err
 		}
 		if err := upsertItemText(ctx, tx, convID, pb.id, pb.pos, msg); err != nil {
 			return 0, 0, err
 		}
+		authors[author] = true
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, 0, err
+	}
+	// Сообщение, опубликованное сверкой, — такое же новое для участников, как
+	// опубликованное 930 (ADR-123 §2.2). Автор не найден — события нет.
+	for mmID := range authors {
+		if pid, _, found, err := ownPhotonID(s.registry, s.users, mmID); err == nil && found {
+			s.pushMessage(convID, pid)
+		}
 	}
 	return published, aborted, nil
 }

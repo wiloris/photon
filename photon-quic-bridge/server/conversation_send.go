@@ -170,6 +170,10 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 	if code != "" {
 		return convFail(code)
 	}
+	// Событие — только после перехода reserved → published (publishMessage
+	// сообщает успех лишь после него; ADR-123 §2.2). Повтор тем же ключом
+	// (slot.found выше) сюда не доходит и события не повторяет.
+	s.pushMessage(p.ConversationID, pid)
 	msg.ID = postID
 	return Response{OK: true, Data: ConvSendResponse{Message: msg}}
 }

@@ -161,6 +161,8 @@ const (
 	ActionOutboxCancel     = int(photonpb.Action_ACTION_OUTBOX_CANCEL)
 	ActionOutboxList       = int(photonpb.Action_ACTION_OUTBOX_LIST)
 	ActionLocalFeedClear   = int(photonpb.Action_ACTION_LOCAL_FEED_CLEAR)
+	// Цель подписки Core (ADR-123 §2.3) — локальное, только ради отказа.
+	ActionLocalEventsTarget = int(photonpb.Action_ACTION_LOCAL_EVENTS_TARGET)
 
 	// ConversationResource (900-999), ADR-099 §2.2: групповые разговоры
 	// ENGRAM. Обработчик — ConversationHandler.
@@ -210,6 +212,10 @@ const (
 	PushEventStatusChange    = "status_change"
 	PushEventChannelUpdated  = "channel_updated"
 	PushEventNewUnread       = "new_unread_channel"
+
+	// Разговор ENGRAM изменился (ADR-123 §2.2): тела нет, только
+	// conversation_id и reason (message | read).
+	PushEventConversationActivity = "conversation_activity"
 )
 
 // ── Wire frames ───────────────────────────────────────────────────────────────
