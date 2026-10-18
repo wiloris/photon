@@ -77,6 +77,17 @@ type convService struct {
 
 	// joinRL — предел попыток 916 (contract §5); создаётся при первом обращении.
 	joinRL *joinLimiter
+
+	// push — куда уходят события разговора (ADR-123 §2.2,
+	// conversation_push.go); nil — push выключен. runPush — запуск
+	// вычисления аудитории; nil — отдельная горутина.
+	push    func(PushEvent)
+	runPush func(func())
+
+	// inflight — публикации 930, идущие в этом процессе; сверка их не
+	// закрывает (conversation_reconcile.go). Указатель: копия сервиса (тот же
+	// процесс) видит тот же учёт. nil — учёта нет, действует только порог.
+	inflight *convInflight
 }
 
 var (

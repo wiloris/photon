@@ -47,6 +47,8 @@ type convListPayload struct {
 	Limit  *int    `json:"limit"`
 	// IncludeHidden — вернуть и скрытые разговоры (ADR-106 §2.4).
 	IncludeHidden bool `json:"include_hidden"`
+	// ADR-124 M1 (contract §8.8): признаки клиента для последнего сообщения.
+	Features []string `json:"features"`
 }
 
 // ConvListItem — краткое описание без состава (ADR-099 §6).
@@ -218,7 +220,7 @@ WHERE conversation_id = $1 AND state = 'active' AND photon_id <> $2 ORDER BY pho
 			}
 			it.PeerPhotonID = peer
 		}
-		item, err := s.lastVisibleItem(ctx, it.ConversationID, metas[i].channelID, metas[i].policy, pid)
+		item, err := s.lastVisibleItem(ctx, it.ConversationID, metas[i].channelID, metas[i].policy, pid, hasFeature(p.Features, convFeatureAttachments))
 		if err != nil {
 			return s.convFailFor("902 last_item", err)
 		}
@@ -234,7 +236,7 @@ WHERE conversation_id = $1 AND state = 'active' AND photon_id <> $2 ORDER BY pho
 // периоды и тот же оператор, что у 931 (ADR-099 §9.4). nil — видимых элементов
 // нет. Читается без S-блокировки: список не обещает снимка, а элемент —
 // самый новый ниже барьера на момент запроса.
-func (s *convService) lastVisibleItem(ctx context.Context, convID, channelID, policy, pid string) (any, error) {
+func (s *convService) lastVisibleItem(ctx context.Context, convID, channelID, policy, pid string, withMedia bool) (any, error) {
 	if channelID == "" {
 		return nil, nil
 	}
@@ -255,7 +257,7 @@ func (s *convService) lastVisibleItem(ctx context.Context, convID, channelID, po
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	it, ok := convItemOf(rows[0], pid, periods)
+	it, ok := convItemOf(rows[0], pid, periods, withMedia)
 	if !ok {
 		return nil, nil
 	}

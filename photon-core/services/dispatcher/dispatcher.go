@@ -71,6 +71,27 @@ type Dispatcher struct {
 	// раньше транспорта» держится, и второе поле было бы заведомым no-op.
 	pumpStarted bool
 
+	// Цель подписки (ADR-123 §2.3, events_target.go). target — под mu;
+	// targetGen растёт с каждой сменой; subCancel отменяет поколение текущей
+	// подписки; targetWake будит насос, ждущий цели. sink/onStop — адресат,
+	// запомненный StartEvents до появления цели. subTr — транспорт подписки
+	// инстанса без секции bridge, создаётся лениво при первой цели.
+	target     subTarget
+	targetGen  uint64
+	subCancel  context.CancelFunc
+	targetWake chan struct{}
+	sink       EventSink
+	onStop     func()
+	subTr      ports.Transport
+	ownSubTr   bool
+
+	// Медиасоединение (ADR-124 M1, local_media.go): отдельное action-
+	// соединение к цели 814 для 815/816. mediaSess и mediaGen — под mu;
+	// mediaMu сериализует только создание и подключение, не передачи.
+	mediaMu   sync.Mutex
+	mediaSess *session.Session
+	mediaGen  uint64
+
 	// inflight считает и вызовы, и попытки подключения. Add происходит под
 	// mu, после проверки closed, — иначе Add мог бы случиться уже после
 	// Wait в Close.
@@ -98,7 +119,10 @@ type connectAttempt struct {
 func New(cfg Config) (*Dispatcher, error) {
 	cfg = cfg.withDefaults()
 
-	d := &Dispatcher{cfg: cfg}
+	d := &Dispatcher{cfg: cfg, targetWake: make(chan struct{}, 1)}
+	if cfg.Endpoint != "" {
+		d.target = subTarget{endpoint: cfg.Endpoint, token: cfg.SessionToken}
+	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 
 	// Хранилище открывается ДО сессии и независимо от неё: инстанс может
@@ -194,7 +218,14 @@ func (d *Dispatcher) SendAction(action int32, payload []byte) ([]byte, error) {
 		d.mu.Unlock()
 		defer d.inflight.Done()
 
-		lctx, lcancel := context.WithTimeout(d.ctx, d.cfg.CallTimeout)
+		// Передача файла (815/816) не укладывается в бюджет обычного
+		// вызова: 100 МБ по медленной сети идут дольше. Её предел — свой,
+		// и отменяется она так же — Photon_Destroy отменяет d.ctx.
+		budget := d.cfg.CallTimeout
+		if isMediaFileAction(action) {
+			budget = mediaTransferTimeout
+		}
+		lctx, lcancel := context.WithTimeout(d.ctx, budget)
 		defer lcancel()
 		return d.localAction(lctx, action, payload)
 	}
@@ -327,8 +358,22 @@ func (d *Dispatcher) Close() error {
 	if d.sess != nil {
 		err = d.sess.Close()
 	}
+	// Медиасоединение — после выхода всех вызовов (inflight.Wait выше).
+	d.mu.Lock()
+	media := d.mediaSess
+	d.mediaSess = nil
+	d.mu.Unlock()
+	if media != nil {
+		_ = media.Close()
+	}
 	if d.ownTransport && d.tr != nil {
 		if cerr := d.tr.Close(); err == nil {
+			err = cerr
+		}
+	}
+	// Транспорт подписки — после выхода насоса (inflight.Wait выше).
+	if d.ownSubTr && d.subTr != nil {
+		if cerr := d.subTr.Close(); err == nil {
 			err = cerr
 		}
 	}

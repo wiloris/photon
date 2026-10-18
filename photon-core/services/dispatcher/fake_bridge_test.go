@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -30,9 +31,10 @@ import (
 type fakeBridge struct {
 	mu sync.Mutex
 
-	connects int
-	conns    []*fakeConn
-	closed   bool
+	connects  int
+	conns     []*fakeConn
+	endpoints []ports.Endpoint
+	closed    bool
 
 	// connectGate, если не nil, удерживает Connect до закрытия канала или
 	// отмены ctx. Нужен, чтобы параллельные вызовы гарантированно застали
@@ -47,6 +49,11 @@ type fakeBridge struct {
 	// action отвечает на action-стрим. nil означает «не отвечать вовсе»:
 	// стрим остаётся открытым, вызывающий обязан уйти по своему дедлайну.
 	action func(hdr map[string]any, payload json.RawMessage) any
+
+	// mediaStream, если не nil, обслуживает потоковые 703/704 (ADR-124 M1):
+	// body — тело запроса сразу после кадров (правило границы ADR-049 §2),
+	// w — стрим ответа: кадр ответа и, для 704, тело.
+	mediaStream func(hdr map[string]any, payload json.RawMessage, body io.Reader, w io.Writer)
 }
 
 func newFakeBridge() *fakeBridge {
@@ -61,6 +68,7 @@ func newFakeBridge() *fakeBridge {
 func (f *fakeBridge) Connect(ctx context.Context, ep ports.Endpoint) (ports.Connection, error) {
 	f.mu.Lock()
 	f.connects++
+	f.endpoints = append(f.endpoints, ep)
 	gate := f.connectGate
 	err := f.connectErr
 	f.mu.Unlock()
@@ -138,6 +146,7 @@ type fakeConn struct {
 	breakOnce sync.Once
 
 	mu      sync.Mutex
+	token   string // session_token кадра auth (цель подписки, ADR-123)
 	idx     int
 	openErr error
 	closed  bool
@@ -176,6 +185,10 @@ func (c *fakeConn) serve(idx int, srv net.Conn) {
 		if dec.Decode(&auth) != nil || dec.Decode(&mode) != nil {
 			return
 		}
+		tok, _ := auth["session_token"].(string)
+		c.mu.Lock()
+		c.token = tok
+		c.mu.Unlock()
 		// Режим фиксируется на СОЕДИНЕНИЕ (bridge-session.md §2.4), и сервер
 		// обязан подтвердить именно запрошенный: подписчик, получивший
 		// "ready", уходит ждать push туда, где сервер UniStream не откроет.
@@ -201,6 +214,11 @@ func (c *fakeConn) serve(idx int, srv net.Conn) {
 	var hdr map[string]any
 	var payload json.RawMessage
 	if dec.Decode(&hdr) != nil || dec.Decode(&payload) != nil {
+		return
+	}
+	if act, _ := hdr["action"].(float64); c.br.mediaStream != nil && (act == 703 || act == 704) {
+		body := io.MultiReader(skipSpace(dec.Buffered()), srv)
+		c.br.mediaStream(hdr, payload, body, srv)
 		return
 	}
 	if c.br.action == nil {
@@ -330,4 +348,31 @@ func newDispatcher(t *testing.T, br *fakeBridge, tune func(*Config)) *Dispatcher
 	}
 	t.Cleanup(func() { d.Close() })
 	return d
+}
+
+func (c *fakeConn) authToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token
+}
+
+func (c *fakeConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// skipSpace — пропуск разделителя "\n" после последнего JSON-кадра (ADR-049 §2).
+func skipSpace(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			return br
+		}
+		if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+			_ = br.UnreadByte()
+			return br
+		}
+	}
 }

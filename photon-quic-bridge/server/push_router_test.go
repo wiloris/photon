@@ -90,3 +90,21 @@ func TestPushChannelIDIsNotSerialized(t *testing.T) {
 	require.NotContains(t, string(b), cPriv)
 	require.NotContains(t, string(b), "channel_id")
 }
+
+// Событие разговора ENGRAM (ADR-123 §2.2): адресат посчитан convService, и
+// маршрутизатор отдаёт его ровно ему, мимо read(C) и без перебора подписчиков.
+func TestPushConversationEventGoesToComputedAddresseeOnly(t *testing.T) {
+	r, sink := newRouterFixture(uA, uB)
+	r.Route(convActivityEvent(uB, "conv-1", convPushReasonMessage))
+	require.Empty(t, sink.sent[uA])
+	require.Len(t, sink.sent[uB], 1)
+}
+
+// Адресат события разговора на провод не выходит: клиенту ENGRAM mm_user_id
+// не выдаётся (ADR-081 §2.5).
+func TestPushConversationAddresseeIsNotSerialized(t *testing.T) {
+	b, err := json.Marshal(convActivityEvent(uB, "conv-1", convPushReasonRead))
+	require.NoError(t, err)
+	require.NotContains(t, string(b), uB)
+	require.JSONEq(t, `{"event":"conversation_activity","data":{"conversation_id":"conv-1","reason":"read"}}`, string(b))
+}

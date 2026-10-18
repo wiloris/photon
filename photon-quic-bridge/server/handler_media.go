@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -20,6 +21,9 @@ import (
 // смысла.
 type MediaHandler struct {
 	plugin *Plugin
+	// conv — сервис разговоров: 705 решает права по таблицам Bridge (ADR-124
+	// M1, contract §8.5). nil — таблиц нет, 705 отвечает temporarily_unavailable.
+	conv *convService
 	// media — ИСПОЛНИТЕЛЬ, а не хранилище. Прежде handler ходил в MediaStore
 	// напрямую и повторял у себя правило «байты доступны?». Пока условие
 	// сводилось к хранимому состоянию, две копии давали один ответ; с
@@ -33,8 +37,15 @@ func (h *MediaHandler) Handle(userID string, action int, raw json.RawMessage) Re
 	switch action {
 	case ActionMediaGetInfo:
 		return h.getInfo(userID, raw)
-	case ActionMediaUpload, ActionMediaDownload:
+	case ActionMediaUpload, ActionMediaDownload, ActionConvMediaUpload, ActionConvMediaDownload:
 		return Response{OK: false, Error: "invalid: media transfer requires a media stream"}
+	case ActionConvMediaInfo:
+		if h.conv == nil {
+			return Response{OK: false, Error: errCodeTemporarilyUnavailable}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), convCallTimeout)
+		defer cancel()
+		return h.conv.mediaInfo(ctx, userID, raw)
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("MediaResource: unknown action %d", action)}
 	}

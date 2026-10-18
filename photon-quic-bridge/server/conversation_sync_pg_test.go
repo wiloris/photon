@@ -837,7 +837,13 @@ func TestConvP3LatePostOnTombstoneNeverReturned(t *testing.T) {
 		return r.count(t, `SELECT count(*) FROM engram_position WHERE conversation_id = $1 AND item_key = $2 AND state = 'reserved'`, id, cid2) == 1
 	}, 5*time.Second, 5*time.Millisecond)
 	p2 := r.msgRows(t, id, cid2)[0].Pos
-	_, ab, err = r.svc.closeAbandonedMessages(context.Background(), id, math.MaxInt64, cid2)
+	// Отменяет ДРУГОЙ процесс (узел кластера, процесс прежней активации): он
+	// не видит учёта публикаций этого процесса (convInflight), и для него
+	// действует только порог. Сам процесс-владелец публикацию в полёте не
+	// отменяет — TestConvReconcilerSkipsInFlightPublication.
+	other := *r.svc
+	other.inflight = &convInflight{}
+	_, ab, err = other.closeAbandonedMessages(context.Background(), id, math.MaxInt64, cid2)
 	require.NoError(t, err)
 	require.Equal(t, 1, ab)
 	close(gate)

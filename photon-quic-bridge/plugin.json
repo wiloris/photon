@@ -5,7 +5,7 @@
   "homepage_url": "https://github.com/yoursdk/photon-plugin",
   "support_url": "https://github.com/yoursdk/photon-plugin/issues",
   "release_notes_url": "https://github.com/yoursdk/photon-plugin/releases",
-  "version": "0.4.8",
+  "version": "0.4.17-media-m1.2",
   "min_server_version": "9.0.0",
   "server": {
     "executables": {
@@ -31,6 +31,20 @@
         "type": "text",
         "default": "",
         "help_text": "OAuth client ID, чей audience обязан нести Google ID token. Пустое значение отключает вход ENGRAM (ADR-078)."
+      },
+      {
+        "key": "ConvReconcileIntervalSec",
+        "display_name": "Сверка разговоров: период, с",
+        "type": "number",
+        "default": 60,
+        "help_text": "Как часто фоновая сверка закрывает брошенные резервы 930 и дописывает незаписанные события. Минимум 10 с. Применяется при активации плагина."
+      },
+      {
+        "key": "ConvReconcileAbandonSec",
+        "display_name": "Сверка разговоров: порог брошенного резерва, с",
+        "type": "number",
+        "default": 300,
+        "help_text": "Резерв 930 старше порога сверяется с Mattermost: пост найден — сообщение публикуется, нет — позиция закрывается надгробием (contract §3.6). Минимум 120 с. До закрытия резерв держит ленту разговора."
       }
     ]
   }

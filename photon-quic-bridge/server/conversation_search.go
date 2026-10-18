@@ -37,6 +37,7 @@ type convSearchPayload struct {
 	ConversationID string          `json:"conversation_id"`
 	Before         *dmWirePosition `json:"before"`
 	Limit          *int            `json:"limit"`
+	Features       []string        `json:"features"` // ADR-124 M1, contract §8.8
 }
 
 // ConvSearchHit — одно найденное сообщение.
@@ -55,7 +56,8 @@ type ConvSearchResponse struct {
 // фильтр ($2, ” — все), образец ($3), якорь ($4 created_at, $5 id; $4 = 0 —
 // без якоря), limit ($6). Периоды since_join — EXISTS по периодам вызывающего.
 const convSearchSQL = `SELECT t.conversation_id, t.item_id, t.created_at, pos.sender, pos.item_key,
-       COALESCE(e.text, p.message), (p.props->>'engram_reply_to'), (p.props->'engram_forwarded_from')::text
+       COALESCE(e.text, p.message), (p.props->>'engram_reply_to'), (p.props->'engram_forwarded_from')::text,
+       (p.props->'photon_media')::text
 FROM engram_member_period mp
 JOIN engram_conversation c ON c.conversation_id = mp.conversation_id AND c.state <> 'creating'
 JOIN engram_item_text t ON t.conversation_id = mp.conversation_id
@@ -134,12 +136,12 @@ func (s *convService) searchMessages(ctx context.Context, callerID string, raw j
 	for rows.Next() {
 		var convID, id string
 		var at int64
-		var sender, key, msg, reply, fwd sql.NullString
-		if err := rows.Scan(&convID, &id, &at, &sender, &key, &msg, &reply, &fwd); err != nil {
+		var sender, key, msg, reply, fwd, media sql.NullString
+		if err := rows.Scan(&convID, &id, &at, &sender, &key, &msg, &reply, &fwd, &media); err != nil {
 			return s.convFailFor("941 scan", err)
 		}
 		found2 = append(found2, hit{convID, convFeedRow{id: id, createAt: at, sender: sender.String, itemKey: key.String,
-			message: msg.String, replyTo: reply.String, forwardedFrom: fwd.String}})
+			message: msg.String, replyTo: reply.String, forwardedFrom: fwd.String, media: media.String}})
 	}
 	if err := rows.Err(); err != nil {
 		return s.convFailFor("941 rows", err)
@@ -150,7 +152,7 @@ func (s *convService) searchMessages(ctx context.Context, callerID string, raw j
 	}
 	resp := ConvSearchResponse{Hits: []ConvSearchHit{}}
 	for _, h := range found2 {
-		it, ok := convItemOf(h.row, pid, nil)
+		it, ok := convItemOf(h.row, pid, nil, hasFeature(p.Features, convFeatureAttachments))
 		if !ok {
 			s.logger("[Photon][Conv] 941 skipped post without reservation", "post_pos", h.row.createAt)
 			continue

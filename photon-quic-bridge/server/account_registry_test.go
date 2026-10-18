@@ -38,23 +38,35 @@ type fakeKV struct {
 	// тест надеется на планировщик и обычно не создаёт осиротевшего
 	// резерва вовсе — то есть проходит, ничего не проверив.
 	afterCAS func(key string, ok bool)
+	// afterGet вызывается ПОСЛЕ снятия блокировки чтения, с ключом и тем,
+	// нашлась ли запись: тест может выстроить порядок «оба прочитали, затем
+	// CAS».
+	afterGet func(key string, found bool)
 }
 
 func newFakeKV() *fakeKV { return &fakeKV{data: map[string][]byte{}} }
 
 func (f *fakeKV) KVGet(key string) ([]byte, *model.AppError) {
+	out, found, appErr := f.getLocked(key)
+	if f.afterGet != nil && appErr == nil {
+		f.afterGet(key, found)
+	}
+	return out, appErr
+}
+
+func (f *fakeKV) getLocked(key string) ([]byte, bool, *model.AppError) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failGet != nil {
-		return nil, f.failGet
+		return nil, false, f.failGet
 	}
 	v, ok := f.data[key]
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	out := make([]byte, len(v))
 	copy(out, v)
-	return out, nil
+	return out, true, nil
 }
 
 func (f *fakeKV) KVCompareAndSet(key string, oldValue, newValue []byte) (bool, *model.AppError) {
@@ -208,13 +220,40 @@ func TestConcurrentRegistrationsOfSameIdentityYieldOneAccount(t *testing.T) {
 // ради чего §3.1 спецификации ставит claim РАНЬШЕ allocate — что типичная
 // гонка двух входов одного пользователя не теряет ни одного идентификатора.
 //
-// Порядок задан детерминированно: проигравший claim не продолжает, пока
-// победитель не завершил R1c. Без этого барьера оба успевают увидеть
-// claimed, оба выделяют — то самое окно §4.3, которое здесь ни при чём.
+// Порядок задан детерминированно двумя барьерами:
+//   - оба первых чтения acct: выполнены до любого claim — оба застают
+//     пустую запись и оба идут в R1a. Без этого второй мог прочитать запись
+//     уже в состоянии claimed (после R1a победителя, до его R1c) и выделить
+//     свой идентификатор, не участвуя в claim вовсе — это окно §4.3,
+//     принятое спецификацией, а не нарушение §3.1; тест падал примерно в
+//     20% прогонов, проверяя не то свойство;
+//   - проигравший claim не продолжает, пока победитель не завершил R1c.
+//     Без этого оба успевают увидеть claimed, оба выделяют — то же окно §4.3.
 func TestLostClaimDoesNotAllocateExtraReservation(t *testing.T) {
 	kvs := newFakeKV()
 	r := NewAccountRegistry(kvs)
 	r.now = func() time.Time { return time.Unix(0, 0).UTC() }
+
+	var bothRead sync.WaitGroup
+	bothRead.Add(2)
+	var reads sync.Mutex
+	acctReads := 0
+	kvs.afterGet = func(key string, found bool) {
+		if len(key) < 5 || key[:5] != "acct:" {
+			return
+		}
+		reads.Lock()
+		acctReads++
+		first := acctReads <= 2 // первое чтение каждой из двух горутин
+		reads.Unlock()
+		if first {
+			if found {
+				t.Errorf("первое чтение застало запись: claim уже был")
+			}
+			bothRead.Done()
+			bothRead.Wait()
+		}
+	}
 
 	// Барьер привязан к ИСХОДУ CAS, а не к номеру горутины: кто выиграл
 	// claim, заранее неизвестно, и ожидание конкретной горутины давало бы
@@ -241,6 +280,7 @@ func TestLostClaimDoesNotAllocateExtraReservation(t *testing.T) {
 	}
 	wg.Wait()
 	kvs.afterCAS = nil
+	kvs.afterGet = nil
 
 	for i, err := range errs {
 		if err != nil {

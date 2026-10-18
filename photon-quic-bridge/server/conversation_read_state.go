@@ -195,15 +195,21 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 
 	// Позиция только растёт: строка обновляется, лишь если новая позиция
 	// больше хранимой; гонка двух 908 не уменьшает её.
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO engram_read_state (conversation_id, photon_id, read_created_at, read_id, updated_at)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO engram_read_state (conversation_id, photon_id, read_created_at, read_id, updated_at)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (conversation_id, photon_id) DO UPDATE
 SET read_created_at = EXCLUDED.read_created_at, read_id = EXCLUDED.read_id, updated_at = EXCLUDED.updated_at
 WHERE EXCLUDED.read_created_at > engram_read_state.read_created_at
    OR (EXCLUDED.read_created_at = engram_read_state.read_created_at
        AND EXCLUDED.read_id COLLATE "C" > engram_read_state.read_id COLLATE "C")`,
-		p.ConversationID, pid, upTo.CreatedAt, upTo.ID, s.now()); err != nil {
+		p.ConversationID, pid, upTo.CreatedAt, upTo.ID, s.now())
+	if err != nil {
 		return s.convFailFor("908 write", err)
+	}
+	// Позиция сдвинулась — другим устройствам читателя повод снять
+	// уведомление (ADR-123 §2.2). Повтор той же отметки события не даёт.
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		s.pushRead(p.ConversationID, callerID)
 	}
 	var stored dmWirePosition
 	if err := s.db.QueryRowContext(ctx, `SELECT read_created_at, read_id FROM engram_read_state

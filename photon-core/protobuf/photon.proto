@@ -196,6 +196,15 @@ enum Action {
   ACTION_MEDIA_DOWNLOAD = 701;
   ACTION_MEDIA_GET_INFO = 702;
 
+  // Вложения разговоров ENGRAM (ADR-124, ПРЕДЛОЖЕНО; профиль M1 §7). Тот же
+  // кадр, что у 700/701, но область прав — разговор, а не канал Mattermost:
+  // доступ по участию и видимости сообщения (contract §8.6), объект без
+  // channel_id. 703/704 — потоковые, 705 — обычное JSON-действие.
+  // Контракт — photon-quic-bridge/docs/conversation-implementation-contract.md §8.
+  ACTION_CONV_MEDIA_UPLOAD   = 703;
+  ACTION_CONV_MEDIA_DOWNLOAD = 704;
+  ACTION_CONV_MEDIA_INFO     = 705;
+
   // ── LocalFeed (800-899) ─────────────────────────────────────────
   // ЛОКАЛЬНЫЕ действия: исполняются хранилищем самого инстанса и на
   // провод не выходят никогда (ADR-064). Сотня 800-899 закреплена за
@@ -257,6 +266,19 @@ enum Action {
   // Очистка ленты канала (ADR-112): записи, сегменты полноты и курсор
   // одной транзакцией; outbox не затрагивается. Bridge отказывает (ADR-064 §2).
   ACTION_LOCAL_FEED_CLEAR = 813;
+
+  // Цель подписки на push (ADR-123 §2.3): endpoint и session_token
+  // QUIC-подписки работающего инстанса задаёт, меняет и снимает хост.
+  // Action-соединения не создаёт. Bridge отвечает отказом (ADR-064 §2).
+  // Контракт — photon-quic-bridge/docs/conversation-push.md §4.
+  ACTION_LOCAL_EVENTS_TARGET = 814;
+
+  // Передача файла вложения разговора (ADR-124 M1, ПРЕДЛОЖЕНО): Core читает
+  // файл по пути и отдаёт его действием 703 / пишет тело 704 в файл по пути —
+  // по медиасоединению к цели 814. Bridge отвечает отказом (ADR-064 §2).
+  // Контракт — photon-core/docs/local-actions.md.
+  ACTION_LOCAL_MEDIA_UPLOAD_FILE   = 815;
+  ACTION_LOCAL_MEDIA_DOWNLOAD_FILE = 816;
 
   // ── ConversationResource (900-999), ADR-099 §2.2 ──────────────────────────
   // Групповые разговоры ENGRAM (ADR-098). 905-909, 919, 922-929 и
@@ -446,6 +468,11 @@ message PhotonRequest {
     MediaUploadPayload media_upload   = 700;
     MediaIDPayload     media_download = 701;
     MediaIDPayload     media_get_info = 702;
+
+    // ── MediaResource, вложения разговоров (703-705) ─── field numbers 703-705
+    ConvMediaUploadPayload conv_media_upload   = 703;
+    MediaIDPayload         conv_media_download = 704;
+    MediaIDPayload         conv_media_info     = 705;
   }
 }
 
@@ -500,6 +527,9 @@ message PhotonResponse {
     MediaUploadResponse media_uploaded = 700;
     MediaDownloadHeader media_download = 701;
     MediaInfoResponse   media_info     = 702;
+    MediaUploadResponse     conv_media_uploaded = 703;
+    ConvMediaDownloadHeader conv_media_download = 704;
+    ConvMediaInfoResponse   conv_media_info     = 705;
 
     // ── Generic (для простых ответов) ─────────────────── field number 999
     GenericResponse generic = 999;
@@ -1060,6 +1090,42 @@ message MediaDownloadHeader {
 
 message MediaInfoResponse {
   MediaRef media = 1;
+}
+
+// ── Вложения разговоров (703-705, ADR-124 M1) ─────────────────────────────────
+
+// ConvMediaUploadPayload — второй JSON-кадр 703; далее ровно body_length байт.
+// upload_key — ключ идемпотентности загрузки, уникален в пределах загрузившего.
+message ConvMediaUploadPayload {
+  string conversation_id = 1;
+  string upload_key      = 2;
+  string kind            = 3; // M1: только "file"
+  string name            = 4;
+  string sha256          = 5;
+  int64  body_length     = 6;
+}
+
+// ConvMediaDownloadHeader — данные кадра ответа 704; body_length — поле
+// конверта, как у 701.
+message ConvMediaDownloadHeader {
+  string media_id = 1;
+  string kind     = 2;
+  string mime     = 3; // M1: всегда application/octet-stream
+  string name     = 4;
+  int64  size     = 5;
+  string sha256   = 6;
+}
+
+// ConvMediaInfoResponse — 705. bound = false только для загрузившего, пока
+// объект не привязан к живому сообщению.
+message ConvMediaInfoResponse {
+  string media_id = 1;
+  string kind     = 2;
+  string mime     = 3;
+  string name     = 4;
+  int64  size     = 5;
+  string sha256   = 6;
+  bool   bound    = 7;
 }
 
 // ── FileResource payloads ─────────────────────────────────────────────────────

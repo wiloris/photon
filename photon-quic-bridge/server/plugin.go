@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"sync"
@@ -39,6 +40,11 @@ type Plugin struct {
 
 	// backgroundJob — фоновый джоб планировщика.
 	backgroundJob *cluster.Job
+
+	// convReconcileJob — фоновая сверка разговоров (conversation_reconciler.go);
+	// nil — разговоры выключены или планирование не удалось.
+	convReconcileJob  *cluster.Job
+	convReconcileStop context.CancelFunc
 
 	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex
@@ -113,6 +119,9 @@ func (p *Plugin) OnActivate() error {
 
 	dispatcher := NewDispatcher(p)
 	p.quicListener = NewQuicListener(p, tlsCfg, dispatcher)
+	// Тот же convService, что обслуживает 930: сверка видит его публикации
+	// «в полёте» и их не закрывает.
+	p.startConvReconciler(dispatcher.conversation.service)
 
 	p.wg.Add(1)
 	go func() {
@@ -133,6 +142,15 @@ func (p *Plugin) OnDeactivate() error {
 		p.quicListener.Shutdown()
 		p.wg.Wait()
 		p.API.LogInfo("[Photon] QUIC bridge stopped")
+	}
+
+	if p.convReconcileStop != nil {
+		p.convReconcileStop()
+	}
+	if p.convReconcileJob != nil {
+		if err := p.convReconcileJob.Close(); err != nil {
+			p.API.LogError("[Photon][Conv] Failed to close reconcile job", "error", err)
+		}
 	}
 
 	// Останавливаем фоновый джоб.
@@ -158,4 +176,10 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 		)
 	}
 	return response, nil
+}
+
+// scheduleClusterJob — cluster.Schedule с периодом interval (один исполнитель
+// на кластер).
+func scheduleClusterJob(p *Plugin, key string, interval time.Duration, fn func()) (*cluster.Job, error) {
+	return cluster.Schedule(p.API, key, cluster.MakeWaitForInterval(interval), fn)
 }
