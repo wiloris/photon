@@ -85,6 +85,13 @@ type Dispatcher struct {
 	subTr      ports.Transport
 	ownSubTr   bool
 
+	// Медиасоединение (ADR-124 M1, local_media.go): отдельное action-
+	// соединение к цели 814 для 815/816. mediaSess и mediaGen — под mu;
+	// mediaMu сериализует только создание и подключение, не передачи.
+	mediaMu   sync.Mutex
+	mediaSess *session.Session
+	mediaGen  uint64
+
 	// inflight считает и вызовы, и попытки подключения. Add происходит под
 	// mu, после проверки closed, — иначе Add мог бы случиться уже после
 	// Wait в Close.
@@ -211,7 +218,14 @@ func (d *Dispatcher) SendAction(action int32, payload []byte) ([]byte, error) {
 		d.mu.Unlock()
 		defer d.inflight.Done()
 
-		lctx, lcancel := context.WithTimeout(d.ctx, d.cfg.CallTimeout)
+		// Передача файла (815/816) не укладывается в бюджет обычного
+		// вызова: 100 МБ по медленной сети идут дольше. Её предел — свой,
+		// и отменяется она так же — Photon_Destroy отменяет d.ctx.
+		budget := d.cfg.CallTimeout
+		if isMediaFileAction(action) {
+			budget = mediaTransferTimeout
+		}
+		lctx, lcancel := context.WithTimeout(d.ctx, budget)
 		defer lcancel()
 		return d.localAction(lctx, action, payload)
 	}
@@ -343,6 +357,14 @@ func (d *Dispatcher) Close() error {
 	var err error
 	if d.sess != nil {
 		err = d.sess.Close()
+	}
+	// Медиасоединение — после выхода всех вызовов (inflight.Wait выше).
+	d.mu.Lock()
+	media := d.mediaSess
+	d.mediaSess = nil
+	d.mu.Unlock()
+	if media != nil {
+		_ = media.Close()
 	}
 	if d.ownTransport && d.tr != nil {
 		if cerr := d.tr.Close(); err == nil {

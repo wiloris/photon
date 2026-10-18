@@ -84,6 +84,14 @@ func targetResponse(state string) ([]byte, error) {
 // принятое старой подпиской, может быть доставлено и после возврата —
 // событие разговора лишь повод перечитать состояние (ADR-123 §2.4).
 func (d *Dispatcher) setTarget(t subTarget) error {
+	// Медиасоединение принадлежит прежней цели: закрывается после снятия
+	// блокировки (defer выполняется после Unlock ниже).
+	var media *session.Session
+	defer func() {
+		if media != nil {
+			_ = media.Close()
+		}
+	}()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
@@ -100,6 +108,7 @@ func (d *Dispatcher) setTarget(t subTarget) error {
 	}
 	d.target = t
 	d.targetGen++
+	media, d.mediaSess = d.mediaSess, nil
 	if d.subCancel != nil {
 		d.subCancel()
 		d.subCancel = nil

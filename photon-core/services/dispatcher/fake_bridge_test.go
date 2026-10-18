@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -33,7 +34,7 @@ type fakeBridge struct {
 	connects  int
 	conns     []*fakeConn
 	endpoints []ports.Endpoint
-	closed   bool
+	closed    bool
 
 	// connectGate, если не nil, удерживает Connect до закрытия канала или
 	// отмены ctx. Нужен, чтобы параллельные вызовы гарантированно застали
@@ -48,6 +49,11 @@ type fakeBridge struct {
 	// action отвечает на action-стрим. nil означает «не отвечать вовсе»:
 	// стрим остаётся открытым, вызывающий обязан уйти по своему дедлайну.
 	action func(hdr map[string]any, payload json.RawMessage) any
+
+	// mediaStream, если не nil, обслуживает потоковые 703/704 (ADR-124 M1):
+	// body — тело запроса сразу после кадров (правило границы ADR-049 §2),
+	// w — стрим ответа: кадр ответа и, для 704, тело.
+	mediaStream func(hdr map[string]any, payload json.RawMessage, body io.Reader, w io.Writer)
 }
 
 func newFakeBridge() *fakeBridge {
@@ -210,6 +216,11 @@ func (c *fakeConn) serve(idx int, srv net.Conn) {
 	if dec.Decode(&hdr) != nil || dec.Decode(&payload) != nil {
 		return
 	}
+	if act, _ := hdr["action"].(float64); c.br.mediaStream != nil && (act == 703 || act == 704) {
+		body := io.MultiReader(skipSpace(dec.Buffered()), srv)
+		c.br.mediaStream(hdr, payload, body, srv)
+		return
+	}
 	if c.br.action == nil {
 		// Ответа нет намеренно: вызывающий обязан уйти по своему дедлайну, а
 		// не ждать вечно. Стрим держится открытым до закрытия соединения.
@@ -349,4 +360,19 @@ func (c *fakeConn) isClosed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closed
+}
+
+// skipSpace — пропуск разделителя "\n" после последнего JSON-кадра (ADR-049 §2).
+func skipSpace(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			return br
+		}
+		if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+			_ = br.UnreadByte()
+			return br
+		}
+	}
 }
