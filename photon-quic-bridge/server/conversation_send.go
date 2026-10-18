@@ -39,6 +39,9 @@ type convSendPayload struct {
 	// прежнее поведение байт в байт, хэш ключа не меняется.
 	ReplyTo       *string                `json:"reply_to"`
 	ForwardedFrom *convForwardedFromWire `json:"forwarded_from"`
+	// ADR-124 M1 (contract §8.7): необязательные вложения — загруженные 703
+	// объекты отправителя в этом разговоре. Отсутствуют — прежнее поведение.
+	Attachments *[]convAttachmentWire `json:"attachments"`
 }
 
 type convForwardedFromWire struct {
@@ -51,7 +54,7 @@ type convForwardedFromWire struct {
 // клиентами, остаются повторяемыми); переданные поля входят в хэш, и только
 // они.
 func convSendHash(p convSendPayload) []byte {
-	if p.ReplyTo == nil && p.ForwardedFrom == nil {
+	if p.ReplyTo == nil && p.ForwardedFrom == nil && p.Attachments == nil {
 		sum := sha256.Sum256([]byte(p.Text))
 		return sum[:]
 	}
@@ -61,6 +64,15 @@ func convSendHash(p convSendPayload) []byte {
 	}
 	if p.ForwardedFrom != nil {
 		canon["forwarded_from"] = map[string]any{"author_photon_id": p.ForwardedFrom.AuthorPhotonID, "created_at": p.ForwardedFrom.CreatedAt}
+	}
+	if p.Attachments != nil {
+		// Упорядоченный список media_id: другой набор под тем же ключом —
+		// idempotency_conflict (contract §8.7).
+		ids := make([]string, len(*p.Attachments))
+		for i, a := range *p.Attachments {
+			ids[i] = a.MediaID
+		}
+		canon["attachments"] = ids
 	}
 	return convHash(canon)
 }
@@ -77,6 +89,8 @@ type ConvMessage struct {
 	// ADR-109: как в элементе ленты; у обычного сообщения их нет.
 	ReplyTo       string             `json:"reply_to,omitempty"`
 	ForwardedFrom *ConvForwardedFrom `json:"forwarded_from,omitempty"`
+	// ADR-124 M1: вложения сообщения в порядке запроса.
+	Attachments []ConvAttachment `json:"attachments,omitempty"`
 }
 
 type ConvSendResponse struct {
@@ -108,7 +122,16 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 	}
 	// Регистр UUID не различает ключ — как 217.
 	cid := strings.ToLower(p.ClientMsgID)
-	if strings.TrimSpace(p.Text) == "" {
+	mediaIDs, ok := attachmentIDs(p.Attachments)
+	if !ok {
+		return convFail(convErrInvalidRequest)
+	}
+	// Пересылка с вложениями в v1 запрещена (ADR-124 §2.1).
+	if mediaIDs != nil && p.ForwardedFrom != nil {
+		return convFail(convErrInvalidRequest)
+	}
+	// Пустой текст допустим только при вложениях (contract §8.7).
+	if strings.TrimSpace(p.Text) == "" && mediaIDs == nil {
 		return convFail(errMessageEmpty)
 	}
 	if utf8.RuneCountInString(p.Text) > directMessageMaxRunes {
@@ -145,7 +168,7 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 	}
 	defer releaseSend()
 
-	slot, code, err := s.admitAndReserve(ctx, p.ConversationID, pid, cid, convSendHash(p), p.ReplyTo)
+	slot, code, err := s.admitAndReserve(ctx, p.ConversationID, pid, cid, convSendHash(p), p.ReplyTo, mediaIDs)
 	if err != nil {
 		return s.convFailFor("930 reserve", err)
 	}
@@ -161,6 +184,19 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 	if f := p.ForwardedFrom; f != nil {
 		msg.ForwardedFrom = &ConvForwardedFrom{AuthorPhotonID: f.AuthorPhotonID, CreatedAt: f.CreatedAt}
 		extra[propEngramForwardedFrom] = map[string]any{"author_photon_id": f.AuthorPhotonID, "created_at": f.CreatedAt}
+	}
+	if mediaIDs != nil {
+		atts, err := loadAttachments(ctx, s.db, p.ConversationID, slot.pos)
+		if err != nil {
+			if !slot.found {
+				// Резерв уже держит привязку: без проекции пост не публикуется,
+				// резерв закроет сверка (contract §3.6).
+				s.logger("[Photon][Conv] 930 attachments read failed, reservation stays open", "pos", slot.pos)
+			}
+			return s.convFailFor("930 attachments", err)
+		}
+		msg.Attachments = atts
+		extra[propPhotonMedia] = projectionOf(atts)
 	}
 	if slot.found {
 		msg.ID = slot.postID
@@ -183,7 +219,7 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 // выходе из функции — после COMMIT транзакции резерва, никак не раньше:
 // иначе изменение, зафиксированное между проверкой права и резервом,
 // встало бы раньше сообщения (ADR-101 §5.3).
-func (s *convService) admitAndReserve(ctx context.Context, convID, pid, cid string, hash []byte, replyTo *string) (convSendSlot, string, error) {
+func (s *convService) admitAndReserve(ctx context.Context, convID, pid, cid string, hash []byte, replyTo *string, mediaIDs []string) (convSendSlot, string, error) {
 	releaseS, err := s.holdSharedLock(ctx, convLockKey(convID))
 	if err != nil {
 		return convSendSlot{}, "", err
@@ -214,9 +250,12 @@ func (s *convService) admitAndReserve(ctx context.Context, convID, pid, cid stri
 			}
 			replyChecked = true
 		}
-		pos, again, err := s.reserveMessage(ctx, convID, pid, cid, hash)
+		pos, again, code, err := s.reserveMessage(ctx, convID, pid, cid, hash, mediaIDs)
 		if err != nil {
 			return convSendSlot{}, "", err
+		}
+		if code != "" {
+			return convSendSlot{}, code, nil
 		}
 		if !again {
 			return convSendSlot{channelID: channelID, pos: pos}, "", nil
@@ -330,26 +369,26 @@ WHERE conversation_id = $1 AND item_kind = 'message' AND item_key = $2 AND sende
 // ждут строку; так чужой резерв, появившийся и даже отменённый после
 // проверки §3.2, не даёт второму отправителю занять ключ (ADR-102 §2).
 // again=true — резерв не сделан, повторить §3.2.
-func (s *convService) reserveMessage(ctx context.Context, convID, pid, cid string, hash []byte) (int64, bool, error) {
+func (s *convService) reserveMessage(ctx context.Context, convID, pid, cid string, hash []byte, mediaIDs []string) (int64, bool, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	defer tx.Rollback()
 	var pos int64
 	clock := s.now()
 	if err := tx.QueryRowContext(ctx, `UPDATE engram_conversation SET position_h = GREATEST($2, position_h + 1)
 WHERE conversation_id = $1 RETURNING position_h`, convID, clock).Scan(&pos); err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	var taken bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM engram_position
 WHERE conversation_id = $1 AND item_kind = 'message' AND item_key = $2 AND (sender <> $3 OR state <> 'aborted'))`,
 		convID, cid, pid).Scan(&taken); err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	if taken {
-		return 0, true, nil
+		return 0, true, "", nil
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO engram_position
   (conversation_id, pos, item_kind, item_key, state, sender, payload_hash, reserved_at)
@@ -358,13 +397,24 @@ VALUES ($1, $2, 'message', $3, 'reserved', $4, $5, $6)`, convID, pos, cid, pid, 
 		// §3.3). Текст ошибки через RPC-драйвер приходит строкой, поэтому
 		// причину не разбираем: неустранимая ошибка исчерпает попытки.
 		s.logger("[Photon][Conv] 930 reserve insert failed", "error", err.Error())
-		return 0, true, nil
+		return 0, true, "", nil
+	}
+	// Привязка вложений — в той же транзакции, что резерв (contract §8.7):
+	// либо позиция и все привязки, либо ничего.
+	if mediaIDs != nil {
+		ok, err := bindAttachments(ctx, tx, convID, pid, pos, mediaIDs)
+		if err != nil {
+			return 0, false, "", err
+		}
+		if !ok {
+			return 0, false, convErrForbidden, nil
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	s.observePositionLead("930", convID, pos, clock)
-	return pos, false, nil
+	return pos, false, "", nil
 }
 
 // publishMessage — contract §3.4–§3.5. Возвращает id поста или код отказа;

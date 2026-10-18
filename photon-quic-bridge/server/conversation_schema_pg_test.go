@@ -171,6 +171,11 @@ CREATE INDEX engram_position_key_all ON engram_position (conversation_id, item_k
 		{"v10: период не допускает banned", `ALTER TABLE engram_member_period DROP CONSTRAINT engram_member_period_state_check;
 ALTER TABLE engram_member_period ADD CONSTRAINT engram_member_period_state_check CHECK (state IN ('active','left','removed'))`, "не допускает banned"},
 		{"v11: нет таблицы реакций", `DROP TABLE engram_reaction`, "нет таблицы engram_reaction"},
+		{"v12: нет таблицы вложений", `DROP TABLE engram_media`, "нет таблицы engram_media"},
+		{"v12: нет индекса ключа загрузки", `DROP INDEX engram_media_upload_key`, "нет индекса engram_media_upload_key"},
+		{"v12: ключ загрузки не уникален", `DROP INDEX engram_media_upload_key;
+CREATE INDEX engram_media_upload_key ON engram_media (uploader_pid, upload_key) WHERE state <> 'deleted'`, "engram_media_upload_key: unique=false"},
+		{"v12: нет индекса привязки", `DROP INDEX engram_media_bound`, "нет индекса engram_media_bound"},
 		{"версия ниже", `UPDATE engram_schema SET version = 0`, "версия схемы 0"},
 	}
 	for _, tc := range cases {

@@ -134,6 +134,12 @@ const (
 	ActionMediaDownload = int(photonpb.Action_ACTION_MEDIA_DOWNLOAD)
 	ActionMediaGetInfo  = int(photonpb.Action_ACTION_MEDIA_GET_INFO)
 
+	// Вложения разговоров (ADR-124 M1; contract §8): 703/704 — потоковые,
+	// 705 — JSON. Область прав — разговор, не канал.
+	ActionConvMediaUpload   = int(photonpb.Action_ACTION_CONV_MEDIA_UPLOAD)
+	ActionConvMediaDownload = int(photonpb.Action_ACTION_CONV_MEDIA_DOWNLOAD)
+	ActionConvMediaInfo     = int(photonpb.Action_ACTION_CONV_MEDIA_INFO)
+
 	// ── LocalFeed (800-899) ──
 	// ЛОКАЛЬНОЕ действие клиента: исполняется хранилищем самого инстанса и
 	// на провод не выходит (ADR-064). Здесь оно объявлено не потому, что
@@ -163,6 +169,9 @@ const (
 	ActionLocalFeedClear   = int(photonpb.Action_ACTION_LOCAL_FEED_CLEAR)
 	// Цель подписки Core (ADR-123 §2.3) — локальное, только ради отказа.
 	ActionLocalEventsTarget = int(photonpb.Action_ACTION_LOCAL_EVENTS_TARGET)
+	// 815/816 (ADR-124 M1): передача файла вложения через Core — локальные.
+	ActionLocalMediaUploadFile   = int(photonpb.Action_ACTION_LOCAL_MEDIA_UPLOAD_FILE)
+	ActionLocalMediaDownloadFile = int(photonpb.Action_ACTION_LOCAL_MEDIA_DOWNLOAD_FILE)
 
 	// ConversationResource (900-999), ADR-099 §2.2: групповые разговоры
 	// ENGRAM. Обработчик — ConversationHandler.

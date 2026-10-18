@@ -26,6 +26,9 @@ type convSyncPayload struct {
 	ConversationID string  `json:"conversation_id"`
 	Cursor         *string `json:"cursor"`
 	Limit          *int    `json:"limit"`
+	// ADR-124 M1 (contract §8.8): признаки клиента; "attachments" — отдавать
+	// вложения, иначе заглушка в тексте.
+	Features []string `json:"features"`
 }
 
 // ConvMessageItem и ConvEventItem — элемент ленты (ADR-099 §9.3). Ни одного
@@ -41,6 +44,8 @@ type ConvMessageItem struct {
 	// ADR-109 §2.4–2.5: ответ и пересылка; у обычного сообщения их нет.
 	ReplyTo       string             `json:"reply_to,omitempty"`
 	ForwardedFrom *ConvForwardedFrom `json:"forwarded_from,omitempty"`
+	// ADR-124 M1 (contract §8.8): только клиенту с признаком "attachments".
+	Attachments []ConvAttachment `json:"attachments,omitempty"`
 }
 
 // ConvForwardedFrom — происхождение пересланного сообщения (ADR-109 §2.5):
@@ -153,12 +158,13 @@ func convFeedSQL(mode convFeedMode, periods int) string {
   SELECT COALESCE(
     (SELECT pos FROM engram_position WHERE conversation_id = $1 AND state = 'reserved' ORDER BY pos LIMIT 1),
     (SELECT position_h + 1 FROM engram_conversation WHERE conversation_id = $1)) AS bar)
-SELECT b.bar, x.id, x.createat, x.type, x.message, x.event, x.reply_to, x.fwd, x.del, r.sender, r.item_key
+SELECT b.bar, x.id, x.createat, x.type, x.message, x.event, x.reply_to, x.fwd, x.del, r.sender, r.item_key, x.media
 FROM b
 LEFT JOIN LATERAL (
-  SELECT u.id, u.createat, u.type, u.message, u.event, u.reply_to, u.fwd, u.del FROM (
+  SELECT u.id, u.createat, u.type, u.message, u.event, u.reply_to, u.fwd, u.del, u.media FROM (
     (SELECT DISTINCT ON (p.createat) p.id, p.createat, p.type, p.message, (p.props->'engram_event')::text AS event,
-       (p.props->>'engram_reply_to') AS reply_to, (p.props->'engram_forwarded_from')::text AS fwd, false AS del
+       (p.props->>'engram_reply_to') AS reply_to, (p.props->'engram_forwarded_from')::text AS fwd, false AS del,
+       (p.props->'photon_media')::text AS media
      FROM posts p
      WHERE p.channelid = $2 AND p.deleteat = 0 AND p.type IN ('', 'custom_engram_event')
        AND p.createat >= $3 AND p.createat < LEAST(b.bar, $5)` + filter + `
@@ -169,7 +175,7 @@ LEFT JOIN LATERAL (
      ORDER BY p.createat ` + order + `, p.id ASC
      LIMIT $4)
     UNION ALL
-    (SELECT d.post_id, d.pos, ''::text, ''::text, NULL::text, NULL::text, NULL::text, true
+    (SELECT d.post_id, d.pos, ''::text, ''::text, NULL::text, NULL::text, NULL::text, true, NULL::text
      FROM engram_position d
      WHERE d.conversation_id = $1 AND d.item_kind = 'message' AND d.state = 'published'
        AND d.deleted_at IS NOT NULL AND d.post_id IS NOT NULL
@@ -185,6 +191,7 @@ ORDER BY x.createat ` + order
 type convFeedRow struct {
 	id, typ, message, event, sender, itemKey string
 	replyTo, forwardedFrom                   string // props поста: ADR-109 §2.4–2.5
+	media                                    string // props.photon_media: проекция вложений (ADR-124 M1)
 	deleted                                  bool   // надгробие: engram_position.deleted_at (ADR-109 §2.2)
 	createAt                                 int64
 }
@@ -226,10 +233,10 @@ func runConvFeedBelow(ctx context.Context, q convQuerier, sqlText, convID, chann
 	var out []convFeedRow
 	for rows.Next() {
 		var b int64
-		var id, typ, msg, ev, reply, fwd, sender, key sql.NullString
+		var id, typ, msg, ev, reply, fwd, sender, key, media sql.NullString
 		var at sql.NullInt64
 		var del sql.NullBool
-		if err := rows.Scan(&b, &id, &at, &typ, &msg, &ev, &reply, &fwd, &del, &sender, &key); err != nil {
+		if err := rows.Scan(&b, &id, &at, &typ, &msg, &ev, &reply, &fwd, &del, &sender, &key, &media); err != nil {
 			return 0, nil, err
 		}
 		bar = b
@@ -238,7 +245,7 @@ func runConvFeedBelow(ctx context.Context, q convQuerier, sqlText, convID, chann
 		}
 		out = append(out, convFeedRow{id: id.String, createAt: at.Int64, typ: typ.String, message: msg.String,
 			event: ev.String, sender: sender.String, itemKey: key.String,
-			replyTo: reply.String, forwardedFrom: fwd.String, deleted: del.Bool})
+			replyTo: reply.String, forwardedFrom: fwd.String, deleted: del.Bool, media: media.String})
 	}
 	return bar, out, rows.Err()
 }
@@ -384,7 +391,7 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 	_ = bar // барьер уже учтён в самом операторе: выше него строк нет
 
 	for _, r := range rows {
-		it, ok := convItemOf(r, pid, periods)
+		it, ok := convItemOf(r, pid, periods, hasFeature(p.Features, convFeatureAttachments))
 		if !ok {
 			s.logger("[Photon][Conv] 931 skipped post without reservation or event body", "post_pos", r.createAt)
 			continue
@@ -413,8 +420,9 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 // резерва автора или без тела события: такой элемент не выдаётся. periods —
 // периоды вызывающего при since_join (nil — лента видна целиком): событие
 // правки или удаления о сообщении вне периодов не выдаётся, иначе правка
-// раскрыла бы текст до вступления (contract §5b.2).
-func convItemOf(r convFeedRow, callerPID string, periods []convPeriodBounds) (any, bool) {
+// раскрыла бы текст до вступления (contract §5b.2). withMedia — клиент
+// понимает вложения (contract §8.8): иначе вместо них заглушка в тексте.
+func convItemOf(r convFeedRow, callerPID string, periods []convPeriodBounds, withMedia bool) (any, bool) {
 	switch r.typ {
 	case "":
 		if r.deleted {
@@ -433,6 +441,13 @@ func convItemOf(r convFeedRow, callerPID string, periods []convPeriodBounds) (an
 		}
 		if r.sender == callerPID {
 			it.ClientMsgID = r.itemKey
+		}
+		if atts := parseMediaProjection(r.media); len(atts) > 0 {
+			if withMedia {
+				it.Attachments = atts
+			} else {
+				it.Text = attachmentPlaceholder(it.Text, atts)
+			}
 		}
 		return it, true
 	case convEventPostType:

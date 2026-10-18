@@ -945,7 +945,7 @@ VALUES ($1, $2, 'message', $3, $4, $5, '\x00', 1, $6)`, id, pos, cid, state, pid
 			require.False(t, slot.found)
 
 			// Шаги цикла admitAndReserve: резерв отвергает ключ, повтор §3.2.
-			_, again, err := r.svc.reserveMessage(ctx, id, pidB, cid, hash)
+			_, again, _, err := r.svc.reserveMessage(ctx, id, pidB, cid, hash, nil)
 			require.NoError(t, err)
 			require.True(t, again, "резерв под строкой H видит чужой ключ")
 			_, code, _, err = lookupSendKey(ctx, r.db, id, pidB, cid, hash)

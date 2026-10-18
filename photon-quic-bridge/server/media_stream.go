@@ -34,7 +34,8 @@ var mediaStreamDeadline = 30 * time.Second
 // Dispatch. Разделение по коду, а не по содержимому кадра: направление тела
 // задаётся действием, а не переговорами.
 func isMediaTransfer(action int) bool {
-	return action == ActionMediaUpload || action == ActionMediaDownload
+	return action == ActionMediaUpload || action == ActionMediaDownload ||
+		action == ActionConvMediaUpload || action == ActionConvMediaDownload
 }
 
 // bodyAfterFrames — тело, начинающееся СРАЗУ после последнего JSON-кадра.
@@ -132,6 +133,10 @@ func (ql *QuicListener) handleMediaStream(stream *quic.Stream, dec *json.Decoder
 		ql.mediaUpload(stream, dec, userID, payload)
 	case ActionMediaDownload:
 		ql.mediaDownload(stream, userID, payload)
+	case ActionConvMediaUpload:
+		ql.convMediaUpload(stream, dec, userID, payload)
+	case ActionConvMediaDownload:
+		ql.convMediaDownload(stream, userID, payload)
 	}
 }
 

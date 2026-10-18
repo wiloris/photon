@@ -224,6 +224,11 @@ func (z *authz) resolve(kind objectKind, subject string, raw json.RawMessage) (o
 		if err != nil || mo == nil {
 			return o, errForbidden
 		}
+		// Объект вложения разговора (ADR-124 M1) каналу не принадлежит:
+		// путь 700–702 его не отдаёт никому, права — только через 704/705.
+		if mo.ChannelID == "" {
+			return o, errForbidden
+		}
 		ch, cerr := z.channelByID(mo.ChannelID)
 		if cerr != nil {
 			return o, cerr
@@ -583,6 +588,14 @@ var rules = map[int]rule{
 	ActionMediaDownload: {objMedia, readC()},
 	ActionMediaGetInfo:  {objMedia, readC()},
 
+	// Вложения разговоров (ADR-124 M1, contract §8.6): как 930/931 —
+	// «аутентифицирован» здесь, участие, видимость сообщения и живость поста
+	// проверяет обработчик по таблицам Bridge на КАЖДОМ запросе. Канал
+	// Mattermost в решении не участвует: участники не члены носителя.
+	ActionConvMediaUpload:   {objNone, authenticated()},
+	ActionConvMediaDownload: {objNone, authenticated()},
+	ActionConvMediaInfo:     {objNone, authenticated()},
+
 	// ── LocalFeed: сервер не исполняет, отказ всегда ──
 	ActionLocalFeedPage:      {objNone, notServedHere()},
 	ActionLocalFeedPut:       {objNone, notServedHere()},
@@ -605,6 +618,10 @@ var rules = map[int]rule{
 
 	// ── 814 (ADR-123 §2.3): цель подписки Core, отказ всегда ──
 	ActionLocalEventsTarget: {objNone, notServedHere()},
+
+	// ── 815/816 (ADR-124 M1): передача файла через Core, отказ всегда ──
+	ActionLocalMediaUploadFile:   {objNone, notServedHere()},
+	ActionLocalMediaDownloadFile: {objNone, notServedHere()},
 
 	// ── FileResource ──
 	ActionUploadFile:   {objChannel, permChan(model.PermissionUploadFile)},

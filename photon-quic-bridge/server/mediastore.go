@@ -52,21 +52,26 @@ const (
 )
 
 // MediaObject — минимальная авторитетная схема из ADR-048 §7.
-// Поля сверх перечисленных там не вводятся.
+// Поля сверх перечисленных там не вводятся — кроме ConversationID (ADR-124 M1):
+// объект разговора принадлежит разговору, а не каналу, и channel_id у него пуст.
 type MediaObject struct {
-	MediaID    string     `json:"media_id"`
-	PostID     string     `json:"post_id,omitempty"` // пуст до прикрепления
-	ChannelID  string     `json:"channel_id"`
-	UploaderID string     `json:"uploader_id"`
-	SHA256     string     `json:"sha256"`
-	Size       int64      `json:"size"`
-	Mime       string     `json:"mime"`
-	Name       string     `json:"name"`
-	W          int32      `json:"w,omitempty"`
-	H          int32      `json:"h,omitempty"`
-	State      MediaState `json:"state"`
-	CreatedAt  int64      `json:"created_at"`
-	ExpiresAt  int64      `json:"expires_at"`
+	MediaID   string `json:"media_id"`
+	PostID    string `json:"post_id,omitempty"` // пуст до прикрепления
+	ChannelID string `json:"channel_id"`
+	// ConversationID — область объекта вложения разговора (ADR-124 M1). Права
+	// на такой объект решает обработчик по таблицам Bridge; путь 700–702
+	// (objMedia) отказывает по пустому ChannelID.
+	ConversationID string     `json:"conversation_id,omitempty"`
+	UploaderID     string     `json:"uploader_id"`
+	SHA256         string     `json:"sha256"`
+	Size           int64      `json:"size"`
+	Mime           string     `json:"mime"`
+	Name           string     `json:"name"`
+	W              int32      `json:"w,omitempty"`
+	H              int32      `json:"h,omitempty"`
+	State          MediaState `json:"state"`
+	CreatedAt      int64      `json:"created_at"`
+	ExpiresAt      int64      `json:"expires_at"`
 }
 
 // HasBytes — доступны ли байты объекта.

@@ -52,7 +52,7 @@ func NewDispatcher(p *Plugin) *Dispatcher {
 		engram:       NewEngramHandler(p), // инициализируем через конструктор (rate limiter)
 		file:         &FileHandler{plugin: p},
 		wall:         &WallHandler{plugin: p},
-		media:        &MediaHandler{plugin: p, media: mediaSvcInstance},
+		media:        &MediaHandler{plugin: p, media: mediaSvcInstance, conv: conversation.service},
 		conversation: conversation,
 		mediaService: mediaSvcInstance,
 	}

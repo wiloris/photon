@@ -120,18 +120,21 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // UploadRequest — то, что объявил клиент до передачи тела.
 type UploadRequest struct {
-	ChannelID  string
-	UploaderID string
-	Name       string
-	Mime       string
-	SHA256     string // объявлен ДО передачи: проверка целостности двусторонняя
-	BodyLength int64
+	ChannelID string
+	// ConversationID — вместо ChannelID для вложений разговора (ADR-124 M1).
+	// Ровно одно из двух.
+	ConversationID string
+	UploaderID     string
+	Name           string
+	Mime           string
+	SHA256         string // объявлен ДО передачи: проверка целостности двусторонняя
+	BodyLength     int64
 }
 
 func (r UploadRequest) validate() error {
 	switch {
-	case r.ChannelID == "":
-		return fmt.Errorf("%w: channel_id is required", ErrMediaInvalidRequest)
+	case (r.ChannelID == "") == (r.ConversationID == ""):
+		return fmt.Errorf("%w: exactly one of channel_id and conversation_id is required", ErrMediaInvalidRequest)
 	case r.UploaderID == "":
 		return fmt.Errorf("%w: uploader is required", ErrMediaInvalidRequest)
 	case r.Name == "":
@@ -196,16 +199,17 @@ func (s *MediaService) Upload(req UploadRequest, body io.Reader) (*MediaObject, 
 
 	now := s.now()
 	obj := &MediaObject{
-		MediaID:    mediaID,
-		ChannelID:  req.ChannelID,
-		UploaderID: req.UploaderID,
-		SHA256:     got,
-		Size:       n,
-		Mime:       req.Mime,
-		Name:       req.Name,
-		State:      MediaStored,
-		CreatedAt:  now.UnixMilli(),
-		ExpiresAt:  now.Add(s.ttl).UnixMilli(),
+		MediaID:        mediaID,
+		ChannelID:      req.ChannelID,
+		ConversationID: req.ConversationID,
+		UploaderID:     req.UploaderID,
+		SHA256:         got,
+		Size:           n,
+		Mime:           req.Mime,
+		Name:           req.Name,
+		State:          MediaStored,
+		CreatedAt:      now.UnixMilli(),
+		ExpiresAt:      now.Add(s.ttl).UnixMilli(),
 	}
 	if err := s.store.PutMeta(obj); err != nil {
 		// Байты без метаданных недостижимы и подлежат уборке: объект, о

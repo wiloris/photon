@@ -26,7 +26,7 @@ import (
 // увидеть только что записанное (ADR-100 §2.1).
 
 // convSchemaVersion — версия схемы, которую знает этот код.
-const convSchemaVersion = 11
+const convSchemaVersion = 12
 
 // convMigrations[i] переводит схему с версии i на i+1. Только вперёд: правка
 // уже выпущенной миграции запрещена, изменение — новой строкой.
@@ -253,6 +253,28 @@ CREATE TABLE engram_reaction (
   PRIMARY KEY (item_id, photon_id, reaction)
 );
 `,
+	// v12 — вложения разговоров, M1 (ADR-124 §7; contract §8.2). Байты — в
+	// MediaStore; здесь права и привязка. Состояние привязки выводится из
+	// позиции bound_pos в engram_position, отдельных записей ссылок нет.
+	`
+CREATE TABLE engram_media (
+  media_id         text   PRIMARY KEY,
+  conversation_id  text   NOT NULL,
+  uploader_pid     text   NOT NULL,
+  upload_key       text   NOT NULL,
+  kind             text   NOT NULL,
+  name             text   NOT NULL,
+  size             bigint NOT NULL,
+  sha256           text   NOT NULL,
+  state            text   NOT NULL CHECK (state IN ('stored','deleted')),
+  created_at       bigint NOT NULL,
+  bound_pos        bigint,
+  bound_ord        int,
+  bytes_removed_at bigint
+);
+CREATE UNIQUE INDEX engram_media_upload_key ON engram_media (uploader_pid, upload_key) WHERE state <> 'deleted';
+CREATE INDEX engram_media_bound ON engram_media (conversation_id, bound_pos) WHERE bound_pos IS NOT NULL;
+`,
 }
 
 // convMigrationSteps[i] — Go-шаг, выполняемый в той же транзакции сразу после
@@ -378,12 +400,12 @@ func readConvSchemaVersion(ctx context.Context, q convQueryer) (int, error) {
 	}
 }
 
-// convSchemaTables — таблицы схемы (v1–v11).
+// convSchemaTables — таблицы схемы (v1–v12).
 var convSchemaTables = []string{
 	"engram_schema", "engram_service_team", "engram_conversation",
 	"engram_member_period", "engram_request", "engram_event", "engram_position",
 	"engram_direct_pair", "engram_member_state", "engram_invite", "engram_read_state", "engram_item_edit", "engram_item_text",
-	"engram_user_block", "engram_conversation_ban", "engram_reaction",
+	"engram_user_block", "engram_conversation_ban", "engram_reaction", "engram_media",
 }
 
 // convIndexSpec — индекс, на который опираются инварианты и запросы
@@ -419,6 +441,9 @@ var convSchemaIndexes = map[string]convIndexSpec{
 	"engram_invite_token_hash_key": {"engram_invite", "(token_hash)", true, ""},
 	// поиск сообщений (ADR-110)
 	"engram_item_text_conv": {"engram_item_text", "(conversation_id, created_at DESC, item_id)", false, ""},
+	// вложения (ADR-124 M1): ключ загрузки и привязка к позиции
+	"engram_media_upload_key": {"engram_media", "(uploader_pid, upload_key)", true, "deleted"},
+	"engram_media_bound":      {"engram_media", "(conversation_id, bound_pos)", false, "bound_pos IS NOT NULL"},
 }
 
 // checkConversationSchema — проверка при активации (ADR-100 §2.6): драйвер,

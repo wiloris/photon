@@ -316,3 +316,15 @@ func TestObjMediaRequiresExistingChannel(t *testing.T) {
 	require.NoError(t, z.authorize(uA, ActionMediaGetInfo, pl(t, map[string]string{"media_id": "realch01"})),
 		"контроль: на существующем канале то же право обязано пропускать")
 }
+
+// Объект вложения разговора (ADR-124 M1) пустым channel_id отрезан от пути
+// 700–702: ни один субъект не получает его по 701/702, права — только 704/705.
+func TestObjMediaDeniesConversationObject(t *testing.T) {
+	z := newFixture()
+	z.media.(*fakeMediaStore).add(&MediaObject{MediaID: "conv_media", ConversationID: "conv1", State: MediaStored})
+	for _, subject := range []string{uA, uB} {
+		for _, action := range []int{ActionMediaDownload, ActionMediaGetInfo} {
+			require.ErrorIs(t, z.authorize(subject, action, pl(t, map[string]string{"media_id": "conv_media"})), errForbidden)
+		}
+	}
+}

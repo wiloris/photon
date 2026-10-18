@@ -18,6 +18,7 @@ type convHistoryPayload struct {
 	ConversationID string          `json:"conversation_id"`
 	Before         *dmWirePosition `json:"before"`
 	Limit          *int            `json:"limit"`
+	Features       []string        `json:"features"` // ADR-124 M1, contract §8.8
 }
 
 // ConvHistoryResponse — ответ 940: элементы строго старше якоря в порядке
@@ -106,7 +107,7 @@ WHERE conversation_id = $1`, p.ConversationID).Scan(&policy, &channelID); err !=
 	}
 	resp := ConvHistoryResponse{Items: []any{}, AtStart: atStart}
 	for _, r := range rows {
-		it, ok := convItemOf(r, pid, periods)
+		it, ok := convItemOf(r, pid, periods, hasFeature(p.Features, convFeatureAttachments))
 		if !ok {
 			s.logger("[Photon][Conv] 940 skipped post without reservation or event body", "post_pos", r.createAt)
 			continue
