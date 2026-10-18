@@ -426,6 +426,9 @@ VALUES ($1, $2, 'message', $3, 'reserved', $4, $5, $6)`, convID, pos, cid, pid, 
 func (s *convService) publishMessage(ctx context.Context, callerID, convID, cid, text string, slot convSendSlot, extra map[string]any) (string, string) {
 	// PendingPostId не задаётся (contract §3.4: либо не задаётся, либо
 	// ключ + позиция): дедупликация Mattermost по нему не сверяет CreateAt.
+	// Пока публикация идёт в этом процессе, сверка позицию не закрывает:
+	// отсутствие поста сейчас ещё не значит, что его не будет (contract §3.6).
+	defer s.inflight.begin(convID, slot.pos, s.now())()
 	post := &model.Post{ChannelId: slot.channelID, UserId: callerID, Message: text, CreateAt: slot.pos}
 	post.AddProp(dmPropClientMsgID, cid)
 	for k, v := range extra {

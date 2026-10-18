@@ -83,6 +83,11 @@ type convService struct {
 	// вычисления аудитории; nil — отдельная горутина.
 	push    func(PushEvent)
 	runPush func(func())
+
+	// inflight — публикации 930, идущие в этом процессе; сверка их не
+	// закрывает (conversation_reconcile.go). Указатель: копия сервиса (тот же
+	// процесс) видит тот же учёт. nil — учёта нет, действует только порог.
+	inflight *convInflight
 }
 
 var (

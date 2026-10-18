@@ -430,7 +430,8 @@ func newGroupRig(t *testing.T, maxChannels int64) *groupRig {
 		db: db, mm: r.mm, registry: r.id, users: r.id, botID: convTestBot,
 		now:      func() int64 { return time.Now().UnixMilli() },
 		lockWait: 10 * time.Second, pollEvery: 5 * time.Millisecond,
-		logger: func(string, ...any) {},
+		logger:   func(string, ...any) {},
+		inflight: &convInflight{},
 	}
 	t.Cleanup(func() {
 		r.mm.mu.Lock()

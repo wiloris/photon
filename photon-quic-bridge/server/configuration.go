@@ -26,6 +26,14 @@ type configuration struct {
 	// (googleoidc.go:136), и на серверной границе регистрации это приняло бы
 	// токен, выпущенный для чужого приложения.
 	GoogleClientID string `json:"GoogleClientID"`
+
+	// ConvReconcileIntervalSec — период фоновой сверки разговоров;
+	// ConvReconcileAbandonSec — возраст, после которого незавершённый резерв
+	// 930 считается брошенным (contract §4.5, §7: Q2). Ноль — значение по
+	// умолчанию; меньше минимума — минимум (conversation_reconciler.go).
+	// Период применяется при активации, порог — с каждым проходом.
+	ConvReconcileIntervalSec int `json:"ConvReconcileIntervalSec"`
+	ConvReconcileAbandonSec  int `json:"ConvReconcileAbandonSec"`
 }
 
 func (c *configuration) Clone() *configuration {
