@@ -196,7 +196,11 @@ func (s *convService) sendMessage(ctx context.Context, callerID string, raw json
 			return s.convFailFor("930 attachments", err)
 		}
 		msg.Attachments = atts
-		extra[propPhotonMedia] = projectionOf(atts)
+		proj, err := projectionOf(atts)
+		if err != nil {
+			return s.convFailFor("930 attachments", err)
+		}
+		extra[propPhotonMedia] = proj
 	}
 	if slot.found {
 		msg.ID = slot.postID

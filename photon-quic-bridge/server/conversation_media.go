@@ -461,12 +461,25 @@ WHERE conversation_id = $1 AND bound_pos = $2 ORDER BY bound_ord`, convID, pos)
 	return out, rows.Err()
 }
 
-func projectionOf(atts []ConvAttachment) []convMediaProjection {
+// projectionOf — значение props.photon_media в JSON-каноническом виде ([]any из
+// map[string]any): props уезжают в хост gob'ом поверх plugin RPC, и тип
+// плагина внутри интерфейса роняет CreatePost (см. mediaPropsValue). Живой
+// прогон M1 упал ровно так: «gob: type not registered for interface:
+// []main.convMediaProjection».
+func projectionOf(atts []ConvAttachment) (any, error) {
 	out := make([]convMediaProjection, len(atts))
 	for i, a := range atts {
 		out[i] = convMediaProjection{MediaID: a.MediaID, Kind: a.Kind, Name: a.Name, Size: a.Size, SHA256: a.SHA256}
 	}
-	return out
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("photon_media marshal: %w", err)
+	}
+	var canonical []any
+	if err := json.Unmarshal(raw, &canonical); err != nil {
+		return nil, fmt.Errorf("photon_media canonicalize: %w", err)
+	}
+	return canonical, nil
 }
 
 // ── чтение: признак клиента и заглушка ───────────────────────────────────────
