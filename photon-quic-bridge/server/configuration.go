@@ -32,8 +32,8 @@ type configuration struct {
 	// 930 считается брошенным (contract §4.5, §7: Q2). Ноль — значение по
 	// умолчанию; меньше минимума — минимум (conversation_reconciler.go).
 	// Период применяется при активации, порог — с каждым проходом.
-	ConvReconcileIntervalSec int `json:"ConvReconcileIntervalSec"`
-	ConvReconcileAbandonSec  int `json:"ConvReconcileAbandonSec"`
+	ConvReconcileIntervalSec settingSeconds `json:"ConvReconcileIntervalSec"`
+	ConvReconcileAbandonSec  settingSeconds `json:"ConvReconcileAbandonSec"`
 }
 
 func (c *configuration) Clone() *configuration {

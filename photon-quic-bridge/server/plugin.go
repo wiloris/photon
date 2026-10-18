@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"sync"
@@ -42,7 +43,8 @@ type Plugin struct {
 
 	// convReconcileJob — фоновая сверка разговоров (conversation_reconciler.go);
 	// nil — разговоры выключены или планирование не удалось.
-	convReconcileJob *cluster.Job
+	convReconcileJob  *cluster.Job
+	convReconcileStop context.CancelFunc
 
 	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex
@@ -142,6 +144,9 @@ func (p *Plugin) OnDeactivate() error {
 		p.API.LogInfo("[Photon] QUIC bridge stopped")
 	}
 
+	if p.convReconcileStop != nil {
+		p.convReconcileStop()
+	}
 	if p.convReconcileJob != nil {
 		if err := p.convReconcileJob.Close(); err != nil {
 			p.API.LogError("[Photon][Conv] Failed to close reconcile job", "error", err)

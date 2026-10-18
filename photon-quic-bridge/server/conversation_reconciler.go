@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -103,17 +107,54 @@ func (p *Plugin) startConvReconciler(svc *convService) {
 		logInfo: p.API.LogInfo,
 		logErr:  p.API.LogError,
 	}
+	// Деактивация отменяет идущий проход: Job.Close ждёт конца обратного
+	// вызова, и без отмены OnDeactivate держался бы до convReconcileBudget.
+	// Прерванный проход безопасен — каждый переход условный, транзакция
+	// откатывается, следующий проход начнёт заново.
+	base, stop := context.WithCancel(context.Background())
 	job, err := scheduleClusterJob(p, "PhotonConvReconcile", interval, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), convReconcileBudget)
+		ctx, cancel := context.WithTimeout(base, convReconcileBudget)
 		defer cancel()
 		r.run(ctx)
 	})
 	if err != nil {
+		stop()
 		// Разговоры работают, но брошенные резервы закрываться не будут —
 		// это должно быть видно сразу.
 		p.API.LogError("[Photon][Conv] reconcile not scheduled", "error", err.Error())
 		return
 	}
 	p.convReconcileJob = job
+	p.convReconcileStop = stop
 	p.API.LogInfo("[Photon][Conv] reconcile scheduled", "interval", interval.String(), "abandon_after", abandon.String())
+}
+
+// settingSeconds — число секунд из настройки плагина. System Console может
+// сохранить значение поля "number" и числом, и строкой; LoadPluginConfiguration
+// разбирает JSON целиком, и неподходящий тип поля молча оставил бы его
+// нулём. Принимаются целое число и строка с целым числом; прочее — 0
+// (значение по умолчанию), без ошибки разбора: ошибка не должна задевать
+// остальные настройки.
+type settingSeconds int
+
+func (s *settingSeconds) UnmarshalJSON(b []byte) error {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		*s = 0
+		return nil
+	}
+	switch x := v.(type) {
+	case float64:
+		if x >= 0 && x <= math.MaxInt32 {
+			*s = settingSeconds(x)
+			return nil
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(x)); err == nil && n >= 0 {
+			*s = settingSeconds(n)
+			return nil
+		}
+	}
+	*s = 0
+	return nil
 }

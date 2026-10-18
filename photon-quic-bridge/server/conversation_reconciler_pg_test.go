@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"testing"
 	"time"
@@ -342,4 +343,93 @@ func TestConvReconcileSettings(t *testing.T) {
 	require.Equal(t, [2]time.Duration{10 * time.Second, 2 * convCallTimeout}, [2]time.Duration{i, a}, "ниже минимума — минимум")
 	i, a = convReconcileSettings(&configuration{ConvReconcileIntervalSec: 30, ConvReconcileAbandonSec: 600})
 	require.Equal(t, [2]time.Duration{30 * time.Second, 10 * time.Minute}, [2]time.Duration{i, a})
+}
+
+// Настройки из System Console: число, строка с числом, дробь; мусор — 0
+// (значение по умолчанию). Остальные поля конфигурации не страдают.
+func TestConvReconcileSettingsParsing(t *testing.T) {
+	var c configuration
+	require.NoError(t, json.Unmarshal([]byte(`{"ConvReconcileIntervalSec":"90","ConvReconcileAbandonSec":600.7,"GoogleClientID":"cid"}`), &c))
+	require.Equal(t, settingSeconds(90), c.ConvReconcileIntervalSec)
+	require.Equal(t, settingSeconds(600), c.ConvReconcileAbandonSec)
+	require.Equal(t, "cid", c.GoogleClientID)
+
+	c = configuration{}
+	require.NoError(t, json.Unmarshal([]byte(`{"ConvReconcileIntervalSec":"abc","ConvReconcileAbandonSec":-5,"GoogleClientID":"cid"}`), &c))
+	require.Zero(t, c.ConvReconcileIntervalSec)
+	require.Zero(t, c.ConvReconcileAbandonSec)
+	require.Equal(t, "cid", c.GoogleClientID, "плохое значение не задевает остальные настройки")
+	i, a := convReconcileSettings(&c)
+	require.Equal(t, [2]time.Duration{convReconcileIntervalDefault, convReconcileAbandonDefault}, [2]time.Duration{i, a})
+}
+
+// Прерванный проход (деактивация) ничего не меняет: следующий проход
+// закрывает резерв как обычно.
+func TestConvReconcilerCancelledPassIsHarmless(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	a := r.id.person(pidA)
+	r.id.person(pidB)
+	id := r.group(t, a, pidB)
+	cid := newRequestID()
+	r.failNextPost(func(m *fakeConvMM, n int) { m.postCreateThenFailOnCall = n })
+	require.False(t, r.send(t, a, id, cid, "x").OK)
+	pos := r.msgRows(t, id, cid)[0].Pos
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := reconcilerOf(r.svc, 100)
+	pass := rec.run(ctx)
+	require.Equal(t, [2]int{0, 0}, [2]int{pass.Published, pass.Aborted})
+	require.Equal(t, "reserved", r.stateAt(t, id, pos))
+
+	pass = rec.run(context.Background())
+	require.Equal(t, 1, pass.Published)
+	require.Equal(t, "published", r.stateAt(t, id, pos))
+}
+
+// Q8 между процессами: процесс A начал CreatePost; процесс B его учёта не
+// видит; сверка B закрывает резерв надгробием; CreatePost A завершается
+// позже. Итог: сообщение не теряется (повтор клиента — новая позиция), в
+// ленте оно одно и на месте, но в носителе Mattermost остаётся второй пост
+// того же ключа на отменённой позиции — скрытый дубль (contract §7, Q8).
+func TestConvQ8CrossProcessLatePost(t *testing.T) {
+	r := newGroupRig(t, 2000)
+	a := r.id.person(pidA)
+	b := r.id.person(pidB)
+	id := r.group(t, a, pidB)
+	cid := newRequestID()
+	entered, gate := make(chan struct{}), make(chan struct{})
+	r.mm.mu.Lock()
+	r.mm.postBeforeCreate = func(p *model.Post) {
+		if p.Type == "" && p.GetProp(dmPropClientMsgID) == cid {
+			close(entered)
+			<-gate
+		}
+	}
+	r.mm.mu.Unlock()
+	done := sendAsync(r, a, id, cid, "долгий CreatePost") // процесс A
+	<-entered
+	pos := r.msgRows(t, id, cid)[0].Pos
+	_, err := r.db.Exec(`UPDATE engram_position SET reserved_at = 1 WHERE conversation_id = $1 AND pos = $2`, id, pos)
+	require.NoError(t, err)
+
+	procB := *r.svc
+	procB.inflight = &convInflight{} // другой процесс: учёта A не видит
+	pass := reconcilerOf(&procB, 100).run(context.Background())
+	require.Equal(t, 1, pass.Aborted, "B: поста нет — надгробие")
+
+	close(gate) // CreatePost A завершается позже
+	require.False(t, recv(t, done).OK, "A не сообщает успех над надгробием")
+	r.mm.mu.Lock()
+	r.mm.postBeforeCreate = nil
+	r.mm.mu.Unlock()
+	require.Equal(t, "aborted", r.stateAt(t, id, pos))
+	require.Equal(t, 1, r.keyPosts(t, id, cid), "поздний пост записан")
+
+	m := r.mustSend(t, a, id, cid, "долгий CreatePost") // повтор клиента (исходящие Core)
+	require.Greater(t, m.CreatedAt, pos, "новая позиция")
+	r.assertDelivered(t, id, pidA, m)
+	require.Equal(t, []string{"event:created", "event:member_added", "msg:долгий CreatePost"}, names(r.fullPass(t, b, id, 10)),
+		"в ленте одно сообщение — потери и видимого дубля нет")
+	require.Equal(t, 2, r.keyPosts(t, id, cid), "Q8: в носителе два поста ключа, один скрыт надгробием")
 }
