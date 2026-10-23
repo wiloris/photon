@@ -1,0 +1,29 @@
+// Первый Desktop-клиент Photon живёт внутри репозитория photon (ADR-051).
+// Отдельный репозиторий заводится по критерию из ADR-051: появление второго
+// независимого потребителя Kotlin-обёртки.
+rootProject.name = "photon-developer-tools"
+
+/*
+ * Photon SDK подключается КОМПОЗИТНОЙ сборкой (ADR-062 п. 7,
+ * photon-bindings/docs/sdk-api.md §7.3): инструмент — потребитель SDK, а не
+ * его владелец, поэтому SDK остаётся отдельным корнем сборки, а не
+ * подпроектом этого.
+ *
+ * Подстановка объявлена ЯВНО, а не выведена из координат включаемой сборки:
+ * координаты Maven и публикация отложены ADR-051 и ADR-062 п. 8, и выбирать
+ * их здесь было бы решением сверх задачи. `dev.photon:photon-sdk` — локальное
+ * имя для подстановки, а не объявление того, чем артефакт станет.
+ */
+includeBuild("../photon-sdk") {
+    dependencySubstitution {
+        substitute(module("dev.photon:photon-sdk")).using(project(":"))
+    }
+}
+
+// Общая часть Developer-Tools (лента, снимок, CoreJournal, панель «Путь») —
+// та же библиотека, которой пользуется ENGRAM (ADR-067, поправка 2026-10-23).
+includeBuild("../photon-devtools-core") {
+    dependencySubstitution {
+        substitute(module("dev.photon:photon-devtools-core")).using(project(":"))
+    }
+}

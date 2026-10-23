@@ -1,0 +1,1257 @@
+syntax = "proto3";
+
+package photon;
+
+option go_package = "github.com/wiloris/photon-core/protobuf";
+option java_package = "dev.yoursdk.photon";
+option java_outer_classname = "PhotonProto";
+option java_multiple_files = true;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  СХЕМА, НЕ WIRE-ФОРМАТ (ADR-034)
+//
+//  Этот файл — каноническая СХЕМА протокола: источник action-кодов
+//  (enum Action), имён полей, типов и структуры payload'ов. На проводе
+//  Bridge-границы protobuf НЕ используется: сериализация — JSON.
+//  То же решение уже принято для границы C ABI (ADR-026 п.7:
+//  payload_json, protobuf как схема) — чтобы не тащить protobuf-runtime
+//  в каждый binding и в каждый bridge ради одного вызова.
+//
+//  Раньше на этом месте стоял заголовок "Wire protocol" с описанием
+//  "Frame 1 → PhotonRequest / Frame 2 ← PhotonResponse". Это было
+//  неверно: так провод не работал никогда. Описание исправлено, а не
+//  удалено, потому что ошибочная версия успела бы породить клиент,
+//  который сервер не понимает.
+//
+//  Реальный провод (JSON, ALPN "photon-quic-v1") — источник истины:
+//  photon-quic-bridge/server/protocol.go (серверная сторона) и
+//  photon-quic-bridge/test-client/test_photon.go (клиент, проверенный
+//  против живого сервера):
+//
+//    handshake-стрим (bidi, первый на соединении):
+//      → {"session_token":"..."}
+//      → {"mode":"action"|"subscribe"}
+//      ← {"ok":true,...}                  затем стрим закрывается
+//
+//    action-стрим (bidi, по одному на action):
+//      → {"action":100,"resource":"PostResource"}   header
+//      → { ...payload... }                          {} если payload'а нет
+//      ← {"ok":true,"data":{...}} | {"ok":false,"error":"..."}
+//
+//    push-стрим (UniStream, сервер → клиент, только при mode=subscribe):
+//      ← {"event":"posted","user_id":"...","data":{...}}
+//
+//  Соответствие сообщений ниже проводу — НЕ взаимно однозначное
+//  (полная таблица расхождений — в ADR-034). В частности: на проводе
+//  resource — строка "PostResource", а не enum Resource; имя push-события
+//  — строка "posted", а не enum EventType; ответ — общий конверт
+//  {ok,data,error} без поля code.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+enum Resource {
+  RESOURCE_UNSPECIFIED = 0;
+  RESOURCE_POST        = 1;
+  RESOURCE_USER        = 2;
+  RESOURCE_CHANNEL     = 3;
+  RESOURCE_ENGRAM      = 4;
+  RESOURCE_FILE        = 5;
+  RESOURCE_WALL        = 6;
+  // RESOURCE_MEDIA — media ENGRAM: байты живут в MediaStore Bridge, а не в
+  // файловом хранилище Mattermost. Отдельный ресурс, а не расширение
+  // RESOURCE_FILE: ADR-048 вывел FileInfo/file_id из модели, и общий ресурс
+  // сделал бы неразличимым по коду действия, о каком из двух хранилищ речь
+  // (ADR-049 §8). RESOURCE_FILE и действия 500-505 при этом не меняются и
+  // legacy не объявляются.
+  RESOURCE_MEDIA       = 7;
+  // RESOURCE_CONVERSATION — разговоры ENGRAM (ADR-099 §2.1): сотня 900-999,
+  // строка ресурса в конверте "ConversationResource". Отображение «номер
+  // ресурса × 100» не сохраняется: сотня 800 занята локальными действиями
+  // (ADR-064 §2).
+  RESOURCE_CONVERSATION = 8;
+  // RESOURCE_P2P — P2P ENGRAM (ADR-116 §4): ключи устройств, Chat Roulette
+  // (очередь, пара), signalling offer/answer и краткоживущий TURN. Сотня
+  // 1000-1099, строка ресурса "P2PResource".
+  RESOURCE_P2P = 9;
+  // 9-99 reserved for future resources
+}
+
+// Action — явные именованные action-коды. Номера здесь совпадают с
+// номерами полей oneof в PhotonRequest/PhotonResponse ниже (не
+// случайно: одно и то же число значит одно и то же действие в обоих
+// местах), но protoc-gen-go не генерирует Go-константы из номеров
+// полей oneof — только из значений enum. Этот enum — единственный
+// источник именованных action-кодов для Go-кода (ранее дублировался
+// как package-level consts в photon-quic-bridge/server/protocol.go;
+// перенесено сюда, чтобы Bridge импортировал определения, а не
+// объявлял их заново — см. ARCHITECTURE.md раздел 7.6, ADR про
+// Photon Protocol).
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+
+  // ── PostResource (100-114) ──────────────────────────────────────
+  ACTION_CREATE_POST         = 100;
+  ACTION_GET_FEED            = 101;
+  ACTION_DELETE_POST         = 102;
+  ACTION_UPDATE_POST         = 103;
+  ACTION_GET_THREAD          = 104;
+  ACTION_REPLY_TO_POST       = 105;
+  ACTION_PIN_POST            = 106;
+  ACTION_UNPIN_POST          = 107;
+  ACTION_GET_PINNED_POSTS    = 108;
+  ACTION_SEARCH_POSTS        = 109;
+  ACTION_ADD_REACTION        = 110;
+  ACTION_REMOVE_REACTION     = 111;
+  ACTION_GET_REACTIONS       = 112;
+  ACTION_TOGGLE_LIKE         = 113;
+  ACTION_GET_POST_SOCIAL_INFO = 114;
+
+  // ── UserResource (200-216) ──────────────────────────────────────
+  ACTION_GET_ME            = 200;
+  ACTION_GET_USER          = 201;
+  ACTION_GET_USERS         = 202;
+  ACTION_GET_USER_STATUS   = 203;
+  ACTION_GET_USER_PROFILE  = 204;
+  ACTION_SEARCH_USERS      = 205;
+  ACTION_GET_USERS_BY_IDS  = 206;
+  ACTION_PATCH_ME          = 207;
+  ACTION_SET_STATUS        = 208;
+  ACTION_UPLOAD_AVATAR     = 209;
+  ACTION_GET_USER_AVATAR   = 210;
+
+  // Профиль и поиск по PhotonID (ADR-081). Истина — реестр аккаунтов
+  // Bridge (ADR-077), а не зеркала в пользователе Mattermost. На проводе
+  // только каноническая форма — 9 цифр (ADR-018).
+  ACTION_GET_MY_PHOTON_PROFILE = 211;
+  ACTION_FIND_BY_PHOTON_ID     = 212;
+
+  // Личные сообщения по PhotonID (ADR-082). Собеседник — только PhotonID;
+  // личный канал Mattermost разрешает сервер, его id и имя наружу не
+  // выходят. Доставка — опросом 214 с курсором after.
+  ACTION_SEND_DIRECT_MESSAGE   = 213;
+  ACTION_LIST_DIRECT_MESSAGES  = 214;
+
+  // Входящие: список существующих разговоров 1:1 (ADR-084). Источник
+  // списка, а не окончательная модель переписки.
+  ACTION_LIST_DIRECT_CONVERSATIONS = 215;
+
+  // Своё отображаемое имя (ADR-091): меняет только Nickname вызывающего,
+  // ответ — PhotonProfile. 207 PATCH_ME для пользователей ENGRAM закрыт.
+  ACTION_SET_MY_DISPLAY_NAME = 216;
+
+  // Личные сообщения v2 (ADR-092 ред. 3). 217: client_msg_id обязателен
+  // (= op_id исходящей операции Core, ADR-093), повтор идемпотентен, не
+  // больше N_max = 5 URL. 218: порядок (CreateAt ASC, PostID DESC),
+  // непрозрачный курсор {водяной знак, позиция прохода}, окно W только в
+  // начале прохода. 213/214 не меняются.
+  ACTION_SEND_DIRECT_MESSAGE_V2  = 217;
+  ACTION_LIST_DIRECT_MESSAGES_V2 = 218;
+  // ADR-105: страница DM «назад» от якоря, доступ как у 218. Поведение — срез M3.
+  ACTION_LIST_DIRECT_MESSAGES_BEFORE = 219;
+  // ADR-111: личная блокировка пользователя — поставить, снять, список.
+  ACTION_USER_BLOCK      = 220;
+  ACTION_USER_UNBLOCK    = 221;
+  ACTION_USER_BLOCK_LIST = 222;
+  // ADR-126: друзья — заявка, принять, убрать, список; приватность — прочитать, задать.
+  ACTION_FRIEND_REQUEST  = 223;
+  ACTION_FRIEND_ACCEPT   = 224;
+  ACTION_FRIEND_REMOVE   = 225;
+  ACTION_FRIEND_LIST     = 226;
+  ACTION_PRIVACY_GET     = 227;
+  ACTION_PRIVACY_SET     = 228;
+  // ADR-127: галерея профиля — добавить элемент, список (с проверкой видимости), удалить свой.
+  // Контракт — photon-quic-bridge/docs/conversation-implementation-contract.md §13.
+  ACTION_PROFILE_GALLERY_ADD    = 229;
+  ACTION_PROFILE_GALLERY_LIST   = 230;
+  ACTION_PROFILE_GALLERY_DELETE = 231;
+
+  // ── ChannelResource (300-314) ───────────────────────────────────
+  ACTION_LIST_CHANNELS                = 300;
+  ACTION_GET_CHANNEL_MEMBERS          = 301;
+  ACTION_GET_MY_CHANNELS              = 302;
+  ACTION_GET_CHANNEL                  = 303;
+  ACTION_GET_CHANNEL_BY_NAME          = 304;
+  ACTION_CREATE_CHANNEL               = 305;
+  ACTION_CREATE_DIRECT_CHANNEL        = 306;
+  ACTION_GET_DIRECT_CHANNELS          = 307;
+  ACTION_GET_OR_CREATE_DIRECT_CHANNEL = 308;
+  ACTION_ADD_MEMBER                   = 309;
+  ACTION_REMOVE_MEMBER                = 310;
+  ACTION_UPDATE_CHANNEL                = 311;
+  ACTION_GET_UNREAD_FOR_CHANNEL       = 312;
+  ACTION_MARK_AS_READ                 = 313;
+  ACTION_GET_CHANNEL_MEMBER           = 314;
+
+  // ── EngramResource (400-405) ────────────────────────────────────
+  ACTION_ENGRAM_STORE       = 400;
+  ACTION_ENGRAM_QUERY       = 401;
+  ACTION_ENGRAM_DELETE      = 402;
+  ACTION_ENGRAM_LIST        = 403;
+  ACTION_ENGRAM_BATCH_STORE = 404;
+  ACTION_ENGRAM_BATCH_QUERY = 405;
+
+  // ── FileResource (500-505) ──────────────────────────────────────
+  ACTION_UPLOAD_FILE   = 500;
+  ACTION_DOWNLOAD_FILE = 501;
+  ACTION_GET_FILE_INFO = 502;
+  ACTION_GET_THUMBNAIL = 503;
+  ACTION_GET_PREVIEW   = 504;
+  ACTION_GET_IMAGE_URL = 505;
+
+  // ── WallResource (600-602) ──────────────────────────────────────
+  ACTION_GET_OR_CREATE_WALL = 600;
+  ACTION_GET_WALL_POSTS     = 601;
+  ACTION_PUBLISH_WALL_POST  = 602;
+
+  // ── MediaResource (700-702) ─────────────────────────────────────
+  // Диапазон 700+ закреплён ADR-049 §8. Стримы этих действий несут
+  // двоичный хвост после двух JSON-кадров (docs/media-transfer.md §1) —
+  // единственные действия, у которых он есть.
+  ACTION_MEDIA_UPLOAD   = 700;
+  ACTION_MEDIA_DOWNLOAD = 701;
+  ACTION_MEDIA_GET_INFO = 702;
+
+  // Вложения разговоров ENGRAM (ADR-124, ПРЕДЛОЖЕНО; профиль M1 §7). Тот же
+  // кадр, что у 700/701, но область прав — разговор, а не канал Mattermost:
+  // доступ по участию и видимости сообщения (contract §8.6), объект без
+  // channel_id. 703/704 — потоковые, 705 — обычное JSON-действие.
+  // Контракт — photon-quic-bridge/docs/conversation-implementation-contract.md §8.
+  ACTION_CONV_MEDIA_UPLOAD   = 703;
+  ACTION_CONV_MEDIA_DOWNLOAD = 704;
+  ACTION_CONV_MEDIA_INFO     = 705;
+
+  // Галерея профиля ENGRAM (ADR-127, ПРЕДЛОЖЕНО). Тот же кадр, что у 703/704;
+  // область прав — владелец профиля и его настройка видимости (contract §13).
+  ACTION_PROFILE_MEDIA_UPLOAD   = 706;
+  ACTION_PROFILE_MEDIA_DOWNLOAD = 707;
+
+  // ── LocalFeed (800-899) ─────────────────────────────────────────
+  // ЛОКАЛЬНЫЕ действия: исполняются хранилищем самого инстанса и на
+  // провод не выходят никогда (ADR-064). Сотня 800-899 закреплена за
+  // ними целиком — единица отображения в session.ResourceFor.
+  //
+  // Полей в oneof у них НЕТ намеренно: PhotonRequest/PhotonResponse
+  // описывают форму провода, а локальное действие до Bridge не
+  // доходит. Код в enum нужен, чтобы источник action-кодов остался
+  // один (ADR-025) и ResourceFor оставался единственным арбитром.
+  //
+  // Bridge обязан иметь на них ПРАВИЛО ОТКАЗА: Dispatch принимает
+  // любое число с провода, и локальный код, пришедший по сети, — это
+  // ошибка клиента либо атака (ADR-064 п. 2.5).
+  ACTION_LOCAL_FEED_PAGE = 800;
+
+  // Запись (ADR-065). PUT и INGEST — РАЗНЫЕ утверждения, а не режимы
+  // одного: PUT кладёт записи и о непрерывности молчит, INGEST кладёт
+  // блок и то, что этот блок доказал о полноте. Объединение флагом
+  // увело бы семантическое различие в payload, ниже уровня, на котором
+  // работает ResourceFor.
+  //
+  // Полноту диапазона утверждает ВЫЗЫВАЮЩИЙ: Core проверяет структуру и
+  // внутреннюю непротиворечивость блока, но не истинность утверждения о
+  // том, что сервер вернул диапазон целиком (ADR-065 п. 4).
+  //
+  // INGEST принимает необязательные cursor (непрозрачная позиция
+  // продолжения сервера) и confirms (op_id исходящих, подтверждённых
+  // этим блоком); блок, сегменты, курсор, каталог и подтверждения —
+  // одна транзакция (ADR-095). Состояние полноты хранится только в
+  // существующих сегментах; GapAnchor является производной и не является
+  // вторым источником истины. Курсор сервера — позиция продолжения
+  // запроса; утверждений о полноте он не несёт.
+  ACTION_LOCAL_FEED_PUT    = 801;
+  ACTION_LOCAL_FEED_INGEST = 802;
+
+  // Позиция для закрытия верхнего пропуска. Производная от сегментов,
+  // вычисляется при каждом вызове: состояние полноты хранится только в
+  // сегментах, второго источника истины нет (ADR-065 п. 10, ADR-095).
+  ACTION_LOCAL_FEED_GAP_ANCHOR = 803;
+
+  // Каталог каналов (самая свежая позиция каждого) и сохранённый курсор
+  // сервера канала (ADR-095 п. 2.9). Каталог — производный индекс, курсор
+  // — позиция продолжения; ни тот, ни другой полноты не утверждает.
+  ACTION_LOCAL_FEED_CATALOG = 804;
+  ACTION_LOCAL_FEED_CURSOR  = 805;
+
+  // Исходящие операции (ADR-093): долговечная очередь с ключом
+  // идемпотентности op_id, который создаёт Core. Контракт payload/ответов
+  // — photon-core/docs/local-actions.md. Тело операции непрозрачно;
+  // сеть и классификация ответа сервера — у вызывающего.
+  ACTION_OUTBOX_ENQUEUE  = 806;
+  ACTION_OUTBOX_LEASE    = 807;
+  ACTION_OUTBOX_COMPLETE = 808;
+  ACTION_OUTBOX_FAIL     = 809;
+  ACTION_OUTBOX_RETRY    = 810;
+  ACTION_OUTBOX_CANCEL   = 811;
+  ACTION_OUTBOX_LIST     = 812;
+
+  // Очистка ленты канала (ADR-112): записи, сегменты полноты и курсор
+  // одной транзакцией; outbox не затрагивается. Bridge отказывает (ADR-064 §2).
+  ACTION_LOCAL_FEED_CLEAR = 813;
+
+  // Цель подписки на push (ADR-123 §2.3): endpoint и session_token
+  // QUIC-подписки работающего инстанса задаёт, меняет и снимает хост.
+  // Action-соединения не создаёт. Bridge отвечает отказом (ADR-064 §2).
+  // Контракт — photon-quic-bridge/docs/conversation-push.md §4.
+  ACTION_LOCAL_EVENTS_TARGET = 814;
+
+  // Передача файла вложения разговора (ADR-124 M1, ПРЕДЛОЖЕНО): Core читает
+  // файл по пути и отдаёт его действием 703 / пишет тело 704 в файл по пути —
+  // по медиасоединению к цели 814. Bridge отвечает отказом (ADR-064 §2).
+  // Контракт — photon-core/docs/local-actions.md.
+  ACTION_LOCAL_MEDIA_UPLOAD_FILE   = 815;
+  ACTION_LOCAL_MEDIA_DOWNLOAD_FILE = 816;
+  // 817/818 (ADR-127): то же для объектов галереи профиля — 706/707.
+  ACTION_LOCAL_PROFILE_MEDIA_UPLOAD_FILE   = 817;
+  ACTION_LOCAL_PROFILE_MEDIA_DOWNLOAD_FILE = 818;
+
+  // Встроенная диагностика инстанса (ADR-130 §2.7): снимок состояния и
+  // чтение журнала событий по курсору. Исполняются в инстансе, на провод не
+  // выходят (диспетчер и второй рубеж в session); Bridge отвечает отказом
+  // (ADR-064 §2). Контракт — photon-core/docs/local-actions.md.
+  ACTION_LOCAL_DIAG_SNAPSHOT = 819;
+  ACTION_LOCAL_DIAG_EVENTS   = 820;
+
+  // P2P-исполнитель Core для хоста ENGRAM (ADR-116 §3): согласование,
+  // обмен и закрытие поверх ports.P2P/adapters/pion и p2pmsg. Локальные —
+  // на провод не выходят, Bridge отвечает на них отказом. Контракт
+  // payload/событий — photon-core/docs/local-actions.md.
+  ACTION_P2P_OFFER    = 860;
+  ACTION_P2P_ACCEPT   = 861;
+  ACTION_P2P_COMPLETE = 862;
+  ACTION_P2P_SEND     = 863;
+  ACTION_P2P_CLOSE    = 864;
+  // События исполнителя — опросом, а не колбэком ADR-045 (ADR-116 §3.2,
+  // уточнение при реализации): колбэк вызывает один поток насоса Bridge.
+  ACTION_P2P_EVENTS   = 865;
+  // Служебные потоки P2P-сессии (проект записи о служебных потоках к
+  // ADR-075 §2.3, не принят): несколько разговоров в одной сессии. Поток
+  // по умолчанию (863/865 P2P_MESSAGE) не меняется.
+  ACTION_P2P_STREAM_OPEN  = 866;
+  ACTION_P2P_STREAM_SEND  = 867;
+  ACTION_P2P_STREAM_CLOSE = 868;
+
+  // ── ConversationResource (900-999), ADR-099 §2.2 ──────────────────────────
+  // Групповые разговоры ENGRAM (ADR-098). 905-909, 919, 922-929 и
+  // 932-999 зарезервированы без семантики (ADR-099 §2.3).
+  //
+  // Payload'ы этих кодов в oneof PhotonRequest/PhotonResponse НЕ
+  // добавляются, вопреки общему правилу ниже: ADR-099 §14 ограничивает
+  // изменения Core реестром — enum Action, enum Resource и ResourceFor.
+  // Форма запросов и ответов — ADR-099 §4-§9 с поправкой ADR-103.
+  ACTION_CONVERSATION_CREATE         = 900;
+  ACTION_CONVERSATION_GET            = 901;
+  ACTION_CONVERSATION_LIST           = 902;
+  ACTION_CONVERSATION_UPDATE         = 903;
+  ACTION_CONVERSATION_ARCHIVE        = 904;
+  // ADR-104: открыть/найти личный разговор по паре участников.
+  ACTION_CONVERSATION_OPEN_DIRECT    = 905;
+  // ADR-106: разархивирование; личное состояние участника (скрыт/закреплён/без звука).
+  ACTION_CONVERSATION_UNARCHIVE      = 906;
+  ACTION_CONVERSATION_MEMBER_STATE_SET = 907;
+  // ADR-108: позиция прочтения участника и счётчик непрочитанного.
+  ACTION_CONVERSATION_MARK_READ      = 908;
+  // ADR-128: группы и каналы вызывающего; с `with` — общие с собеседником.
+  ACTION_CONVERSATION_LIST_SHARED    = 909;
+  ACTION_CONVERSATION_MEMBERS_ADD    = 910;
+  ACTION_CONVERSATION_MEMBER_REMOVE  = 911;
+  ACTION_CONVERSATION_LEAVE          = 912;
+  // ADR-107 этап 1: приглашения-ссылки.
+  ACTION_CONVERSATION_INVITE_CREATE  = 913;
+  ACTION_CONVERSATION_INVITE_REVOKE  = 914;
+  ACTION_CONVERSATION_INVITE_LIST    = 915;
+  ACTION_CONVERSATION_JOIN_BY_INVITE = 916;
+  // ADR-107 этап 2: публичные разговоры — каталог и вступление.
+  ACTION_CONVERSATION_DIRECTORY_SEARCH = 917;
+  ACTION_CONVERSATION_JOIN_PUBLIC    = 918;
+  // ADR-111: бан (и снятие бана) PhotonID в разговоре.
+  ACTION_CONVERSATION_MEMBER_BAN     = 919;
+  ACTION_CONVERSATION_ROLE_SET       = 920;
+  ACTION_CONVERSATION_OWNER_TRANSFER = 921;
+  ACTION_CONVERSATION_SEND           = 930;
+  ACTION_CONVERSATION_SYNC           = 931;
+  // ADR-109: правка и удаление для всех — события ленты.
+  ACTION_CONVERSATION_MESSAGE_EDIT   = 932;
+  ACTION_CONVERSATION_MESSAGE_DELETE = 933;
+  // ADR-109 §2.3: реакция на сообщение (множество, без ключа идемпотентности).
+  ACTION_CONVERSATION_REACTION_SET   = 934;
+  // ADR-105: страница истории «назад» от якоря.
+  ACTION_CONVERSATION_HISTORY_BEFORE = 940;
+  // ADR-110: серверный поиск сообщений.
+  ACTION_CONVERSATION_SEARCH         = 941;
+  // ADR-125: публикации канала — статистика (просмотры, комментарии) и закрепление.
+  ACTION_CONVERSATION_POST_STATS     = 942;
+  ACTION_CONVERSATION_POST_PIN       = 943;
+
+  // ── P2PResource (1000-1099), ADR-116 §4 ───────────────────────────────────
+  // Ключ устройства в записи аккаунта, matchmaking Chat Roulette,
+  // signalling offer/answer между участниками пары, краткоживущие учётные
+  // данные TURN. Payload'ы в oneof не добавляются — по тому же правилу,
+  // что 900-999: форма запросов и ответов задана ADR-116 §4.
+  ACTION_P2P_REGISTER_DEVICE = 1000;
+  ACTION_ROULETTE_JOIN       = 1001;
+  ACTION_ROULETTE_STATUS     = 1002;
+  ACTION_ROULETTE_LEAVE      = 1003;
+  ACTION_P2P_SIGNAL_SEND     = 1004;
+  ACTION_P2P_SIGNAL_RECV     = 1005;
+  ACTION_TURN_CREDENTIALS    = 1006;
+  // Звонок в личном чате ENGRAM: адресованный сигналинг двух участников
+  // существующего личного канала. call_id выдаёт Bridge; offer/answer — блобы
+  // согласования P2P-транспорта Core (860–862), как у 1004/1005; SDP и
+  // кандидаты WebRTC идут уже внутри P2P-сессии (канал хоста).
+  ACTION_CALL_INVITE         = 1010;
+  ACTION_CALL_STATUS         = 1011;
+  ACTION_CALL_ACCEPT         = 1012;
+  ACTION_CALL_REJECT         = 1013;
+  ACTION_CALL_SIGNAL_SEND    = 1014;
+  ACTION_CALL_SIGNAL_RECV    = 1015;
+  ACTION_CALL_HANGUP         = 1016;
+}
+
+enum EventType {
+  EVENT_UNSPECIFIED    = 0;
+  POST_CREATED         = 1;
+  POST_UPDATED         = 2;
+  POST_DELETED         = 3;
+  REACTION_ADDED       = 4;
+  REACTION_REMOVED     = 5;
+  TYPING               = 6;
+  USER_ADDED           = 7;
+  USER_REMOVED         = 8;
+  STATUS_CHANGED       = 9;
+  CHANNEL_UPDATED      = 10;
+  NEW_UNREAD           = 11;
+  // 12-99 reserved
+}
+
+// ── Handshake ─────────────────────────────────────────────────────────────────
+
+message AuthFrame {
+  string session_token = 1;
+}
+
+message ModeFrame {
+  string mode = 1; // "action" | "subscribe"
+}
+
+message HandshakeResponse {
+  bool   ok     = 1;
+  string error  = 2;
+  string status = 3; // "ready" | "subscribed"
+}
+
+// ── Main envelope ─────────────────────────────────────────────────────────────
+//
+// ВНИМАНИЕ (ADR-034): PhotonRequest и PhotonResponse НЕ сериализуются на
+// проводе — ни здесь, ни где-либо ещё. На проводе JSON (см. шапку файла),
+// и структура там другая: запрос — два отдельных фрейма (header, payload),
+// ответ — конверт {ok,data,error}. Ни один потребитель этих двух сообщений
+// в проекте не существует: вне этого файла и сгенерированного photon.pb.go
+// они не упоминаются нигде.
+//
+// Тогда зачем они здесь. Номера полей в oneof равны action-кодам:
+//
+//     CreatePostPayload create_post = 100;   ←→   ACTION_CREATE_POST = 100
+//
+// Это отображение «action → тип payload'а» не записано больше НИГДЕ в
+// проекте, и protoc проверяет его машинно — два payload'а не могут молча
+// занять один номер внутри oneof. Удалить конверты как «неиспользуемые»
+// значило бы потерять единственную машинно-проверяемую запись о том, какой
+// payload принадлежит какому action'у (и заодно заготовку на случай
+// перехода на protobuf-байты — критерий возврата в ADR-034 п.5).
+//
+// Правило при правке: добавляя action в enum Action, добавляй payload сюда
+// с ТЕМ ЖЕ номером. Исключения — локальные действия 800-899 (на провод не
+// выходят) и ConversationResource 900-999 (ADR-099 §14, см. enum Action). Расхождение здесь ничего не сломает на проводе прямо
+// сейчас — и именно поэтому его легко не заметить.
+
+message PhotonRequest {
+  int32    action   = 1; // 100-799 action codes
+  Resource resource = 2;
+
+  oneof payload {
+    // ── UserResource (200-216) ────────────────────────── field numbers 200-216
+    GetUserPayload      get_user       = 201;
+    GetUsersPayload     get_users      = 202;
+    GetUserPayload      get_status     = 203; // reuse — just needs user_id
+    GetUserPayload      get_profile    = 204; // reuse
+    SearchUsersPayload  search_users   = 205;
+    GetUsersByIdsPayload get_users_by_ids = 206;
+    PatchMePayload      patch_me       = 207;
+    SetStatusPayload    set_status     = 208;
+    UploadAvatarPayload upload_avatar  = 209;
+    GetUserPayload      get_avatar     = 210; // reuse
+    FindByPhotonIdPayload find_by_photon_id = 212; // 211 — без payload
+    SendDirectMessagePayload  send_direct_message  = 213;
+    ListDirectMessagesPayload list_direct_messages = 214;
+    ListDirectConversationsPayload list_direct_conversations = 215;
+    SetMyDisplayNamePayload set_my_display_name = 216;
+    SendDirectMessageV2Payload  send_direct_message_v2  = 217;
+    ListDirectMessagesV2Payload list_direct_messages_v2 = 218;
+
+    // ── PostResource (100-114) ────────────────────────── field numbers 100-114
+    CreatePostPayload   create_post      = 100;
+    GetFeedPayload      get_feed         = 101;
+    PostIDPayload       delete_post      = 102;
+    UpdatePostPayload   update_post      = 103;
+    PostIDPayload       get_thread       = 104;
+    ReplyToPostPayload  reply_to_post    = 105;
+    PostIDPayload       pin_post         = 106;
+    PostIDPayload       unpin_post       = 107;
+    ChannelIDPayload    get_pinned_posts = 108;
+    SearchPostsPayload  search_posts     = 109;
+    ReactionPayload     add_reaction     = 110;
+    ReactionPayload     remove_reaction  = 111;
+    PostIDPayload       get_reactions    = 112;
+    PostIDPayload       toggle_like      = 113;
+    PostIDPayload       get_social_info  = 114;
+
+    // ── ChannelResource (300-314) ─────────────────────── field numbers 300-314
+    ListChannelsPayload       list_channels         = 300;
+    GetChannelMembersPayload  get_channel_members   = 301;
+    TeamIDPayload             get_my_channels       = 302;
+    ChannelIDPayload          get_channel           = 303;
+    GetChannelByNamePayload   get_channel_by_name   = 304;
+    CreateChannelPayload      create_channel        = 305;
+    DirectChannelPayload      create_direct_channel = 306;
+    TeamIDPayload             get_direct_channels   = 307;
+    DirectChannelPayload      get_or_create_direct  = 308;
+    ChannelMemberPayload      add_member            = 309;
+    ChannelMemberPayload      remove_member         = 310;
+    UpdateChannelPayload      update_channel        = 311;
+    ChannelIDPayload          get_unread            = 312;
+    ChannelIDPayload          mark_as_read          = 313;
+    ChannelMemberPayload      get_channel_member    = 314;
+
+    // ── EngramResource (400-405) ──────────────────────── field numbers 400-405
+    EngramStorePayload      engram_store       = 400;
+    EngramKeyPayload        engram_query       = 401;
+    EngramKeyPayload        engram_delete      = 402;
+    EngramListPayload       engram_list        = 403;
+    EngramBatchStorePayload engram_batch_store = 404;
+    EngramBatchQueryPayload engram_batch_query = 405;
+
+    // ── FileResource (500-505) ────────────────────────── field numbers 500-505
+    UploadFilePayload  upload_file  = 500;
+    FileIDPayload      download_file = 501;
+    FileIDPayload      get_file_info = 502;
+    FileIDPayload      get_thumbnail = 503;
+    FileIDPayload      get_preview   = 504;
+    GetImageURLPayload get_image_url = 505;
+
+    // ── WallResource (600-602) ────────────────────────── field numbers 600-602
+    WallPayload          get_or_create_wall = 600;
+    WallPostsPayload     get_wall_posts     = 601;
+    PublishWallPostPayload publish_wall_post = 602;
+
+    // ── MediaResource (700-702) ───────────────────────── field numbers 700-702
+    MediaUploadPayload media_upload   = 700;
+    MediaIDPayload     media_download = 701;
+    MediaIDPayload     media_get_info = 702;
+
+    // ── MediaResource, вложения разговоров (703-705) ─── field numbers 703-705
+    ConvMediaUploadPayload conv_media_upload   = 703;
+    MediaIDPayload         conv_media_download = 704;
+    MediaIDPayload         conv_media_info     = 705;
+  }
+}
+
+message PhotonResponse {
+  bool   ok    = 1;
+  string error = 2;
+  int32  code  = 3; // internal error code, 0 = success
+
+  oneof data {
+    // ── UserResource responses ────────────────────────── field numbers 200-216
+    User           user         = 201;
+    UsersResponse  users        = 202;
+    StatusResponse status       = 203;
+    AvatarResponse avatar       = 210;
+    PhotonProfile  my_photon_profile = 211;
+    PhotonProfile  photon_profile    = 212;
+    SentDirectMessage      sent_direct_message = 213;
+    DirectMessagesResponse direct_messages     = 214;
+    DirectConversationsResponse direct_conversations = 215;
+    PhotonProfile  my_display_name   = 216;
+    SentDirectMessageV2      sent_direct_message_v2 = 217;
+    DirectMessagesV2Response direct_messages_v2     = 218;
+
+    // ── PostResource responses ────────────────────────── field numbers 100-114
+    Post                post          = 100;
+    PostsResponse       posts         = 101;
+    ReactionsResponse   reactions     = 112;
+    SocialInfoResponse  social_info   = 114;
+    PinnedPostsResponse pinned_posts  = 108;
+    LikeResponse        like          = 113;
+
+    // ── ChannelResource responses ─────────────────────── field numbers 300-314
+    Channel              channel          = 303;
+    ChannelsResponse     channels         = 300;
+    ChannelMembersResponse channel_members = 301;
+    ChannelMember        channel_member   = 314;
+    UnreadResponse       unread           = 312;
+
+    // ── EngramResource responses ──────────────────────── field numbers 400-405
+    EngramStoreResponse      engram_stored       = 400;
+    EngramEntry              engram_entry        = 401;
+    EngramListResponse       engram_keys         = 403;
+    EngramBatchStoreResponse engram_batch_stored = 404;
+    EngramBatchQueryResponse engram_batch_result = 405;
+
+    // ── FileResource responses ────────────────────────── field numbers 500-505
+    FileInfo         file_info   = 502;
+    FileBytesResponse file_bytes = 501;
+    FileURLResponse  file_url    = 503;
+
+    // ── MediaResource responses ───────────────────────── field numbers 700-702
+    MediaUploadResponse media_uploaded = 700;
+    MediaDownloadHeader media_download = 701;
+    MediaInfoResponse   media_info     = 702;
+    MediaUploadResponse     conv_media_uploaded = 703;
+    ConvMediaDownloadHeader conv_media_download = 704;
+    ConvMediaInfoResponse   conv_media_info     = 705;
+
+    // ── Generic (для простых ответов) ─────────────────── field number 999
+    GenericResponse generic = 999;
+  }
+}
+
+// ── Push ──────────────────────────────────────────────────────────────────────
+
+message PushEvent {
+  EventType event_type = 1;
+  string    user_id    = 2; // пустой = широковещательно
+
+  oneof data {
+    Post            post            = 10;
+    Reaction        reaction        = 11;
+    ChannelMember   member_added    = 12;
+    ChannelMember   member_removed  = 13;
+    StatusResponse  status_change   = 14;
+    Channel         channel_updated = 15;
+    UnreadResponse  new_unread      = 16;
+    TypingEvent     typing          = 17;
+  }
+}
+
+message TypingEvent {
+  string channel_id = 1;
+  string user_id    = 2;
+}
+
+// ── Common types ──────────────────────────────────────────────────────────────
+
+message PageRequest {
+  int32 page     = 1;
+  int32 per_page = 2;
+}
+
+message GenericResponse {
+  map<string, string> fields = 1;
+}
+
+// Переиспользуемые payload с одним полем
+message PostIDPayload    { string post_id    = 1; }
+message ChannelIDPayload { string channel_id = 1; }
+message TeamIDPayload    { string team_id    = 1; }
+message FileIDPayload    { string file_id    = 1; }
+message EngramKeyPayload { string key        = 1; }
+
+// ── Entities ──────────────────────────────────────────────────────────────────
+
+message User {
+  string id         = 1;
+  string username   = 2;
+  string email      = 3;
+  string first_name = 4;
+  string last_name  = 5;
+  string nickname   = 6;
+  string roles      = 7;
+  string locale     = 8;
+  string position   = 9;
+  int64  create_at  = 10;
+  int64  update_at  = 11;
+  int64  delete_at  = 12;
+  map<string, string> props = 13;
+  map<string, string> extra = 14; // forward compatibility
+}
+
+message Post {
+  string id         = 1;
+  string channel_id = 2;
+  string user_id    = 3;
+  string root_id    = 4;
+  string message    = 5;
+  string type       = 6;
+  bool   is_pinned  = 7;
+  int64  create_at  = 8;
+  int64  update_at  = 9;
+  int64  delete_at  = 10;
+  repeated string file_ids = 11;
+  bool   has_reactions     = 12;
+  map<string, string> extra = 13; // forward compatibility
+}
+
+message Channel {
+  string id              = 1;
+  string team_id         = 2;
+  string type            = 3;
+  string display_name    = 4;
+  string name            = 5;
+  string header          = 6;
+  string purpose         = 7;
+  string creator_id      = 8;
+  int64  create_at       = 9;
+  int64  update_at       = 10;
+  int64  delete_at       = 11;
+  int64  last_post_at    = 12;
+  int64  total_msg_count = 13;
+  map<string, string> extra = 14; // forward compatibility
+}
+
+message ChannelMember {
+  string channel_id     = 1;
+  string user_id        = 2;
+  string roles          = 3;
+  int64  last_viewed_at = 4;
+  int64  msg_count      = 5;
+  int64  mention_count  = 6;
+}
+
+message Reaction {
+  string user_id    = 1;
+  string post_id    = 2;
+  string emoji_name = 3;
+}
+
+message FileInfo {
+  string id         = 1;
+  string name       = 2;
+  string mime_type  = 3;
+  int64  size       = 4;
+  string channel_id = 5;
+  string user_id    = 6;
+  int64  create_at  = 7;
+}
+
+// ── UserResource payloads ─────────────────────────────────────────────────────
+
+message GetUserPayload {
+  string user_id = 1;
+}
+
+message GetUsersPayload {
+  PageRequest page = 1;
+}
+
+message SearchUsersPayload {
+  string term    = 1;
+  string in_team = 2;
+  int32  limit   = 3;
+}
+
+message GetUsersByIdsPayload {
+  repeated string user_ids = 1;
+}
+
+message PatchMePayload {
+  string first_name           = 1;
+  string last_name            = 2;
+  string nickname             = 3;
+  string username             = 4;
+  map<string, string> props   = 5;
+}
+
+message SetStatusPayload {
+  string status = 1; // "online" | "away" | "dnd" | "offline"
+}
+
+message UploadAvatarPayload {
+  bytes image_bytes = 1;
+}
+
+// Точный поиск по PhotonID (ADR-081). photon_id — ровно 9 цифр;
+// представление «000 000 000» живёт только на клиенте.
+message FindByPhotonIdPayload {
+  string photon_id = 1;
+}
+
+// ADR-082 §3.4: text — до 16383 рун, непустой; хранится без изменений.
+message SendDirectMessagePayload {
+  string to_photon_id = 1;
+  string text         = 2;
+}
+
+// ADR-082 §3.6: after — id сообщения ЭТОГО разговора, выдача строго после
+// него; limit 1..200, по умолчанию 60 (числа REST Mattermost).
+message ListDirectMessagesPayload {
+  string with_photon_id = 1;
+  string after          = 2;
+  int32  limit          = 3;
+}
+
+// ADR-091: своё отображаемое имя. После обрезки пробелов по краям: пусто —
+// очистка; не длиннее 64 рун; без управляющих/форматных символов и
+// разделителей строк; не только цифры и пробелы. Других полей нет —
+// username, имя, фамилия, Props сюда не входят НАМЕРЕННО.
+message SetMyDisplayNamePayload {
+  string display_name = 1;
+}
+
+// ADR-084: limit 1..200, по умолчанию 60.
+message ListDirectConversationsPayload {
+  int32 limit = 1;
+}
+
+// ── UserResource responses ────────────────────────────────────────────────────
+
+message UsersResponse {
+  repeated User users = 1;
+  bool has_more       = 2;
+}
+
+message StatusResponse {
+  string user_id = 1;
+  string status  = 2;
+}
+
+message AvatarResponse {
+  string user_id    = 1;
+  bytes  image_bytes = 2;
+}
+
+// Минимальный публичный профиль (ADR-081 §2.5). Email, Subject,
+// mm_user_id и login_name сюда не входят НАМЕРЕННО.
+message PhotonProfile {
+  string photon_id    = 1;
+  string display_name = 2;
+}
+
+// Публичное сообщение (ADR-082 §3.2). id — непрозрачный курсор; mm_user_id,
+// id и имя канала сюда не входят НАМЕРЕННО.
+message DirectMessage {
+  string id               = 1;
+  string author_photon_id = 2;
+  string text             = 3;
+  int64  created_at       = 4; // миллисекунды Unix
+}
+
+// ── Личные сообщения v2 (ADR-092 ред. 3) ───────────────────────────────
+
+// 217. client_msg_id — UUID, op_id исходящей операции Core; в тексте не
+// больше 5 URL (иначе message_too_many_links).
+message SendDirectMessageV2Payload {
+  string to_photon_id  = 1;
+  string text          = 2;
+  string client_msg_id = 3;
+}
+
+// 218. cursor — непрозрачная строка сервера; пусто — первичная
+// синхронизация. limit 1..200, по умолчанию 60.
+message ListDirectMessagesV2Payload {
+  string with_photon_id = 1;
+  string cursor         = 2;
+  int32  limit          = 3;
+}
+
+message DirectMessageV2 {
+  string id               = 1;
+  string author_photon_id = 2;
+  string text             = 3;
+  int64  created_at       = 4; // миллисекунды Unix
+  string client_msg_id    = 5; // только у сообщений вызывающего
+  bool   deleted          = 6; // только в ответе 217 на повтор удалённого поста
+}
+
+message SentDirectMessageV2 {
+  DirectMessageV2 message = 1;
+}
+
+// Позиция в порядке (CreateAt, PostID). id пуст — нижняя граница окна:
+// клиент ставит якорь (created_at − 1, "") (ADR-095 п. 2.7).
+message DirectMessagePosition {
+  int64  created_at = 1;
+  string id         = 2;
+}
+
+// От старых к новым. from отсутствует при первичной синхронизации.
+message DirectMessagesV2Response {
+  repeated DirectMessageV2 messages    = 1;
+  string                   next_cursor = 2;
+  DirectMessagePosition    from        = 3;
+  bool                     at_end      = 4;
+}
+
+message SentDirectMessage {
+  DirectMessage message = 1;
+}
+
+// По возрастанию времени.
+message DirectMessagesResponse {
+  repeated DirectMessage messages = 1;
+}
+
+// Разговор 1:1 (ADR-084). Собеседник — только PhotonID; id и имя канала
+// Mattermost сюда не входят НАМЕРЕННО. Разговор с собой: peer_photon_id —
+// собственный PhotonID.
+message DirectConversation {
+  string        peer_photon_id = 1;
+  DirectMessage last_message   = 2;
+}
+
+// По убыванию last_message.created_at.
+message DirectConversationsResponse {
+  repeated DirectConversation conversations = 1;
+}
+
+// ── PostResource payloads ─────────────────────────────────────────────────────
+
+message CreatePostPayload {
+  string channel_id        = 1;
+  string message           = 2;
+  string root_id           = 3;
+  repeated string file_ids = 4;
+
+  // photon_media — вложения ENGRAM. Поле ТИПИЗИРОВАНО намеренно: сырые props
+  // от клиента не принимаются, Bridge строит props сам и проверяет владение
+  // каждым media_id до записи (ADR-048 §3, §4). Приём сырых props дал бы
+  // клиенту запись в чужие ключи.
+  repeated MediaRef photon_media = 5;
+}
+
+message GetFeedPayload {
+  string      channel_id = 1;
+  PageRequest page       = 2;
+
+  // Phase 12: курсорная пагинация. Форма НЕ заморожена до завершения первого
+  // вертикального среза (CURRENT_TASK.md, ADR-046 §6.1) — поля могут
+  // измениться по итогам наблюдения.
+  //
+  // Курсор — идентификатор записи, ОТ которой листаем, сама она в выдачу не
+  // входит. Пустой курсор означает «с начала»: для before — от самых свежих.
+  //
+  // Почему не offset: вставка новой записи сдвигает окно, и вторая страница
+  // частично повторяет первую. Для ленты, куда сверху приходят сообщения, это
+  // ломается всегда, а не в краевом случае.
+  //
+  // before и after взаимно исключающие. Оба пустые — самые свежие записи.
+  string before = 3;  // записи СТАРШЕ курсора (движение в прошлое)
+  string after  = 4;  // записи НОВЕЕ курсора (движение в настоящее)
+  int32  limit  = 5;  // сколько вернуть; 0 — значение по умолчанию сервера
+}
+
+message UpdatePostPayload {
+  string post_id  = 1;
+  string message  = 2;
+}
+
+message ReplyToPostPayload {
+  string root_id           = 1;
+  string message           = 2;
+  repeated string file_ids = 3;
+}
+
+message ReactionPayload {
+  string post_id    = 1;
+  string emoji_name = 2;
+}
+
+message SearchPostsPayload {
+  string team_id      = 1;
+  string query        = 2;
+  bool   is_or_search = 3;
+}
+
+// ── PostResource responses ────────────────────────────────────────────────────
+
+message PostsResponse {
+  repeated Post   posts = 1;
+  repeated string order = 2;
+}
+
+message ReactionsResponse {
+  repeated Reaction reactions = 1;
+  int32             count     = 2;
+}
+
+message SocialInfoResponse {
+  map<string, int32> reaction_counts = 1;
+  repeated string    my_reactions    = 2;
+  repeated string    top_user_ids    = 3;
+  int32              total           = 4;
+}
+
+message PinnedPostsResponse {
+  repeated Post posts = 1;
+  int32         count = 2;
+}
+
+message LikeResponse {
+  bool liked = 1;
+}
+
+// ── ChannelResource payloads ──────────────────────────────────────────────────
+
+message ListChannelsPayload {
+  string      team_id = 1;
+  PageRequest page    = 2;
+}
+
+message GetChannelByNamePayload {
+  string team_id = 1;
+  string name    = 2;
+}
+
+message CreateChannelPayload {
+  string team_id      = 1;
+  string name         = 2;
+  string display_name = 3;
+  bool   is_private   = 4;
+  string purpose      = 5;
+  string header       = 6;
+}
+
+message DirectChannelPayload {
+  string target_user_id = 1;
+}
+
+message ChannelMemberPayload {
+  string channel_id = 1;
+  string user_id    = 2;
+}
+
+message GetChannelMembersPayload {
+  string      channel_id = 1;
+  PageRequest page       = 2;
+}
+
+message UpdateChannelPayload {
+  string channel_id   = 1;
+  string display_name = 2;
+  string purpose      = 3;
+  string header       = 4;
+}
+
+// ── ChannelResource responses ─────────────────────────────────────────────────
+
+message ChannelsResponse {
+  repeated Channel channels = 1;
+  bool             has_more = 2;
+}
+
+message ChannelMembersResponse {
+  repeated ChannelMember members = 1;
+  bool                   has_more = 2;
+}
+
+message UnreadResponse {
+  string channel_id     = 1;
+  int64  msg_count      = 2;
+  int64  mention_count  = 3;
+  int64  unread_count   = 4;
+  int64  last_viewed_at = 5;
+}
+
+// ── EngramResource payloads ───────────────────────────────────────────────────
+
+message EngramStorePayload {
+  string key              = 1;
+  bytes  value            = 2; // клиент сам решает структуру
+  int32  ttl_secs         = 3;
+  bool   preserve_ttl     = 4;
+  int64  expected_version = 5; // 0 = не проверять (CAS)
+}
+
+message EngramListPayload {
+  string      prefix = 1;
+  PageRequest page   = 2;
+}
+
+message EngramBatchStorePayload {
+  repeated EngramStorePayload entries = 1;
+}
+
+message EngramBatchQueryPayload {
+  repeated string keys = 1;
+}
+
+// ── EngramResource responses ──────────────────────────────────────────────────
+
+message EngramEntry {
+  string key        = 1;
+  bytes  value      = 2;
+  int64  version    = 3;
+  int64  created_at = 4;
+  int64  updated_at = 5;
+  int64  expires_at = 6;
+}
+
+message EngramStoreResponse {
+  string key        = 1;
+  int64  version    = 2;
+  int64  created_at = 3;
+  int64  updated_at = 4;
+  int64  expires_at = 5;
+}
+
+message EngramListResponse {
+  repeated string keys     = 1;
+  int32           total    = 2;
+  bool            has_more = 3;
+}
+
+message EngramBatchStoreResponse {
+  repeated string     stored = 1;
+  repeated EngramBatchError errors = 2;
+}
+
+message EngramBatchError {
+  string key   = 1;
+  string error = 2;
+}
+
+message EngramBatchQueryResponse {
+  map<string, EngramEntry> entries = 1;
+  repeated string          missing = 2;
+}
+
+// ── MediaResource payloads ────────────────────────────────────────────────────
+
+// MediaRef — запись о вложении в Message.props.photon_media[].
+//
+// Состав и неизменяемость полей заморожены ADR-048 §3: media_id, sha256, size,
+// mime, name обязательны и неизменяемы для данного media_id; w/h опциональны и
+// только для изображений. Серверный жизненный цикл (expires_at, state) сюда НЕ
+// входит — он живёт в MediaStore и запрашивается по требованию, иначе истечение
+// TTL требовало бы править сообщение.
+message MediaRef {
+  string media_id = 1;
+  string sha256   = 2; // hex, 64 символа
+  int64  size     = 3;
+  string mime     = 4;
+  string name     = 5; // исходное имя файла
+  int32  w        = 6; // только для изображений
+  int32  h        = 7;
+}
+
+// MediaUploadPayload — второй JSON-кадр стрима загрузки; далее идёт тело.
+//
+// sha256 объявляется ДО передачи: это делает проверку целостности
+// двусторонней, а не только клиентской (media-transfer.md §9).
+message MediaUploadPayload {
+  string channel_id  = 1;
+  string name        = 2;
+  string mime        = 3;
+  string sha256      = 4;
+  int64  body_length = 5; // обязателен; приёмник читает ровно столько байт
+}
+
+message MediaIDPayload { string media_id = 1; }
+
+// ── MediaResource responses ───────────────────────────────────────────────────
+
+message MediaUploadResponse {
+  string media_id = 1;
+  string sha256   = 2;
+  int64  size     = 3;
+}
+
+// MediaDownloadHeader — JSON-ответ, ПРЕДШЕСТВУЮЩИЙ телу. Порядок обратен
+// загрузке намеренно: иначе клиент не отличил бы отказ от начала данных, не
+// прочитав их (media-transfer.md §1).
+message MediaDownloadHeader {
+  string media_id    = 1;
+  string sha256      = 2;
+  int64  size        = 3;
+  string mime        = 4;
+  string name        = 5;
+  int64  body_length = 6;
+}
+
+message MediaInfoResponse {
+  MediaRef media = 1;
+}
+
+// ── Вложения разговоров (703-705, ADR-124 M1) ─────────────────────────────────
+
+// ConvMediaUploadPayload — второй JSON-кадр 703; далее ровно body_length байт.
+// upload_key — ключ идемпотентности загрузки, уникален в пределах загрузившего.
+message ConvMediaUploadPayload {
+  string conversation_id = 1;
+  string upload_key      = 2;
+  string kind            = 3; // M1: только "file"
+  string name            = 4;
+  string sha256          = 5;
+  int64  body_length     = 6;
+}
+
+// ConvMediaDownloadHeader — данные кадра ответа 704; body_length — поле
+// конверта, как у 701.
+message ConvMediaDownloadHeader {
+  string media_id = 1;
+  string kind     = 2;
+  string mime     = 3; // M1: всегда application/octet-stream
+  string name     = 4;
+  int64  size     = 5;
+  string sha256   = 6;
+}
+
+// ConvMediaInfoResponse — 705. bound = false только для загрузившего, пока
+// объект не привязан к живому сообщению.
+message ConvMediaInfoResponse {
+  string media_id = 1;
+  string kind     = 2;
+  string mime     = 3;
+  string name     = 4;
+  int64  size     = 5;
+  string sha256   = 6;
+  bool   bound    = 7;
+}
+
+// ── FileResource payloads ─────────────────────────────────────────────────────
+
+message UploadFilePayload {
+  string channel_id = 1;
+  string file_name  = 2;
+  bytes  file_bytes = 3;
+}
+
+message GetImageURLPayload {
+  string file_id   = 1;
+  string file_type = 2; // "FULL" | "PREVIEW" | "THUMB"
+}
+
+// ── FileResource responses ────────────────────────────────────────────────────
+
+message FileBytesResponse {
+  string file_id = 1;
+  bytes  bytes   = 2;
+}
+
+message FileURLResponse {
+  string file_id   = 1;
+  string file_type = 2;
+  string url       = 3;
+}
+
+// ── WallResource payloads ─────────────────────────────────────────────────────
+
+message WallPayload {
+  string team_id = 1;
+  string user_id = 2;
+}
+
+message WallPostsPayload {
+  string      channel_id = 1;
+  PageRequest page       = 2;
+}
+
+message PublishWallPostPayload {
+  string            channel_id = 1;
+  string            message    = 2;
+  repeated WallFile files      = 3;
+}
+
+message WallFile {
+  string name  = 1;
+  bytes  bytes = 2;
+}

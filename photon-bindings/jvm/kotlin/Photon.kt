@@ -1,0 +1,257 @@
+package dev.photon.core
+
+/**
+ * Идиоматичная Kotlin-обёртка над Photon C ABI v1.
+ *
+ * Границы ответственности:
+ *  - [PhotonNative] — тонкий JNI-мост, повторяет C ABI один в один.
+ *  - Этот класс — только Kotlin-удобства: типизированные результаты,
+ *    исключения вместо кодов, [AutoCloseable], безопасность повторного
+ *    close.
+ *
+ * Чего этот класс НЕ делает (сознательно):
+ *  - не управляет памятью Photon — этим занимается C ABI
+ *    (Photon_Destroy / Photon_Free*), см. ADR-028;
+ *  - не знает, что находится внутри handle (cgo.Handle, ячейка
+ *    C-памяти или иное) — для Kotlin это непрозрачный Long;
+ *  - не кэширует и не интерпретирует payload/response — только
+ *    передаёт JSON насквозь.
+ */
+class Photon private constructor(private var handle: Long) : java.io.Closeable {
+
+    @Volatile
+    private var closed = false
+
+    /**
+     * Выполняет действие Photon Protocol.
+     *
+     * @param action     код из enum Action (photon-core/protobuf)
+     * @param payloadJson payload в JSON
+     * @return JSON-ответ
+     * @throws PhotonException при любом результате, отличном от PHOTON_OK
+     * @throws IllegalStateException если инстанс уже закрыт
+     */
+    fun sendAction(action: Int, payloadJson: String): String {
+        check(!closed) { "Photon instance is closed" }
+
+        val response = PhotonNative.sendAction(handle, action, payloadJson)
+        val rc = PhotonNative.lastSendActionResult()
+        if (rc != PhotonNative.PHOTON_OK) {
+            throw PhotonException(rc, PhotonNative.getLastError(handle))
+        }
+        return response ?: ""
+    }
+
+    /**
+     * Текст последней ошибки на этом инстансе, либо null.
+     * Для закрытого инстанса всегда null.
+     */
+    fun lastError(): String? =
+        if (closed) null else PhotonNative.getLastError(handle)
+
+    /**
+     * Контексты доставки, полученные от setEventListener, в порядке установки.
+     *
+     * Освободить контекст ПРЯМО при замене слушателя нельзя:
+     * Photon_SetEventCallback не даёт дождаться уже НАЧАВШЕЙСЯ доставки со
+     * старым user_data, и освобождение стало бы гонкой (jni-events.md §3.2).
+     *
+     * Но ждать close() для этого не обязательно. Доставки строго
+     * последовательны и никогда не параллельны (ADR-045, event-delivery.md
+     * §9.1; мост это свойство не меняет — D1). Значит доставка, пришедшая
+     * НОВОМУ слушателю, доказывает, что доставка старому уже вернулась, а
+     * новых с прежним user_data не будет: ядро подменило адресата под своим
+     * мьютексом. Поэтому старшие контексты освобождаются на первой же
+     * доставке более новому слушателю, а close() добирает остаток.
+     *
+     * Если событий нет вовсе (инстанс без подписки), поведение прежнее: всё
+     * освобождается после Photon_Destroy.
+     */
+    private val eventContexts = ArrayDeque<Long>()
+
+    /**
+     * Замок ТОЛЬКО для очереди контекстов, отдельный от монитора инстанса.
+     *
+     * Взять здесь монитор инстанса нельзя: close() держит его, пока идёт
+     * Photon_Destroy, а тот ждёт возврата из колбэка — колбэк, ожидающий
+     * того же монитора, дал бы дедлок.
+     */
+    private val ctxLock = Any()
+
+    /**
+     * Обёртка слушателя, знающая свой контекст.
+     *
+     * Нужна ровно для одного: на доставке освободить контексты, установленные
+     * РАНЬШЕ этого. Пользовательский слушатель вызывается после этого и
+     * ничего об обёртке не знает; исключение из него обрабатывает мост (D4),
+     * поэтому здесь оно не перехватывается.
+     */
+    private inner class Tracked(private val delegate: PhotonEventListener) : PhotonEventListener {
+        @Volatile var ctx: Long = 0
+
+        override fun onEvent(eventJson: String) {
+            val mine = ctx
+            // ctx == 0 — доставка обогнала присвоение поля сразу после
+            // установки: освобождать нечего, следующая доставка доберёт.
+            if (mine != 0L) releaseOlderThan(mine)
+            delegate.onEvent(eventJson)
+        }
+    }
+
+    /** Освобождает контексты, установленные раньше [current]. */
+    private fun releaseOlderThan(current: Long) {
+        val stale = synchronized(ctxLock) {
+            if (!eventContexts.contains(current)) return
+            val out = ArrayList<Long>()
+            while (eventContexts.isNotEmpty() && eventContexts.first() != current) {
+                out.add(eventContexts.removeFirst())
+            }
+            out
+        }
+        stale.forEach { PhotonNative.releaseEventListener(it) }
+    }
+
+    /**
+     * Устанавливает слушателя событий и ЗАПУСКАЕТ подписку — это единственный
+     * вызов, выражающий намерение получать события. Повторный вызов заменяет
+     * адресата, null отцепляет его, подписку не останавливая.
+     *
+     * Слушатель вызывается СИНХРОННО, на потоке доставки ядра: ни очереди, ни
+     * исполнителя между ядром и слушателем нет. Переход на UI-поток — дело
+     * вызывающего слоя, а не этой обёртки (jni-events.md, D1).
+     */
+    fun setEventListener(listener: PhotonEventListener?) {
+        check(!closed) { "Photon instance is closed" }
+
+        val tracked = listener?.let { Tracked(it) }
+        val ctx = PhotonNative.setEventListener(handle, tracked)
+        if (ctx != 0L) {
+            synchronized(ctxLock) { eventContexts.addLast(ctx) }
+            // Порядок важен: контекст попадает в очередь ДО того, как обёртка
+            // узнаёт его. Иначе доставка могла бы увидеть свой ctx и не найти
+            // его в очереди.
+            tracked?.ctx = ctx
+        }
+    }
+
+    /**
+     * Освобождает инстанс. Идемпотентен: повторный вызов безопасен
+     * благодаря флагу [closed] под монитором (@Synchronized) — native
+     * destroy выполняется ровно один раз. На C ABI опираться здесь нельзя:
+     * Photon_Destroy на уже уничтоженном handle — undefined behavior
+     * (ADR-059 п. 2); ADR-028 гарантирует безопасность только для NULL.
+     */
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+
+        // Порядок обязателен и не подлежит перестановке: только после
+        // возврата из Photon_Destroy C ABI гарантирует, что колбэк не будет
+        // вызван ни разу и ни из какого потока. Освободить GlobalRef раньше
+        // — use-after-free на стороне JVM (jni-events.md §3.3).
+        PhotonNative.destroy(handle)
+
+        val rest = synchronized(ctxLock) {
+            val out = ArrayList(eventContexts)
+            eventContexts.clear()
+            out
+        }
+        rest.forEach { PhotonNative.releaseEventListener(it) }
+        handle = 0
+    }
+
+    companion object {
+        /** MAJOR-версия ABI, с которой собран этот Kotlin-слой. */
+        const val EXPECTED_ABI_MAJOR = 1
+
+        /**
+         * Загружает нативные библиотеки. На Android — по имени
+         * (System.loadLibrary), на desktop-JVM для тестов удобнее
+         * [loadFrom] с абсолютным путём.
+         */
+        @JvmStatic
+        fun loadLibrary(name: String = "photon_jni") {
+            System.loadLibrary(name)
+        }
+
+        /** Загружает библиотеку по абсолютному пути (тесты, desktop). */
+        @JvmStatic
+        fun loadFrom(absolutePath: String) {
+            System.load(absolutePath)
+        }
+
+        /** Упакованная версия ABI: (MAJOR shl 16) or MINOR. */
+        @JvmStatic
+        fun abiVersion(): Int = PhotonNative.getAbiVersion()
+
+        @JvmStatic
+        fun abiMajor(): Int = abiVersion() ushr 16
+
+        @JvmStatic
+        fun abiMinor(): Int = abiVersion() and 0xFFFF
+
+        /**
+         * Создаёт инстанс Photon.
+         *
+         * Перед созданием сверяет MAJOR-версию ABI: несовпадение
+         * означает, что нативная библиотека несовместима с этим
+         * Kotlin-слоем, и продолжать нельзя (ADR-026, п.4 — MAJOR
+         * обязателен к проверке клиентом, MINOR можно игнорировать).
+         *
+         * @throws PhotonException если создание не удалось
+         * @throws IllegalStateException при несовпадении MAJOR ABI
+         */
+        @JvmStatic
+        fun create(configJson: String): Photon {
+            val major = abiMajor()
+            check(major == EXPECTED_ABI_MAJOR) {
+                "Photon ABI major mismatch: native=$major, expected=$EXPECTED_ABI_MAJOR"
+            }
+
+            val handle = PhotonNative.create(configJson)
+            val rc = PhotonNative.lastCreateResult()
+            if (rc != PhotonNative.PHOTON_OK || handle == 0L) {
+                // Photon_GetLastError требует существующий handle,
+                // которого при неудачном create нет (ADR-027) — поэтому
+                // здесь доступен только код результата, без текста.
+                throw PhotonException(rc, null)
+            }
+            return Photon(handle)
+        }
+    }
+}
+
+/**
+ * Ошибка Photon. [code] — значение PhotonResult из photon_core.h.
+ */
+class PhotonException(
+    val code: Int,
+    val nativeMessage: String?
+) : RuntimeException(buildMessage(code, nativeMessage)) {
+
+    companion object {
+        private fun buildMessage(code: Int, nativeMessage: String?): String {
+            val name = codeName(code)
+            return if (nativeMessage.isNullOrEmpty()) {
+                "Photon error: $name ($code)"
+            } else {
+                "Photon error: $name ($code): $nativeMessage"
+            }
+        }
+
+        fun codeName(code: Int): String = when (code) {
+            PhotonNative.PHOTON_OK -> "PHOTON_OK"
+            PhotonNative.PHOTON_ERR_TIMEOUT -> "PHOTON_ERR_TIMEOUT"
+            PhotonNative.PHOTON_ERR_INVALID_ARGUMENT -> "PHOTON_ERR_INVALID_ARGUMENT"
+            PhotonNative.PHOTON_ERR_PERMISSION_DENIED -> "PHOTON_ERR_PERMISSION_DENIED"
+            PhotonNative.PHOTON_ERR_NOT_FOUND -> "PHOTON_ERR_NOT_FOUND"
+            PhotonNative.PHOTON_ERR_NOT_CONNECTED -> "PHOTON_ERR_NOT_CONNECTED"
+            PhotonNative.PHOTON_ERR_ALREADY_EXISTS -> "PHOTON_ERR_ALREADY_EXISTS"
+            PhotonNative.PHOTON_ERR_INTERNAL -> "PHOTON_ERR_INTERNAL"
+            PhotonNative.PHOTON_ERR_ABI_MISMATCH -> "PHOTON_ERR_ABI_MISMATCH"
+            PhotonNative.PHOTON_ERR_INVALID_ACTION -> "PHOTON_ERR_INVALID_ACTION"
+            else -> "UNKNOWN"
+        }
+    }
+}

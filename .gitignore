@@ -1,0 +1,31 @@
+# Compiled binaries and shared libraries — never source, always rebuilt.
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.o
+
+# Go build/test artifacts of photon-bindings/c.
+/photon-bindings/c/photon_test
+/photon-bindings/c/leakcheck_handles
+/photon-bindings/c/leakcheck_strings
+/photon-bindings/c/photon-bindings-c
+# Build .so ONLY into build/: -buildmode=c-shared writes the generated header
+# next to the output and would overwrite photon_core.h (the frozen ABI header).
+/photon-bindings/c/build/
+
+# Gradle builds and caches.
+/photon-sdk/build/
+/photon-sdk/.gradle/
+/photon-sdk/.kotlin/
+/photon-devtools-core/build/
+/photon-devtools-core/.gradle/
+/photon-devtools-core/.kotlin/
+/photon-developer-tools/build/
+/photon-developer-tools/.gradle/
+/photon-developer-tools/.kotlin/
+
+# Editor/OS noise.
+.DS_Store
+*.swp

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 1,
+  "identity": {
+    "plugin_id": "dev.engram.counter",
+    "version": "0.1.0"
+  },
+  "runtime": {
+    "protocol_version": 1,
+    "entrypoint": "counter",
+    "instance_policy": "single"
+  },
+  "permissions": {
+    "requested": ["storage.read", "storage.write", "identity.sign"]
+  }
+}

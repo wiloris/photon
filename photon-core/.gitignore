@@ -1,0 +1,18 @@
+# Binaries
+/photon-core
+*.exe
+*.test
+
+# Go build cache artifacts that shouldn't be committed
+*.out
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Local env / secrets
+.env
+*.local

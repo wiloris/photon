@@ -1,0 +1,731 @@
+// Command engram-plugin-host — запуск плагина ENGRAM поверх существующего
+// runtime.
+//
+// ЭТО LAUNCHER, А НЕ ВТОРОЙ RUNTIME. host.Host уже делает всё, что делает
+// production-хост: порождает процесс, ведёт handshake, маршрутизирует
+// REQUEST через Authorizer в исполнитель, доставляет события, различает
+// чистую остановку и падение. Оборачивать его вторым жизненным циклом
+// означало бы завести второе место, где написано одно и то же, — и они
+// разошлись бы при первой же правке.
+//
+// Поэтому здесь ровно то, чего у host.Host нет и быть не должно: сборка
+// конкретных адаптеров, выдача прав конкретному плагину и чтение его
+// докладов. Своего IPC-протокола нет; JSON-протокол cmd/devtools-runtime не
+// заимствуется — он лабораторный (ADR-057) и знает про закрытый набор
+// фикстур.
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/wiloris/photon-core/adapters/aesgcm"
+	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
+	ed25519adapter "github.com/wiloris/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon-core/adapters/pion"
+	"github.com/wiloris/photon-core/ports"
+
+	"github.com/wiloris/photon-plugin-runtime/coreops"
+	"github.com/wiloris/photon-plugin-runtime/host"
+	"github.com/wiloris/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon-plugin-runtime/permissions"
+)
+
+// p2pEstablishTimeout — потолок согласования P2P в этой композиции.
+//
+// СТРОГО меньше ipc.DefaultRequestTimeout (30 с) — инвариант ADR-076 §7.7:
+// ожидание установления обязано кончаться причиной со стороны P2P, а не
+// дедлайном IPC, иначе плагин не отличит «собеседник не дошёл» от «истёк срок
+// запроса». coreops проверяет это же неравенство при конструировании, так что
+// нарушение здесь падало бы при запуске, а не в рантайме.
+const p2pEstablishTimeout = 20 * time.Second
+
+// Options — всё, что launcher не может решить за вызывающего.
+type Options struct {
+	// DBPath — файл bbolt. ОДИН И ТОТ ЖЕ путь между запусками означает, что
+	// плагин увидит своё прежнее состояние; разные пути — что не увидит.
+	DBPath string
+
+	// PackageRoot и Entrypoint: host склеивает их (host.go:185), и плагин
+	// запускается из PackageRoot как рабочего каталога.
+	PackageRoot string
+	Entrypoint  string
+
+	PluginID string
+
+	// Grants — права, выдаваемые плагину. Задаются КОДОМ ХОСТА: экрана
+	// согласия в этом срезе нет, и делать вид, что решение приняло
+	// приложение, нельзя.
+	Grants []string
+
+	// Events — события, отправляемые плагину после старта. На каждое
+	// launcher ждёт новый доклад.
+	Events []string
+
+	// Timeout — сколько ждать доклада плагина. Без предела зависший плагин
+	// превратил бы запуск в вечное ожидание (урок ADR-047).
+	Timeout time.Duration
+
+	// KeyDir — каталог ключевого материала (ADR-068 п. 3.3). Пустой означает
+	// каталог файла хранилища: ключи и данные живут рядом, и переносятся тоже
+	// вместе — порознь они бесполезны.
+	KeyDir string
+
+	// Manifest — манифест плагина, пришедший ИЗВНЕ, из его пакета (ADR-071).
+	//
+	// nil означает legacy-путь: манифест собирается в коде (pluginManifest).
+	// Когда задан, ИСТОЧНИКОМ ИСТИНЫ для plugin_id и entrypoint является он:
+	// одноимённые поля Options перезаписываются его значениями, а не
+	// соревнуются с ними.
+	Manifest *manifest.Manifest
+
+	// InitIdentity — ЗАЯВЛЕНИЕ о том, что идентичности устройства ещё нет и
+	// её нужно создать (ADR-069 п. 4.1).
+	//
+	// Это НЕ ensure: с существующим device.key запуск отказывает (п. 4.2).
+	// Повторное создание существующей идентичности либо заменило бы ключ,
+	// либо промолчало — а молчание на вопрос «создавать ли идентичность» и
+	// есть дефект, ради которого ADR-069 написан.
+	//
+	// Асимметрия с Install намеренна: повторная установка установленного
+	// плагина не меняет ничего, повторное создание идентичности безобидным
+	// быть не может.
+	InitIdentity bool
+
+	// Install — регистрировать плагин, если он ещё не установлен.
+	//
+	// УСТАНОВКА — СОБЫТИЕ ЯВНОЕ (ADR-068 п. 5, п. 6.2). Запуск
+	// незарегистрированного плагина без этого флага — ошибка, а не тихая
+	// установка: иначе опечатка в plugin_id создавала бы новый namespace и
+	// новый номер миграции вместо отказа.
+	Install bool
+
+	// InitIdentityOnly — режим -init-identity (ADR-086 §4.1): только создать
+	// device.key в KeyDir. Run в этом режиме не вызывается вовсе.
+	InitIdentityOnly bool
+
+	// ResultOut — путь файла результата для вызывающего приложения
+	// (ADR-085). Читает его ТОЛЬКО CLI: Run о файле не знает, и результат
+	// из него не зависит.
+	ResultOut string
+}
+
+// Result — что launcher увидел за один запуск.
+type Result struct {
+	// Counts — значения счётчика в порядке докладов: первый от старта,
+	// последующие по событиям.
+	Counts []int
+
+	// Signature — последняя пришедшая подпись, уже декодированная.
+	Signature []byte
+
+	// SignatureVerified — проверена ли подпись ключом устройства этого
+	// запуска. Проверяет ХОСТ, а не плагин: доверять подписи, проверенной
+	// тем, кто её сделал, нечего.
+	SignatureVerified bool
+
+	// Completions — сколько раз плагин доложил о завершении единицы
+	// работы (ADR-072). В отличие от Counts это ЧАСТЬ ОБЩЕГО КОНТРАКТА:
+	// доклад шлёт любой плагин, а не только counter.
+	Completions int
+
+	// Reports — доклады целиком, В ПОРЯДКЕ ПОСТУПЛЕНИЯ (ADR-074).
+	//
+	// СПИСОК, А НЕ ПОСЛЕДНЕЕ ЗНАЧЕНИЕ. work.complete не является
+	// состоянием «последний результат»: каждый доклад самостоятелен и не
+	// заменяет предыдущий (ADR-074 §10). Поле вида `LastPayload []byte`
+	// ввело бы семантику last-write-wins, которой в контракте нет, —
+	// композиции, которой нужен последний доклад, придётся взять его
+	// отсюда и отвечать за это правило самой.
+	Reports []WorkReport
+
+	// Lines — журнал плагина целиком, как он пришёл в Log-колбэк.
+	Lines []string
+
+	// Exit — чем закончился процесс плагина.
+	//
+	// Осмысленно ТОЛЬКО при ExitKnown. Нулевое значение ExitKind есть
+	// ExitCleanStop, поэтому незаполненный Exit утверждал бы «штатная
+	// остановка, код 0» — ровно противоположное правде на пути, где статус
+	// не получен вовсе.
+	Exit host.ExitStatus
+
+	// ExitKnown — получен ли статус завершения.
+	//
+	// Поле существует, потому что «неизвестно» и «clean_stop» неразличимы
+	// в самом ExitStatus. Ложь тут дороже пропуска: при таймауте плагин жив
+	// или завис, и сообщать о его штатной остановке нельзя.
+	//
+	// false бывает на двух путях: отказ до запуска процесса и ожидание
+	// доклада, истёкшее раньше завершения плагина.
+	ExitKnown bool
+}
+
+// WorkReport — один доклад плагина о завершении единицы работы (ADR-074).
+//
+// Payload НЕПРОЗРАЧЕН: launcher его не разбирает и ни одного имени поля внутри
+// не знает. Он лишь доносит байты до вызывающего в том же виде, в каком их
+// отправил плагин, — разбор принадлежит потребителю (ADR-074 §3, §6).
+type WorkReport struct {
+	Status  coreops.WorkStatus
+	Payload []byte
+}
+
+// Run выполняет один полный цикл: открыть хранилище, выдать права, запустить
+// плагин, дождаться докладов, остановить, проверить подпись.
+func Run(ctx context.Context, o Options) (res Result, err error) {
+
+	if o.Timeout <= 0 {
+		o.Timeout = 15 * time.Second
+	}
+
+	/*
+	 * ── манифест и структурная проверка — ПЕРВЫМИ ──────────────────────────
+	 *
+	 * Порядок здесь и есть содержание ADR-071. Ниже по тексту Run создаёт
+	 * ключевой материал, открывает хранилище, зовёт Migrate и при установке
+	 * пишет строку реестра. Номер миграции не переиспользуется (ADR-068
+	 * §6.1), а удаления namespace в портах нет (ADR-020) — значит негодный
+	 * манифест, проверенный позже, успел бы оставить неоткатываемый след:
+	 * namespace, выведенный из негодного plugin_id, и израсходованный номер.
+	 *
+	 * Validate(m, "") проверяет структуру и НЕ трогает файловую систему —
+	 * это документированное свойство валидатора, а не обход проверки: путь
+	 * проверяется вторым вызовом, когда корень известен.
+	 */
+	m := o.Manifest
+	if m == nil {
+		m = pluginManifest(o)
+	} else {
+		o.PluginID = m.Identity.PluginID
+		o.Entrypoint = m.Runtime.Entrypoint
+	}
+	if err := manifest.Validate(m, ""); err != nil {
+		return res, fmt.Errorf("манифест: %w", err)
+	}
+
+	id := ed25519adapter.New()
+	cr := aesgcm.New()
+
+	// ── ключевой материал: читается, а не порождается заново ─────────────
+	keyDir := o.KeyDir
+	if keyDir == "" {
+		keyDir = filepath.Dir(o.DBPath)
+	}
+	keys, err := loadOrCreateKeys(ctx, keyDir, id, cr, o.InitIdentity)
+	if err != nil {
+		return res, err
+	}
+
+	/*
+	 * ── хранилище: два открытия, и это не небрежность ────────────────────
+	 *
+	 * Список миграций фиксируется при открытии (bboltadapter.New), а
+	 * построить его можно только прочитав реестр, который лежит внутри того
+	 * же хранилища. Разорвать круг можно ровно двумя способами: держать
+	 * реестр в отдельном файле — или открыть дважды. Второе выбрано потому,
+	 * что первое разносит состояние хоста по двум файлам, которые обязаны
+	 * переноситься вместе и молча расходятся, если однажды не перенеслись.
+	 *
+	 * Первое открытие знает одну миграцию — сам реестр (п. 6.1).
+	 */
+	boot, err := newBootStorage(o.DBPath)
+	if err != nil {
+		return res, fmt.Errorf("открыть хранилище: %w", err)
+	}
+	if err := boot.Migrate(ctx, registrySchemaVersion); err != nil {
+		boot.Close(context.Background())
+		return res, fmt.Errorf("мигрировать реестр: %w", err)
+	}
+
+	if o.Install {
+		if _, err := ensureInstalled(ctx, boot, o.PluginID); err != nil {
+			boot.Close(context.Background())
+			return res, fmt.Errorf("установить %s: %w", o.PluginID, err)
+		}
+	}
+
+	rows, _, err := readRegistry(ctx, boot)
+	if err != nil {
+		boot.Close(context.Background())
+		return res, fmt.Errorf("прочитать реестр: %w", err)
+	}
+	if err := boot.Close(context.Background()); err != nil {
+		return res, fmt.Errorf("закрыть хранилище: %w", err)
+	}
+
+	if !containsPlugin(rows, o.PluginID) {
+		// Отказ, а не тихая установка (п. 6.2): опечатка в plugin_id иначе
+		// создала бы новый namespace и израсходовала номер миграции.
+		return res, fmt.Errorf("плагин %s не установлен: запустите с установкой", o.PluginID)
+	}
+
+	/*
+	 * Второе открытие — с полным списком. Migrate зовётся ПРИ КАЖДОМ
+	 * открытии (инвариант п. 5.1/5.3): это закрывает окно «строка реестра
+	 * записана, namespace не создан», которое иначе оставляет плагин с
+	 * ErrNamespaceNotFound на первом put и не чинится само.
+	 *
+	 * Повторный вызов безвреден: вся партия идёт одной транзакцией, а
+	 * current >= target даёт no-op.
+	 */
+	migrations, target := migrationsFor(rows)
+	st, err := bboltadapter.New(o.DBPath, migrations)
+	if err != nil {
+		return res, fmt.Errorf("переоткрыть хранилище: %w", err)
+	}
+	defer st.Close(context.Background())
+
+	if err := st.Migrate(ctx, target); err != nil {
+		return res, fmt.Errorf("мигрировать namespace плагинов: %w", err)
+	}
+
+	// ── доклады плагина ──────────────────────────────────────────────────
+	rep := newReports()
+
+	/*
+	 * Накопленное доходит до вызывающего НА ЛЮБОМ пути, включая ошибку.
+	 *
+	 * Прежде Result заполнялся только после успешного Wait, и два десятка
+	 * ранних возвратов отдавали нулевую структуру: упавший плагин уносил с
+	 * собой и свой журнал, и свои доклады, и типизированную причину
+	 * завершения — при том что всё это было собрано.
+	 *
+	 * Порядок defer'ов здесь работает в нашу пользу: h.Stop регистрируется
+	 * ниже, а значит выполнится РАНЬШЕ (LIFO), и снимок захватит в том числе
+	 * строки, написанные плагином при остановке.
+	 */
+	defer rep.fillInto(&res)
+
+	/*
+	 * ── P2P ──────────────────────────────────────────────────────────────
+	 *
+	 * Композиция продакшн-хоста, предусмотренная ADR-076 §4. Адаптер
+	 * строится ВСЕГДА: он не открывает ни одного сокета до первого
+	 * согласования (ICE-агент создаётся на вызов), а доступ к домену
+	 * решает право p2p.connect, не наличие адаптера.
+	 *
+	 * Личность та же, что у всего остального: ключ устройства (ADR-021,
+	 * ADR-069). Отдельной P2P-личности не заводится — handshake ADR-041
+	 * подтверждает именно её.
+	 *
+	 * STUN/TURN не задаются: адрес сервера — параметр развёртывания, а не
+	 * этого среза, и без него согласование работает на host-кандидатах.
+	 */
+	devicePub, err := id.PublicKeyOf(ctx, keys.Device)
+	if err != nil {
+		return res, fmt.Errorf("публичный ключ устройства: %w", err)
+	}
+	p2pAdapter, err := pion.New(pion.Config{
+		Identity: id,
+		Self:     ports.IdentityPair{Public: devicePub, Private: keys.Device},
+		// Строго меньше ipc.DefaultRequestTimeout — инвариант ADR-076 §7.7.
+		// Значение то же, что умолчание coreops: держать здесь ДРУГОЕ число
+		// значило бы завести вторую истину о том же сроке.
+		EstablishTimeout: p2pEstablishTimeout,
+	})
+	if err != nil {
+		return res, fmt.Errorf("p2p: %w", err)
+	}
+	defer p2pAdapter.Close()
+
+	// Событие доставляется плагину через его же сессию IPC. Хост к этому
+	// моменту ещё не создан, поэтому ссылка берётся отложенно: coreops
+	// зовёт колбэк только во время работы плагина, когда хост уже есть.
+	var hostRef atomic.Pointer[host.Host]
+	emitEvent := func(pluginID, eventType string, payload []byte) error {
+		h := hostRef.Load()
+		if h == nil {
+			return errors.New("host is not running")
+		}
+		return h.SendEvent(eventType, payload)
+	}
+
+	exec, err := coreops.New(coreops.Config{
+		Storage: st,
+		// Namespace ПЛАГИНА, а не общий на всех (ADR-068 п. 4.1):
+		// исполнитель создаётся на плагин, и ForEachPrefix одного не видит
+		// ключей другого даже при ошибке в префиксе.
+		StorageNamespace: pluginNamespace(o.PluginID),
+		Identity:         id,
+		DeviceKey:        keys.Device,
+		Crypto:           cr,
+		DeriveKey: func(ctx context.Context, domain string) (ports.SymmetricKey, error) {
+			return cr.DeriveKey(ctx, keys.Master, domain)
+		},
+		Log: rep.onLog,
+		// Доклад о завершении — отдельный канал, не строка журнала
+		// (ADR-072 §2).
+		OnWorkComplete: rep.onWorkComplete,
+
+		P2P:                 p2pAdapter,
+		EmitEvent:           emitEvent,
+		P2PEstablishTimeout: p2pEstablishTimeout,
+	})
+	if err != nil {
+		return res, fmt.Errorf("executor: %w", err)
+	}
+
+	// ── права ────────────────────────────────────────────────────────────
+	policy := permissions.NewPolicy()
+	if err := policy.Grant(permissions.Subject{PluginID: o.PluginID}, o.Grants); err != nil {
+		return res, fmt.Errorf("grant: %w", err)
+	}
+
+	/*
+	 * ── файловая проверка — ПЕРЕД запуском ─────────────────────────────────
+	 *
+	 * Второй вызов не повторяет первый по смыслу: он отвечает на вопрос
+	 * «исполним ли этот манифест ЗДЕСЬ И СЕЙЧАС» — существует ли entrypoint,
+	 * обычный ли это файл, не уходит ли он за корень после разрешения
+	 * symlink. Ответ верен только для текущего PackageRoot: на Android он
+	 * меняется при каждом обновлении APK (ADR-070 §6.2).
+	 */
+	if err := manifest.Validate(m, o.PackageRoot); err != nil {
+		return res, fmt.Errorf("манифест против пакета: %w", err)
+	}
+
+	// ── запуск ───────────────────────────────────────────────────────────
+	h := host.New(host.Config{
+		Manifest:    m,
+		PackageRoot: o.PackageRoot,
+		Caller:      ports.PublicKey("engram-host:" + o.PluginID),
+		Policy:      policy,
+		Authorizer:  permissions.NewAuthorizer(policy),
+		Handler:     exec,
+	})
+	hostRef.Store(h)
+
+	if err := h.Start(ctx); err != nil {
+		return res, fmt.Errorf("start: %w", err)
+	}
+
+	// Остановка выполняется в любом случае, включая ошибку ожидания: иначе
+	// процесс плагина пережил бы хозяина.
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), o.Timeout)
+		defer cancel()
+		_ = h.Stop(stopCtx)
+	}()
+
+	/*
+	 * ── ожидание доклада о завершении (ADR-072) ──────────────────────────
+	 *
+	 * Хост ждёт РОВНО ТОГО, что плагин сообщил сам: work.complete. Прежде
+	 * здесь ждали строку журнала "count:<N>" — формат examples/counter, то
+	 * есть знание об одном плагине в роли контракта платформы.
+	 *
+	 * Ожидание обязательно, и это не приёмка, а синхронизация: без неё STOP
+	 * уходит немедленно после старта и плагин не успевает поработать.
+	 * Измерено: снятие ожидания давало девять детерминированных падений E2E.
+	 */
+	if err := rep.waitComplete(o.Timeout, h.Exited()); err != nil {
+		return res, fmt.Errorf("доклад о завершении: %w", err)
+	}
+
+	/*
+	 * ── события ──────────────────────────────────────────────────────────
+	 *
+	 * У события подтверждения доставки нет и не заводится: SendEvent только
+	 * доставляет. Подтверждением ОБРАБОТКИ служит следующий work.complete,
+	 * который плагин посылает сам (ADR-072 §6).
+	 */
+	for _, ev := range o.Events {
+		if err := h.SendEvent(ev, nil); err != nil {
+			return res, fmt.Errorf("send event %q: %w", ev, err)
+		}
+		if err := rep.waitComplete(o.Timeout, h.Exited()); err != nil {
+			return res, fmt.Errorf("доклад после события %q: %w", ev, err)
+		}
+	}
+
+	// ── остановка и разбор ───────────────────────────────────────────────
+	stopCtx, cancel := context.WithTimeout(context.Background(), o.Timeout)
+	defer cancel()
+	if err := h.Stop(stopCtx); err != nil {
+		return res, fmt.Errorf("stop: %w", err)
+	}
+
+	exit, waitErr := h.Wait(stopCtx)
+	if waitErr != nil {
+		return res, fmt.Errorf("wait: %w", waitErr)
+	}
+
+	// Тем же путём, что и статус упавшего плагина: один писатель, одно
+	// место. Ручного копирования полей здесь больше нет — их переносит
+	// defer выше, и на успешном пути он отработает так же, как на любом
+	// другом.
+	rep.setExit(exit)
+
+	/*
+	 * Проверка подписи — ДИАГНОСТИКА, и она знает формат counter:
+	 * подписанным значением является последний доложенный счётчик. У
+	 * плагина, не пишущего "count:", сверять не с чем, и это не ошибка
+	 * запуска (ADR-072 §8).
+	 */
+	// Счётчики берутся У REP, а не из res: res.Counts заполняет defer, и на
+	// этой строке он ещё не отработал.
+	counts := rep.counts()
+	if sig, ok := rep.signature(); ok && len(counts) > 0 {
+		res.Signature = sig
+		last := strconv.Itoa(counts[len(counts)-1])
+
+		// Проверка идёт по ДОМЕННО-РАЗДЕЛЁННОМУ входу, а не по сырому
+		// значению: именно его подписал coreops (ADR-037). Первая редакция
+		// проверяла сырые байты и получала «подпись не сошлась» — ошибка
+		// доверенной стороны, не плагина.
+		pub, perr := id.PublicKeyOf(ctx, keys.Device)
+		if perr != nil {
+			return res, fmt.Errorf("публичный ключ устройства: %w", perr)
+		}
+		ok, verr := id.Verify(ctx, pub, pluginSignInput(o.PluginID, []byte(last)), sig)
+		if verr != nil {
+			return res, fmt.Errorf("verify: %w", verr)
+		}
+		res.SignatureVerified = ok
+	}
+
+	return res, nil
+}
+
+/*
+ * pluginSignInput — доменно-разделённый вход подписи (ADR-037):
+ *
+ *	"plugin-sign:" ‖ uint32be(len(plugin_id)) ‖ plugin_id ‖ ":" ‖ data
+ *
+ * Знать его обязана ДОВЕРЕННАЯ сторона, и только она. Плагин подписывает
+ * «свои» байты и о домене не подозревает — в этом и смысл разделения: без
+ * него подпись, сделанную одним плагином, можно было бы предъявить от имени
+ * другого.
+ *
+ * ФОРМУЛА ЗДЕСЬ — ВТОРАЯ КОПИЯ, и это названо прямо, а не замолчано.
+ * coreops строит тот же вход своей неэкспортируемой pluginSignInput, и
+ * сослаться на неё нельзя. Расхождение проявится не компилятором, а
+ * несошедшейся подписью — ровно тем, что и случилось при первом прогоне
+ * этого среза, когда проверка шла по сырым байтам. Тот же выбор и по той же
+ * причине сделан в tests/lifecycle/sdkscenario_test.go, где формула записана
+ * из текста ADR как доверенный оракул.
+ *
+ * Экспортировать её из coreops — отдельное решение, и в этот срез оно не
+ * входит: срез не меняет существующие контракты.
+ */
+func pluginSignInput(pluginID string, data []byte) []byte {
+	var b bytes.Buffer
+	b.WriteString("plugin-sign:")
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(pluginID)))
+	b.Write(n[:])
+	b.WriteString(pluginID)
+	b.WriteString(":")
+	b.Write(data)
+	return b.Bytes()
+}
+
+// pluginManifest собирает манифест В КОДЕ.
+//
+// Файла manifest.json нет намеренно: формат установленного пакета — это
+// отдельное решение (где лежит, кто кладёт, кто проверяет подпись), и
+// принимать его мимоходом ради первого среза значило бы зафиксировать
+// формат раньше, чем появился хоть один его потребитель. Runtime принимает
+// *manifest.Manifest как структуру и про файлы ничего не знает.
+func pluginManifest(o Options) *manifest.Manifest {
+	return &manifest.Manifest{
+		ManifestVersion: 1,
+		Identity: manifest.Identity{
+			PluginID: o.PluginID,
+			Version:  "0.1.0",
+		},
+		Runtime: manifest.RuntimeSpec{
+			ProtocolVersion: 1,
+			Entrypoint:      o.Entrypoint,
+		},
+		Permissions: manifest.Permissions{
+			Requested: o.Grants,
+		},
+	}
+}
+
+// reports — разбор журнала плагина.
+//
+// Это ЕДИНСТВЕННЫЙ существующий канал, по которому состояние плагина
+// доходит до хоста: ответа плагин отправить не может (RESPONSE идёт только
+// на его собственный REQUEST), а SendEvent односторонний. Log-колбэк хост
+// передаёт в coreops сам, поэтому канал существует по построению, а не
+// добавлен ради этого среза.
+type reports struct {
+	mu     sync.Mutex
+	lines  []string
+	sig    []byte
+	values []int
+
+	// work — доклады о завершении, в порядке поступления. СПИСОК, а не
+	// счётчик и не последнее значение: см. Result.Reports.
+	work []WorkReport
+
+	// complete — доклады о завершении. Буфер на случай, если плагин
+	// доложил раньше, чем хост начал ждать: доклад не теряется.
+	complete chan struct{}
+
+	// exit/exitKnown — статус завершения, полученный ОДИН раз.
+	//
+	// Живёт здесь, потому что host.Exited() — канал на одну выдачу: он
+	// буферизован на единицу и закрывается сразу после отправки. Кто
+	// прочитал статус, тот им и владеет; второе чтение вернёт нулевое
+	// значение, то есть ЛОЖНЫЙ clean_stop с кодом 0 (измерено). Поэтому
+	// восстановить статус повторным чтением или повторным Wait нельзя —
+	// его нужно сохранить в момент получения.
+	exit      host.ExitStatus
+	exitKnown bool
+}
+
+func newReports() *reports {
+	return &reports{complete: make(chan struct{}, 8)}
+}
+
+// onWorkComplete — плагин доложил о завершении единицы работы и о её исходе.
+func (r *reports) onWorkComplete(_ string, status coreops.WorkStatus, payload []byte) {
+	// Копия: байты принадлежат разбору запроса в coreops, и удерживать
+	// чужую память дольше вызова launcher не вправе. Копирование сохраняет
+	// и nil — пустой доклад остаётся пустым, а не становится []byte{}.
+	r.mu.Lock()
+	r.work = append(r.work, WorkReport{Status: status, Payload: append([]byte(nil), payload...)})
+	r.mu.Unlock()
+
+	select {
+	case r.complete <- struct{}{}:
+	default: // ожидающий отстал — счётчик уже увеличен, факт не потерян
+	}
+}
+
+func (r *reports) onLog(pluginID, level, message string) {
+	r.mu.Lock()
+	r.lines = append(r.lines, pluginID+" ["+level+"] "+message)
+	r.mu.Unlock()
+
+	switch {
+	case strings.HasPrefix(message, "count:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(message, "count:"))
+		if err != nil {
+			return
+		}
+		r.mu.Lock()
+		r.values = append(r.values, n)
+		r.mu.Unlock()
+
+	case strings.HasPrefix(message, "signature:"):
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(message, "signature:"))
+		if err != nil {
+			return
+		}
+		r.mu.Lock()
+		r.sig = raw
+		r.mu.Unlock()
+	}
+}
+
+// setExit запоминает статус завершения.
+//
+// ЕДИНСТВЕННЫЙ писатель, и вызывается ровно из двух мест: ветка exited в
+// waitComplete и успешный путь после h.Wait. Оба — первое и единственное
+// чтение канала на своём пути.
+func (r *reports) setExit(st host.ExitStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.exit = st
+	r.exitKnown = true
+}
+
+// fillInto переносит накопленное в Result.
+//
+// Вызывается ОДНИМ defer'ом из Run, а не присваиваниями у каждого возврата.
+// Причина не в краткости: возвратов в Run два десятка, и правка, требующая
+// помнить о заполнении на каждом новом пути, продержится до первого нового
+// пути. Раньше так и было — данные доходили только после успешного Wait, а
+// два десятка ранних возвратов отдавали нулевой Result.
+//
+// Signature и SignatureVerified НЕ трогаются: их пишет сам Run, и defer
+// выполняется позже.
+func (r *reports) fillInto(res *Result) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	res.Lines = append([]string(nil), r.lines...)
+	res.Counts = append([]int(nil), r.values...)
+	res.Reports = append([]WorkReport(nil), r.work...)
+	res.Completions = len(r.work)
+	res.Exit = r.exit
+	res.ExitKnown = r.exitKnown
+}
+
+var errNoReport = errors.New("плагин не доложил о завершении работы в отведённое время")
+
+/*
+ * waitComplete ждёт доклад work.complete — но следит и за ЗАВЕРШЕНИЕМ
+ * процесса.
+ *
+ * Без второго условия отказ плагина выглядел бы как таймаут: упавший процесс
+ * докладывает ровно столько же, сколько зависший, и различить их по одному
+ * только ожиданию нельзя. Первая редакция так и делала — и проверка «без
+ * storage.write запуск обязан не пройти» честно падала, но тратила на это
+ * весь таймаут, сообщая при этом не ту причину.
+ */
+func (r *reports) waitComplete(timeout time.Duration, exited <-chan host.ExitStatus) error {
+	select {
+	case <-r.complete:
+		return nil
+	case st := <-exited:
+		// Статус сохраняется ДО возврата ошибки: это единственное его
+		// извлечение, и форматирование в текст его не сохраняет.
+		r.setExit(st)
+		return fmt.Errorf("плагин завершился до доклада: %v (код %d, err=%v)",
+			st.Kind, st.Code, st.Err)
+	case <-time.After(timeout):
+		return errNoReport
+	}
+}
+
+// counts — снимок значений "count:", диагностика.
+func (r *reports) counts() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]int, len(r.values))
+	copy(out, r.values)
+	return out
+}
+
+// completions — сколько докладов о завершении пришло.
+func (r *reports) completions() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.work)
+}
+
+// workReports — снимок докладов в порядке поступления.
+func (r *reports) workReports() []WorkReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]WorkReport, len(r.work))
+	copy(out, r.work)
+	return out
+}
+
+func (r *reports) signature() ([]byte, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sig == nil {
+		return nil, false
+	}
+	out := make([]byte, len(r.sig))
+	copy(out, r.sig)
+	return out, true
+}

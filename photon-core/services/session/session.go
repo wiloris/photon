@@ -1,0 +1,626 @@
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+
+	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon-core/services/diag"
+)
+
+// State — состояние сессии. См. диаграмму в bridge-session.md §6.
+type State int
+
+const (
+	StateCreated State = iota
+	StateConnecting
+	StateReady
+	StateFailed
+	StateClosed
+)
+
+func (s State) String() string {
+	switch s {
+	case StateCreated:
+		return "created"
+	case StateConnecting:
+		return "connecting"
+	case StateReady:
+		return "ready"
+	case StateFailed:
+		return "failed"
+	case StateClosed:
+		return "closed"
+	}
+	return "unknown"
+}
+
+// Config — параметры сессии.
+type Config struct {
+	// Transport — замороженный порт (ADR-020). Сессия ходит через него, а не
+	// через quic-go напрямую: прямая зависимость тест-клиента от quic-go
+	// нормальна для клиента, проверяющего сервер, но не для кода ядра.
+	Transport ports.Transport
+	Endpoint  ports.Endpoint
+
+	SessionToken string
+	Mode         Mode
+
+	// Codec — nil означает JSONCodec (ADR-034: JSON — формат по умолчанию и
+	// единственный сейчас).
+	Codec Codec
+
+	// Diag — диагностика инстанса (ADR-130); nil — не наблюдается. DiagConn
+	// — какое из соединений инстанса держит эта сессия. Переходы состояний
+	// пишутся ПОСЛЕ снятия мьютекса сессии: запись не должна удлинять
+	// критическую секцию, через которую идут все вызовы.
+	Diag     *diag.Diag
+	DiagConn diag.Conn
+}
+
+// Session — соединение с Bridge и его жизненный цикл.
+//
+// Своей политики реконнекта здесь НЕТ намеренно: при обрыве сессия переходит
+// в StateFailed и сообщает об этом, а решает, восстанавливать ли связь,
+// потребитель — у каждого соединения свой (bridge-session.md §6, п. 7):
+// подписку восстанавливает насос services/dispatcher отдельной сессией с
+// отменяемой паузой, action-соединение переподключается лениво, следующим
+// вызовом (D-3 Phase 13.5). services/autodial владельцем этой политики не
+// является: он выбирает маршрут в пределах одного Connect.
+//
+// Что принадлежит сессии — время жизни СВОЕГО соединения: повторный Connect
+// закрывает прежнее ровно один раз (см. Connect).
+type Session struct {
+	mu    sync.Mutex
+	cfg   Config
+	codec Codec
+	state State
+	conn  ports.Connection
+
+	// closeCh закрывается ровно один раз, в Close. Служит сигналом отмены
+	// для идущего Connect: без него Close на подключающейся сессии ждал бы
+	// завершения Connect. Прецедент прямой — вечное зависание host.Stop на
+	// неотвечающем плагине (Phase 9), найденное не ревью, а тестом отказа.
+	closeCh chan struct{}
+
+	// lost различает две причины StateFailed: неудачный Connect и обрыв уже
+	// установленной связи. Снаружи это ErrNotReady против ErrConnectionLost.
+	lost bool
+}
+
+// New создаёт сессию. Сети не касается — соединение устанавливает Connect.
+//
+// Это же правило теперь записано в photon_core.h для Photon_Create: сетевой
+// вызов внутри конструктора означал бы создание объекта, блокирующееся на
+// неопределённое время и падающее от временной недоступности сети.
+func New(cfg Config) (*Session, error) {
+	if cfg.Transport == nil {
+		return nil, errors.New("session: Transport is required")
+	}
+	if cfg.Endpoint == "" {
+		return nil, errors.New("session: Endpoint is required")
+	}
+	switch cfg.Mode {
+	case ModeAction, ModeSubscribe:
+	default:
+		return nil, fmt.Errorf("session: unknown mode %q", cfg.Mode)
+	}
+
+	codec := cfg.Codec
+	if codec == nil {
+		codec = JSONCodec{}
+	}
+
+	return &Session{
+		cfg:     cfg,
+		codec:   codec,
+		state:   StateCreated,
+		closeCh: make(chan struct{}),
+	}, nil
+}
+
+// State возвращает текущее состояние.
+func (s *Session) State() State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
+// Connect устанавливает соединение и проводит handshake.
+//
+// На уже подключённой сессии возвращает nil, не открывая второго соединения
+// (идемпотентен по результату, не по эффекту — bridge-session.md §6, п. 1).
+func (s *Session) Connect(ctx context.Context) error {
+	s.mu.Lock()
+	switch s.state {
+	case StateClosed:
+		s.mu.Unlock()
+		return ErrSessionClosed
+	case StateReady:
+		s.mu.Unlock()
+		return nil
+	case StateConnecting:
+		s.mu.Unlock()
+		return ErrConnectInProgress
+	}
+	from := s.state
+	s.state = StateConnecting
+	closeCh := s.closeCh
+	s.mu.Unlock()
+	s.noteState(from, StateConnecting)
+
+	// ctx, отменяемый и вызывающим, и Close. Без второго Close пришлось бы
+	// ждать завершения Connect.
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-closeCh:
+			cancel()
+		case <-cctx.Done():
+		}
+	}()
+
+	conn, err := s.cfg.Transport.Connect(cctx, s.cfg.Endpoint)
+	if err != nil {
+		return s.failConnect(fmt.Errorf("session: connect: %w", err))
+	}
+
+	if err := s.handshakeCancelable(cctx, conn); err != nil {
+		conn.Close()
+		return s.failConnect(err)
+	}
+
+	s.mu.Lock()
+	// Close мог произойти, пока шёл handshake. Тогда соединение закрывается,
+	// а сессия остаётся закрытой: воскрешать её нельзя (bridge-session.md
+	// §6, п. 4).
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		conn.Close()
+		return ErrSessionClosed
+	}
+	// Прежнее соединение забирается ВМЕСТЕ с установкой нового, под одним
+	// мьютексом: иначе между «забрали» и «поставили» Close увидел бы сессию
+	// без соединения и не закрыл бы ничего.
+	prev := s.conn
+	s.conn = conn
+	s.state = StateReady
+	s.lost = false
+	s.mu.Unlock()
+	s.noteState(StateConnecting, StateReady)
+
+	// Повторный Connect на той же сессии — обычный путь ленивого реконнекта
+	// действий: обрыв переводит сессию в Failed, а следующий вызов
+	// подключается заново (action-routing.md, D-3). Прежнее соединение
+	// обязано закрыться здесь и только здесь: Close закрывает ТЕКУЩЕЕ, и
+	// без этой строки оборванное оставалось бы незакрытым и недостижимым —
+	// при включённом keep-alive idle-timeout его не уберёт.
+	//
+	// Закрывается ПОСЛЕ установки нового и вне мьютекса: закрытие
+	// транспорта может блокироваться, а держать под ним s.mu значило бы
+	// останавливать всю сессию на время чужого ввода-вывода.
+	//
+	// Только на успешном пути: неудачный Connect прежнее соединение не
+	// трогает — оно всё ещё текущее, и закрывать его от имени неудачи
+	// значило бы рвать связь, которая, возможно, ещё жива.
+	if prev != nil && prev != conn {
+		_ = prev.Close()
+	}
+	return nil
+}
+
+// markLost переводит Ready-сессию в Failed и классифицирует причину как обрыв.
+// Возвращает ошибку, для которой errors.Is(err, ErrConnectionLost) истинно, с
+// сохранённой исходной причиной.
+//
+// Состояние меняется только из Ready: обрыв, обнаруженный после Close, не
+// должен воскрешать сессию в Failed (bridge-session.md §6, п. 4).
+func (s *Session) markLost(err error) error {
+	s.mu.Lock()
+	changed := s.state == StateReady
+	if changed {
+		s.state = StateFailed
+		s.lost = true
+	}
+	s.mu.Unlock()
+	if changed {
+		s.noteState(StateReady, StateFailed)
+		s.cfg.Diag.SessionFailed(s.cfg.DiagConn, "lost", failText(err))
+	}
+	return fmt.Errorf("%w: %w", ErrConnectionLost, err)
+}
+
+// failConnect переводит сессию в Failed, не затирая уже наступивший Closed.
+func (s *Session) failConnect(err error) error {
+	s.mu.Lock()
+	from := s.state
+	if from != StateClosed {
+		s.state = StateFailed
+	} else {
+		err = ErrSessionClosed
+	}
+	s.mu.Unlock()
+	if from != StateClosed {
+		s.noteState(from, StateFailed)
+		s.cfg.Diag.SessionFailed(s.cfg.DiagConn, "connect", failText(err))
+	}
+	return err
+}
+
+// noteState пишет переход состояния в диагностику инстанса (ADR-130 §2.3).
+func (s *Session) noteState(from, to State) {
+	if from != to {
+		s.cfg.Diag.SessionState(s.cfg.DiagConn, from.String(), to.String())
+	}
+}
+
+// failText — текст причины Failed для журнала: текст sentinel-ошибки сессии
+// либо класс. Подробности (адреса, текст ошибки транспорта) в журнал не идут
+// (ADR-130 §2.8).
+func failText(err error) string {
+	for _, e := range []error{ErrHandshakeRejected, ErrProtocolVersion, ErrModeNotAccepted, ErrMalformedFrame} {
+		if errors.Is(err, e) {
+			return e.Error()
+		}
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return "transport"
+}
+
+// handshakeCancelable — handshake, прерываемый ctx (ConnectTimeout, Close).
+//
+// Чтение ack ctx не наблюдает: порт не даёт отменить чтение потока (§6 п. 6),
+// и сервер, принявший QUIC, но молчащий на уровне протокола, держал бы
+// Connect — а с ним Close и Photon_Destroy — бесконечно (QUIC keep-alive не
+// даёт сработать таймеру простоя). Соединение до конца handshake принадлежит
+// только Connect, поэтому при отмене оно закрывается — это и освобождает
+// чтение (закрытие соединения закрывает его потоки, контракт порта). Успех,
+// совпавший с отменой, не засчитывается: соединение уже закрыто.
+func (s *Session) handshakeCancelable(ctx context.Context, conn ports.Connection) error {
+	stop := make(chan struct{})
+	closedByCancel := make(chan bool, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+			closedByCancel <- true
+		case <-stop:
+			closedByCancel <- false
+		}
+	}()
+	err := s.handshake(ctx, conn)
+	close(stop)
+	if <-closedByCancel {
+		return fmt.Errorf("session: handshake: %w", ctx.Err())
+	}
+	return err
+}
+
+// handshake проводит три фрейма первого стрима: auth → mode → ack.
+func (s *Session) handshake(ctx context.Context, conn ports.Connection) error {
+	st, err := conn.OpenStream(ctx)
+	if err != nil {
+		return fmt.Errorf("session: open handshake stream: %w", err)
+	}
+	// Half-close пишущей стороны после обмена: стрим handshake'а больше не
+	// нужен, соединение живёт дальше.
+	defer st.Close()
+
+	if err := s.codec.WriteHandshake(st, Handshake{
+		SessionToken:    s.cfg.SessionToken,
+		Mode:            s.cfg.Mode,
+		ProtocolVersion: ProtocolVersion,
+	}); err != nil {
+		return err
+	}
+
+	ack, err := s.codec.ReadHandshakeAck(st)
+	if err != nil {
+		return err
+	}
+	if !ack.OK {
+		return fmt.Errorf("%w: %s", ErrHandshakeRejected, ack.Error)
+	}
+
+	// Версия проверяется ПОСЛЕ ok: если сервер отверг токен, разговор о
+	// версиях не имеет смысла и увёл бы диагностику в сторону.
+	//
+	// Ноль = поле не прислано. Это НЕ несовместимость: развёрнутый сегодня
+	// Bridge о версиях не знает (bridge-session.md §5), и отвергать его
+	// значило бы сломать работающую систему этой самой проверкой.
+	if ack.ProtocolVersion != 0 && ack.ProtocolVersion != ProtocolVersion {
+		return fmt.Errorf("%w: server %d, client %d",
+			ErrProtocolVersion, ack.ProtocolVersion, ProtocolVersion)
+	}
+
+	// Режим проверяется ПОСЛЕ версии: несовместимый протокол делает разговор
+	// о режимах бессмысленным.
+	//
+	// Пустой Status = сервер не сообщил, и это не ошибка (bridge-session.md
+	// §2.1). Но если сообщил — он обязан совпасть с запрошенным: сервер
+	// молча откатывается в "action" при любой ошибке чтения mode-фрейма
+	// (quic_listener.go:270-275), отвечая при этом ok:true. Без этой
+	// проверки такой откат обнаруживается не здесь, а много позже — вечным
+	// ожиданием в AcceptPush на соединении, где push'ей не будет.
+	if want := statusForMode(s.cfg.Mode); want != "" && ack.Status != "" && ack.Status != want {
+		return fmt.Errorf("%w: requested %q (expected status %q), server confirmed %q",
+			ErrModeNotAccepted, s.cfg.Mode, want, ack.Status)
+	}
+	return nil
+}
+
+// Do отправляет action и возвращает ответ. Один action — один стрим.
+//
+// Не подключается неявно: на неподключённой сессии возвращает ErrNotReady
+// (bridge-session.md §6, п. 5).
+func (s *Session) Do(ctx context.Context, action int32, payload []byte) (Response, error) {
+	// Проверка action'а — ДО обращения к состоянию и к сети: неизвестный код
+	// не должен ни открывать стрим, ни зависеть от того, подключены мы или
+	// нет. На границе ABI этому соответствует PHOTON_ERR_INVALID_ACTION.
+	resource, err := ResourceFor(action)
+	if err != nil {
+		return Response{}, err
+	}
+	if resource == ResourceLocalFeed {
+		return Response{}, fmt.Errorf("%w: %d", ErrLocalAction, action)
+	}
+
+	s.mu.Lock()
+	switch s.state {
+	case StateClosed:
+		s.mu.Unlock()
+		return Response{}, ErrSessionClosed
+	case StateReady:
+	case StateFailed:
+		lost := s.lost
+		s.mu.Unlock()
+		if lost {
+			return Response{}, ErrConnectionLost
+		}
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, StateFailed)
+	default:
+		st := s.state
+		s.mu.Unlock()
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, st)
+	}
+	conn := s.conn
+	s.mu.Unlock()
+
+	stream, err := conn.OpenStream(ctx)
+	if err != nil {
+		// Отмена вызывающим обрывом не считается: состояние не меняется.
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
+		return Response{}, s.markLost(fmt.Errorf("session: open action stream: %w", err))
+	}
+
+	type result struct {
+		resp Response
+		err  error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		if err := s.codec.WriteRequest(stream, Request{
+			Action: action, Resource: resource, Payload: payload,
+		}); err != nil {
+			done <- result{err: err}
+			return
+		}
+		resp, err := s.codec.ReadResponse(stream)
+		done <- result{resp: resp, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		stream.Close()
+		return r.resp, r.err
+
+	case <-ctx.Done():
+		// Освободить стрим полностью здесь НЕЛЬЗЯ: ports.Stream.Close —
+		// half-close только пишущей стороны, а CancelRead/CancelWrite порт
+		// намеренно не экспортирует (adapters/quic/quic.go, комментарий к
+		// stream.Close). Горутина выше останется на Read до ответа сервера
+		// или закрытия соединения.
+		//
+		// Это записанное ограничение замороженного порта, а не недоделка:
+		// bridge-session.md §6 п. 6 и §9 п. 4. Расширение порта — отдельный
+		// ADR (ADR-020), не побочный эффект этой фазы.
+		//
+		// Что здесь всё же делается: вызывающий не ждёт неотвечающий сервер
+		// дольше своего ctx, и стрим закрывается на запись — сервер видит
+		// конец запроса. done буферизован, поэтому горутина не повиснет на
+		// отправке в канал, который никто не читает.
+		stream.Close()
+		return Response{}, ctx.Err()
+	}
+}
+
+// DoStream отправляет action, за которым может идти двоичный хвост, и/или
+// принимает такой хвост в ответ. Один вызов — один стрим, как у Do.
+//
+// Форма закреплена ADR-049 §4. Четыре комбинации (media-transfer.md §6):
+//
+//   - body != nil, sink == nil — загрузка: пишется всё, что отдаст body;
+//     ограничить его обязан вызывающий, объявив длину в payload'е;
+//   - body == nil, sink != nil — скачивание: читается ровно объявленная сервером
+//     Response.BodyLength;
+//   - оба nil — обычное действие, поведение совпадает с Do;
+//   - оба заданы — ошибка вызывающего, ни один байт не отправляется.
+//
+// СЫРОЙ ports.Stream наружу не отдаётся, и это не стилистика. Правило границы
+// тела содержит две неочевидные тонкости, каждая из которых при нарушении
+// теряет данные ТИХО (ADR-049 §2). Отдав стрим вызывающим, мы размножили бы
+// это правило по всем местам вызова и сделали бы будущую смену формата
+// переписыванием каждого из них — ровно то, ради чего Codec объявлен
+// посообщенчно (ADR-034 п.4).
+//
+// Тело ни в одну сторону не собирается в память целиком: сигнатура принимает
+// io.Reader и io.Writer, а не []byte (media-transfer.md §10).
+func (s *Session) DoStream(ctx context.Context, action int32, payload []byte,
+	body io.Reader, sink io.Writer) (Response, error) {
+
+	if body != nil && sink != nil {
+		return Response{}, ErrStreamDirection
+	}
+
+	resource, err := ResourceFor(action)
+	if err != nil {
+		return Response{}, err
+	}
+	if resource == ResourceLocalFeed {
+		return Response{}, fmt.Errorf("%w: %d", ErrLocalAction, action)
+	}
+
+	s.mu.Lock()
+	switch s.state {
+	case StateClosed:
+		s.mu.Unlock()
+		return Response{}, ErrSessionClosed
+	case StateReady:
+	case StateFailed:
+		lost := s.lost
+		s.mu.Unlock()
+		if lost {
+			return Response{}, ErrConnectionLost
+		}
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, StateFailed)
+	default:
+		st := s.state
+		s.mu.Unlock()
+		return Response{}, fmt.Errorf("%w (state=%s)", ErrNotReady, st)
+	}
+	conn := s.conn
+	s.mu.Unlock()
+
+	stream, err := conn.OpenStream(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
+		return Response{}, s.markLost(fmt.Errorf("session: open media stream: %w", err))
+	}
+
+	type result struct {
+		resp Response
+		err  error
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		req := Request{Action: action, Resource: resource, Payload: payload}
+		writeErr := s.codec.WriteRequestStream(stream, req, body)
+
+		// Ответ читается ДАЖЕ ЕСЛИ запись не удалась. Сервер вправе отказать,
+		// не дочитав тело, и тогда завершение стрима с его стороны обрывает
+		// незаконченную запись клиента: ошибка записи оказывается следствием,
+		// а причина — в JSON-ответе. Вернуть здесь writeErr значило бы
+		// показать «сбой сети» вместо «нет прав» (media-transfer.md §6).
+		resp, readErr := s.codec.ReadResponseStream(stream, sink)
+		switch {
+		case readErr != nil && writeErr != nil:
+			// Ответа нет и запись не прошла — причина в записи, она первая.
+			done <- result{err: writeErr}
+		case readErr != nil:
+			done <- result{resp: resp, err: readErr}
+		default:
+			done <- result{resp: resp}
+		}
+	}()
+
+	select {
+	case r := <-done:
+		stream.Close()
+		return r.resp, r.err
+
+	case <-ctx.Done():
+		// То же ограничение, что у Do: ports.Stream.Close — half-close только
+		// пишущей стороны, CancelRead порт не экспортирует (ADR-049 §5).
+		// Горутина останется на чтении до ответа сервера или закрытия
+		// соединения; освободить брошенный стрим клиент не может.
+		stream.Close()
+		return Response{}, ctx.Err()
+	}
+}
+
+// AcceptPush принимает одно push-событие. Только для ModeSubscribe:
+// на action-соединении сервер UniStream'ов не открывает
+// (bridge-session.md §2.4).
+func (s *Session) AcceptPush(ctx context.Context) (Push, error) {
+	s.mu.Lock()
+	switch s.state {
+	case StateClosed:
+		s.mu.Unlock()
+		return Push{}, ErrSessionClosed
+	case StateReady:
+	case StateFailed:
+		lost := s.lost
+		s.mu.Unlock()
+		if lost {
+			return Push{}, ErrConnectionLost
+		}
+		return Push{}, fmt.Errorf("%w (state=%s)", ErrNotReady, StateFailed)
+	default:
+		st := s.state
+		s.mu.Unlock()
+		return Push{}, fmt.Errorf("%w (state=%s)", ErrNotReady, st)
+	}
+	if s.cfg.Mode != ModeSubscribe {
+		s.mu.Unlock()
+		return Push{}, fmt.Errorf("session: AcceptPush requires mode %q, have %q",
+			ModeSubscribe, s.cfg.Mode)
+	}
+	conn := s.conn
+	s.mu.Unlock()
+
+	stream, err := conn.AcceptUniStream(ctx)
+	if err != nil {
+		// Отмена вызывающим обрывом не считается.
+		if ctx.Err() != nil {
+			return Push{}, ctx.Err()
+		}
+		// Здесь сигнал критичнее всего: у ждущего события нет следующей
+		// операции, на ошибке которой обрыв обнаружился бы.
+		return Push{}, s.markLost(fmt.Errorf("session: accept push stream: %w", err))
+	}
+	return s.codec.ReadPush(stream)
+}
+
+// Close закрывает сессию. Идемпотентен и безопасен из любого состояния,
+// включая повторный вызов и вызов во время Connect.
+//
+// Прецедент, ради которого это проверяется отдельным тестом: double-free в
+// ipc.closeWith при двойном вызове (Phase 9) — не проявлялся при нормальной
+// работе.
+func (s *Session) Close() error {
+	s.mu.Lock()
+	if s.state == StateClosed {
+		s.mu.Unlock()
+		return nil
+	}
+	from := s.state
+	s.state = StateClosed
+	conn := s.conn
+	s.conn = nil
+	// Ровно одно закрытие канала: второй close(chan) паникует, а Close
+	// обязан быть безопасен при повторном вызове.
+	close(s.closeCh)
+	s.mu.Unlock()
+	s.noteState(from, StateClosed)
+	s.cfg.Diag.SessionClosed(s.cfg.DiagConn)
+
+	if conn != nil {
+		return conn.Close()
+	}
+	return nil
+}

@@ -1,0 +1,19 @@
+Photon
+Copyright (C) 2026 wiloris
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License version 3 as
+published by the Free Software Foundation. Only version 3 of the license
+applies; later versions are not offered as an option.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+for more details. The full license text is in the LICENSE file.
+
+This program depends on third-party software distributed under its own
+licenses (MIT, BSD-3-Clause, Apache-2.0). Those components are not copied
+into this repository; they are fetched by the Go and Gradle toolchains.
+See THIRD_PARTY_LICENSES.md for the list and their licenses.
