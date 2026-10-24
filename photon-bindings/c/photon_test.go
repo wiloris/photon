@@ -9,7 +9,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 // Тесты не используют cgo напрямую (Go не поддерживает cgo в _test.go

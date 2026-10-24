@@ -1,4 +1,4 @@
-module github.com/wiloris/photon-core
+module github.com/wiloris/photon/photon-core
 
 go 1.22.2
 

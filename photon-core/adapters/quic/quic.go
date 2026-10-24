@@ -16,7 +16,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // ALPN, объявляемый при handshake. Значение совпадает с тем, что уже

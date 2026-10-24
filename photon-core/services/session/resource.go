@@ -3,7 +3,7 @@ package session
 import (
 	"fmt"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
 )
 
 // ResourceFor выводит строку resource для header-фрейма из action-кода.

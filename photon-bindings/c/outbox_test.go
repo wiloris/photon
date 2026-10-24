@@ -11,8 +11,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/services/localfeed"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
 )
 
 /*

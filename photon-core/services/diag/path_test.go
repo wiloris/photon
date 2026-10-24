@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Путь подключения в событии dial (ADR-130 §2.3, дополнение): transport —

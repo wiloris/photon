@@ -28,7 +28,7 @@ import (
 // композиционный корень, и общего пакета с лабораторией у неё нет (ADR-058
 // п. 1 остаётся в силе буквально).
 func TestLab_T13_AdapterImportsOnlyInDevtoolsRuntime(t *testing.T) {
-	const adapters = "github.com/wiloris/photon-core/adapters"
+	const adapters = "github.com/wiloris/photon/photon-core/adapters"
 	allowed := map[string]bool{
 		"cmd/devtools-runtime":   true, // лаборатория, ADR-057/058
 		"cmd/engram-plugin-host": true, // продакшн-композиция ENGRAM, ADR-068

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
 )
 
 // Вложения разговоров ENGRAM — действия 703/704 (ADR-124 M1; контракт —

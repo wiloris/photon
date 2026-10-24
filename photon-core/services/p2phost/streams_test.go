@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	pionadapter "github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/p2pmsg"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/p2phost/internal/legacy"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	pionadapter "github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/p2pmsg"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/p2phost/internal/legacy"
 )
 
 // ── помощники ───────────────────────────────────────────────────────────
@@ -365,7 +365,9 @@ func TestSessionCloseDropsStreamsWithoutLeaks(t *testing.T) {
 // ── старый узел (код 01fa134 без изменений) ────────────────────────────
 
 // legacySHA256 — хеш p2phost.go в 01fa134; копия в internal/legacy отличается
-// от него только строкой package.
+// от него только строкой package и путём модуля (github.com/wiloris/photon-core
+// → github.com/wiloris/photon/photon-core, механическая смена пути перед первым
+// публичным релизом). Обе разницы снимаются перед сверкой, эталонный хеш — прежний.
 const legacySHA256 = "360d3282077e1b7841b1f34571a4a7192fee1497074e2f68268c218a5165ab56"
 
 func TestLegacyCopyIsVerbatim(t *testing.T) {
@@ -374,6 +376,7 @@ func TestLegacyCopyIsVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	orig := bytes.Replace(raw, []byte("\npackage legacy\n"), []byte("\npackage p2phost\n"), 1)
+	orig = bytes.ReplaceAll(orig, []byte("github.com/wiloris/photon/photon-core"), []byte("github.com/wiloris/photon-core"))
 	sum := sha256.Sum256(orig)
 	if got := hex.EncodeToString(sum[:]); got != legacySHA256 {
 		t.Fatalf("копия старого узла изменена: %s", got)

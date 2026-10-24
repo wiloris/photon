@@ -1,4 +1,4 @@
-module github.com/wiloris/photon-core/tests/transportlab/bridgesim
+module github.com/wiloris/photon/photon-core/tests/transportlab/bridgesim
 
 // Отдельный модуль: сервер стенда S1–S4 на том же quic-go, что Bridge
 // (v0.59, photon-quic-bridge/go.mod), и тем же toolchain. Ядро — v0.48;

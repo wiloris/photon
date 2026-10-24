@@ -9,7 +9,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Домен подписи P2P-handshake. ADR-037 требует собственный домен для любого

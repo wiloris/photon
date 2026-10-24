@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-plugin-runtime/permissions"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-plugin-runtime/permissions"
 )
 
 // Тестовые Handler'ы в этом файле НАМЕРЕННО не реализуют каталог операций

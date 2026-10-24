@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package photon;
 
-option go_package = "github.com/wiloris/photon-core/protobuf";
+option go_package = "github.com/wiloris/photon/photon-core/protobuf";
 option java_package = "dev.yoursdk.photon";
 option java_outer_classname = "PhotonProto";
 option java_multiple_files = true;

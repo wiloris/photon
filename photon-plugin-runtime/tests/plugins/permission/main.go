@@ -24,8 +24,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/wiloris/photon-plugin-runtime/ipc"
-	sdk "github.com/wiloris/photon-plugin-sdk"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
+	sdk "github.com/wiloris/photon/photon-plugin-sdk"
 )
 
 const defaultPluginID = "com.engram.test.permission"

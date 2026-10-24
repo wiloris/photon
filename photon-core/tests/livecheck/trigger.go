@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	quicadapter "github.com/wiloris/photon-core/adapters/quic"
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/session"
+	quicadapter "github.com/wiloris/photon/photon-core/adapters/quic"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // triggerPush порождает push сам, вместо человека у клиента Mattermost.

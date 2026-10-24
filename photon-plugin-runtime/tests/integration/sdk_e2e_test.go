@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
-	"github.com/wiloris/photon-plugin-runtime/permissions"
-	sdk "github.com/wiloris/photon-plugin-sdk"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-plugin-runtime/permissions"
+	sdk "github.com/wiloris/photon/photon-plugin-sdk"
 )
 
 // E2E: SDK API -> сериализация -> НАСТОЯЩИЙ ipc.Session -> реальный

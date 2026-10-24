@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	pionadapter "github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/dispatcher"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	pionadapter "github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 // Сквозной сценарий Phase 15.5: identity -> публикация ключей -> discovery ->

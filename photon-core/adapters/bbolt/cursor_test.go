@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Контрактные тесты ForEachPrefixFrom (ADR-047).

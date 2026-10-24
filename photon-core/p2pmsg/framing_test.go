@@ -8,7 +8,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Контракт: разговор строится поверх ports.Stream и ничего больше не требует.

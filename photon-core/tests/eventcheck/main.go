@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 var (

@@ -17,7 +17,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Тесты работают против НАСТОЯЩЕГО QUIC-сервера, поднятого в том же

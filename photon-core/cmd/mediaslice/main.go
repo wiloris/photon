@@ -44,9 +44,9 @@ import (
 	"strings"
 	"time"
 
-	quicadapter "github.com/wiloris/photon-core/adapters/quic"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/session"
+	quicadapter "github.com/wiloris/photon/photon-core/adapters/quic"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 var (

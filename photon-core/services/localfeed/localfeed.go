@@ -49,7 +49,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Namespace хранилища. Один на срез: обобщать рано.

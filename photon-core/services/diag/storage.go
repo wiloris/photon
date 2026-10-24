@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Storage — наблюдающий декоратор поверх ports.Storage (ADR-130 §2.2, §2.6).

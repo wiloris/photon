@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"sync"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // permissionPattern — "домен.действие": chat.send, storage.read.

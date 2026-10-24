@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
 )
 
 // Тесты T-1…T-16 по photon-core/docs/bridge-session.md §8.

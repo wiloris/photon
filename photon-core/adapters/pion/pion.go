@@ -15,7 +15,7 @@ import (
 	"github.com/pion/sctp"
 	"github.com/pion/stun/v2"
 	"github.com/pion/transport/v3"
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 var _ ports.P2P = (*Adapter)(nil)

@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	ed25519adapter "github.com/wiloris/photon-core/adapters/ed25519"
+	ed25519adapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
 )
 
 // Коды выхода режима -init-identity (ADR-086 §4.1).

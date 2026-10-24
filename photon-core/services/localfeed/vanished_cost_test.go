@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // СТОИМОСТЬ countVanished — открытый пункт Phase 12, названный в ADR-053 и в

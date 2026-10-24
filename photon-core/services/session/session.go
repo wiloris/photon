@@ -7,8 +7,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/diag"
 )
 
 // State — состояние сессии. См. диаграмму в bridge-session.md §6.

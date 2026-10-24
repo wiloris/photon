@@ -8,7 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Identity — реализация ports.Identity. Без состояния: не хранит

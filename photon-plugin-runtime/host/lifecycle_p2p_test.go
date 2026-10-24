@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
-	"github.com/wiloris/photon-plugin-runtime/manifest"
-	"github.com/wiloris/photon-plugin-runtime/permissions"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon/photon-plugin-runtime/permissions"
 )
 
 // closingHandler — обработчик, которому есть что освобождать при завершении

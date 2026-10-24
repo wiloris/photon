@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // 819/820 — диагностика через Photon_SendAction (ADR-130 §2.7, §2.8;

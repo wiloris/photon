@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Время жизни соединения при ПОВТОРНОМ Connect.

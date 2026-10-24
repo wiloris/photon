@@ -15,7 +15,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Сервер принял QUIC и молчит на уровне протокола Photon (ack handshake'а не

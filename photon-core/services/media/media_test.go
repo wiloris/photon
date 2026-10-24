@@ -10,7 +10,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Тесты клиентского слоя. Транспорта нет: Streamer подменяется, потому что

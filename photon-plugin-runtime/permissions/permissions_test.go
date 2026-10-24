@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 func newTestSetup(t *testing.T) (*Policy, *Authorizer) {

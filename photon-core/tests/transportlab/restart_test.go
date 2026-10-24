@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 /*

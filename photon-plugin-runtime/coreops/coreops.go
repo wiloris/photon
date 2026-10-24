@@ -22,9 +22,9 @@ import (
 
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/p2phost"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/p2phost"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
 )
 
 // Config — зависимости исполнителя.

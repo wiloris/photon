@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Тесты идут против настоящих TCP-сокетов (net.Pipe не подходит: нужен

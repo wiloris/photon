@@ -22,7 +22,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/wiloris/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
 )
 
 const defaultPluginID = "com.engram.test.p2pguard"

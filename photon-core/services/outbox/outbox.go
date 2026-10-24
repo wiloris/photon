@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Namespace очереди в хранилище инстанса (ADR-093 §2.8). Создаётся

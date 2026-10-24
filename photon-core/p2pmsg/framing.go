@@ -20,7 +20,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // MaxMessageSize — предел ОДНОГО кадра, а не механизм передачи файлов

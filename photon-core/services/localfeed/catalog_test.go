@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Курсор синхронизации, каталог каналов и работа «в той же транзакции»

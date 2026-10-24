@@ -14,8 +14,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Замеры ADR-130 §5.6. Команды и результаты — IMPLEMENTATION_LOG.md.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/pion/ice/v3"
 	"github.com/pion/sctp"
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 var _ ports.Session = (*session)(nil)

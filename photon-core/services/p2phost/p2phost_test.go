@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/pion/turn/v3"
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	pionadapter "github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/ports"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	pionadapter "github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 func newExec(t *testing.T, mod func(*Config)) (*Executor, ports.IdentityPair) {

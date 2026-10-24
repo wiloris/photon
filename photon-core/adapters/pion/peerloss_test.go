@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/ports"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Исчезновение собеседника БЕЗ закрытия: процесс убит, сеть пропала, телефон

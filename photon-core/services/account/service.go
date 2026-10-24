@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Storage namespaces — см. docs/account-storage-model.md для полного

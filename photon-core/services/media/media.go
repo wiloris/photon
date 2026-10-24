@@ -25,8 +25,8 @@ import (
 	"io"
 	"regexp"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/session"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Streamer — то, что этому слою нужно от сессии, и ничего сверх.

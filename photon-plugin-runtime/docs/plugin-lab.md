@@ -359,7 +359,7 @@ Plugin Lab **не строит** доменный вход ADR-037 (ADR-058 п. 
 ## 10. Структурная граница импортов
 
 Правило: в не-тестовом коде модуля `photon-plugin-runtime` пакеты
-`github.com/wiloris/photon-core/adapters/...` импортируются **только** в
+`github.com/wiloris/photon/photon-core/adapters/...` импортируются **только** в
 `cmd/devtools-runtime`.
 
 Проверка — Go-тест, обходящий `.go`-файлы модуля без `_test.go` и разбирающий

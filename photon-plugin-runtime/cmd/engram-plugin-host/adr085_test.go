@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wiloris/photon-plugin-runtime/coreops"
-	"github.com/wiloris/photon-plugin-runtime/host"
+	"github.com/wiloris/photon/photon-plugin-runtime/coreops"
+	"github.com/wiloris/photon/photon-plugin-runtime/host"
 )
 
 /*

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-plugin-runtime/host"
+	"github.com/wiloris/photon/photon-plugin-runtime/host"
 )
 
 // fixedRNG делает jitter детерминированным: 0.5 -> нулевое отклонение

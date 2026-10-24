@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	quicadapter "github.com/wiloris/photon-core/adapters/quic"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/diag"
+	quicadapter "github.com/wiloris/photon/photon-core/adapters/quic"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/diag"
 )
 
 // Значения по умолчанию.

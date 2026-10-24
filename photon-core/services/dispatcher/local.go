@@ -10,13 +10,13 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/localfeed"
-	"github.com/wiloris/photon-core/services/outbox"
-	"github.com/wiloris/photon-core/services/session"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
+	"github.com/wiloris/photon/photon-core/services/outbox"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 /*

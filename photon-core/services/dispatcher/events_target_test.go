@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Цель подписки — действие 814 (ADR-123 §2.3, conversation-push.md §4).

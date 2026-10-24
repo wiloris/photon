@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/pion/transport/v3/vnet"
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
 )
 
 // Кратковременная потеря пакетов — не потеря собеседника.

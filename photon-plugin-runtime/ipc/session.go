@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Session — одна IPC-сессия с процессом плагина.

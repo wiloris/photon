@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // 815/816 — передача файла вложения через медиасоединение (ADR-124 M1;

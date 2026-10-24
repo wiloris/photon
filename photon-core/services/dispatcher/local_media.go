@@ -12,10 +12,10 @@ import (
 	"path/filepath"
 	"time"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/media"
-	"github.com/wiloris/photon-core/services/session"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/media"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Передача файла вложения разговора ENGRAM — локальные 815/816 (ADR-124 M1,

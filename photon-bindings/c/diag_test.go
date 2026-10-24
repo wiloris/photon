@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 /*

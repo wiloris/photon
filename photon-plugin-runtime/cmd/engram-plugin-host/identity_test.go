@@ -10,8 +10,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/wiloris/photon-plugin-runtime/host"
-	"github.com/wiloris/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon/photon-plugin-runtime/host"
+	"github.com/wiloris/photon/photon-plugin-runtime/manifest"
 )
 
 /*

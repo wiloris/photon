@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
 )
 
 // Галерея профиля ENGRAM — действия 706/707 (ADR-127, ПРЕДЛОЖЕНО; контракт —

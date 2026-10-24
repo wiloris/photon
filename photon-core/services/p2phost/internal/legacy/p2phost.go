@@ -27,9 +27,9 @@ import (
 	"sync"
 	"time"
 
-	pionadapter "github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/p2pmsg"
-	"github.com/wiloris/photon-core/ports"
+	pionadapter "github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/p2pmsg"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Причины закрытия — закрытый перечень ADR-116 §3.2 (+ slow_consumer — тот

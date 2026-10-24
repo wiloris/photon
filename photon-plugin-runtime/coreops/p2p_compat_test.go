@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	ed25519adapter "github.com/wiloris/photon-core/adapters/ed25519"
-	pionadapter "github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/p2phost"
-	"github.com/wiloris/photon-plugin-runtime/coreops/internal/legacy"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
+	ed25519adapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	pionadapter "github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/p2phost"
+	"github.com/wiloris/photon/photon-plugin-runtime/coreops/internal/legacy"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
 )
 
 // Совместимость coreops поверх единого исполнителя Core со СТАРЫМ coreops —
@@ -25,7 +25,7 @@ import (
 // — p2p.message, включая пустой первый.
 
 // legacyHashes — sha256 файлов coreops в 8da6ee7; копии отличаются только
-// строкой package.
+// строкой package и путём модуля (снимаются перед сверкой).
 var legacyHashes = map[string]string{
 	"coreops.go": "8e30ab5aa101e1a352c2d897bfcd2afc09f27af1838c4b5aa01216534b6f73ba",
 	"keys.go":    "c18273625b1397d338ce676e21e0863be0c40908affe7bd6b0da4749f74b8e8b",
@@ -39,6 +39,11 @@ func TestLegacyCoreopsCopyIsVerbatim(t *testing.T) {
 			t.Fatal(err)
 		}
 		orig := bytes.Replace(raw, []byte("package legacy\n"), []byte("package coreops\n"), 1)
+		// Путь модуля сменён механически перед первым публичным релизом — та же
+		// допустимая разница, что строка package; эталонные хеши прежние.
+		for _, m := range []string{"photon-core", "photon-plugin-runtime", "photon-plugin-sdk"} {
+			orig = bytes.ReplaceAll(orig, []byte("github.com/wiloris/photon/"+m), []byte("github.com/wiloris/"+m))
+		}
 		sum := sha256.Sum256(orig)
 		if got := hex.EncodeToString(sum[:]); got != want {
 			t.Fatalf("копия старого coreops изменена: %s → %s", name, got)

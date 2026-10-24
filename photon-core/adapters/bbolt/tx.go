@@ -5,7 +5,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // readTx реализует ports.ReadTx. namespace маппится на top-level

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/wiloris/photon-core/ports"
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/ports"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Цель подписки (ADR-123 §2.3; photon-quic-bridge/docs/conversation-push.md §4).

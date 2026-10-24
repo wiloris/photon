@@ -8,8 +8,8 @@ import (
 	"io"
 	"testing"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/session"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // 703/704 — вложения разговоров (ADR-124 M1, contract §8.3–§8.4).

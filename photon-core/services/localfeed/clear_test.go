@@ -8,9 +8,9 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/outbox"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/outbox"
 )
 
 // Store.Clear — ADR-112, контракт §5b.6. Настоящий bbolt: ошибка записи

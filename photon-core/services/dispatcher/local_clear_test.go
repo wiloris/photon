@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wiloris/photon-core/services/localfeed"
-	"github.com/wiloris/photon-core/services/outbox"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
+	"github.com/wiloris/photon/photon-core/services/outbox"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Действие 813 (ADR-112, контракт §5b.6): очистка ленты канала.

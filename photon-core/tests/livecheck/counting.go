@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // countingTransport — ports.Transport, считающий подключения и хранящий

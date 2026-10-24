@@ -3,9 +3,9 @@ package dispatcher
 import (
 	"fmt"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/session"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Встроенная диагностика наружу (ADR-130 §2.7): 819 — снимок, 820 — журнал

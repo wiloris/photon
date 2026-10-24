@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Типы событий первой версии (event-delivery.md §7, ADR-045 §6).

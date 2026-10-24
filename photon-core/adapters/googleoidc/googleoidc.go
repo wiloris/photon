@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // googleIssuers — оба варианта значения claim "iss", которые реально

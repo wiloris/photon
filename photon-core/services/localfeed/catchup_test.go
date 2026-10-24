@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
 )
 
 // Тесты догрузки после offline. Спецификация — docs/feed-catchup.md.

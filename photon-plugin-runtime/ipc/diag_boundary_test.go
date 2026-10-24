@@ -30,7 +30,7 @@ func TestNoDiagnosticsForPlugins(t *testing.T) {
 
 	root := ".."
 	// Строки собираются из частей: иначе этот файл совпадал бы сам с собой.
-	const core = `"github.com/wiloris/photon-core/services/`
+	const core = `"github.com/wiloris/photon/photon-core/services/`
 	forbidden := []string{core + "dispatcher\"", core + "diag\""}
 	checked := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	pionadapter "github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/ports"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	pionadapter "github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Владельцы, Sink и общий адаптер — то, чем пользуется coreops (ADR-076).

@@ -25,7 +25,7 @@ import (
 	"sort"
 	"strings"
 
-	sdk "github.com/wiloris/photon-plugin-sdk"
+	sdk "github.com/wiloris/photon/photon-plugin-sdk"
 )
 
 const defaultPluginID = "com.engram.test.sdkscenario"

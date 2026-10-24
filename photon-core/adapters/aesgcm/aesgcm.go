@@ -10,7 +10,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // keySize — 32 байта для AES-256. nonceSize — стандартный для GCM

@@ -11,13 +11,13 @@
 // разработка (/home/claude/...), — на любой другой машине это мусор, а
 // выглядело рабочим до первой попытки собрать. Тот же класс, что незакрытый
 // перенос ADR-025.
-module github.com/wiloris/photon-bindings-c
+module github.com/wiloris/photon/photon-bindings/c
 
 go 1.22.2
 
 require (
 	github.com/quic-go/quic-go v0.48.2
-	github.com/wiloris/photon-core v0.0.0
+	github.com/wiloris/photon/photon-core v0.0.0
 	go.etcd.io/bbolt v1.3.11
 )
 
@@ -47,4 +47,4 @@ require (
 	google.golang.org/protobuf v1.34.2 // indirect
 )
 
-replace github.com/wiloris/photon-core => ../../photon-core
+replace github.com/wiloris/photon/photon-core => ../../photon-core

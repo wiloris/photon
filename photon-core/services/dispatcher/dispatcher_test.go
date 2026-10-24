@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Нумерация тестов — из action-routing.md §11.

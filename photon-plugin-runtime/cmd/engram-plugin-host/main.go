@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wiloris/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon/photon-plugin-runtime/manifest"
 )
 
 /*

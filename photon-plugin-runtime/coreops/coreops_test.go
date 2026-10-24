@@ -11,11 +11,11 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/wiloris/photon-core/adapters/aesgcm"
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	ed25519adapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-core/adapters/aesgcm"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	ed25519adapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
 )
 
 // Тесты идут против НАСТОЯЩИХ адаптеров (bbolt, aesgcm, ed25519), а не

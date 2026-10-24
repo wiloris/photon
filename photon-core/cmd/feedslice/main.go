@@ -25,10 +25,10 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/dispatcher"
-	"github.com/wiloris/photon-core/services/localfeed"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
 )
 
 const actionGetFeed = 101 // ACTION_GET_FEED

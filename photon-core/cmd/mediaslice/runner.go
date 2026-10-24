@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/media"
-	"github.com/wiloris/photon-core/services/session"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/media"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Actor — то, что прогону нужно от субъекта, и ничего сверх.

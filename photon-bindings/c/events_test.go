@@ -6,7 +6,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 // Тесты доставки событий через границу ABI (Phase 15.5).

@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // EventSink получает готовый event_json. Вызывается НАСОСОМ СИНХРОННО и

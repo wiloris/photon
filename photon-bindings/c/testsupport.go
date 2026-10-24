@@ -99,7 +99,7 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 // Файл существует из-за ограничения Go: cgo не поддерживается в

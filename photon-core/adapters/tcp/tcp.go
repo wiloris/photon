@@ -18,7 +18,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Config — параметры адаптера.

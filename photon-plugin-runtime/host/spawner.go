@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/wiloris/photon-plugin-runtime/sandbox"
+	"github.com/wiloris/photon/photon-plugin-runtime/sandbox"
 )
 
 // execSpawner запускает плагин как реальный процесс, общаясь с ним

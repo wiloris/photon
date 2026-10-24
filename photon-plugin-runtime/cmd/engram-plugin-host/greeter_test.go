@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-plugin-runtime/coreops"
-	"github.com/wiloris/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon/photon-plugin-runtime/coreops"
+	"github.com/wiloris/photon/photon-plugin-runtime/manifest"
 )
 
 // Пример examples/greeter — расширение, которое ставится только из каталога

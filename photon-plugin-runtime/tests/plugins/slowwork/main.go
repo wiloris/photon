@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"time"
 
-	sdk "github.com/wiloris/photon-plugin-sdk"
+	sdk "github.com/wiloris/photon/photon-plugin-sdk"
 )
 
 const (

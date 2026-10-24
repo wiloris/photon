@@ -6,7 +6,7 @@ import (
 	"net"
 	"sort"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Family — адресное семейство маршрута.

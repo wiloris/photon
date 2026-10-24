@@ -13,8 +13,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Инварианты декоратора (ADR-130 §2.6) — на НАСТОЯЩЕМ bbolt во временном

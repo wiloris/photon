@@ -10,9 +10,9 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/diag"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/diag"
 )
 
 // Тесты идут против НАСТОЯЩЕГО adapters/bbolt, а не фиктивного хранилища.

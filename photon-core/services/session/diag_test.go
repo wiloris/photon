@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/diag"
 )
 
 // Переходы сессии в журнале диагностики (ADR-130 §2.3): каждый переход —

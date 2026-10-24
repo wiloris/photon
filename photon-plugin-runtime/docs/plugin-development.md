@@ -83,9 +83,9 @@ module example.com/hello
 
 go 1.22
 
-require github.com/wiloris/photon-plugin-sdk v0.0.0
+require github.com/wiloris/photon/photon-plugin-sdk v0.0.0
 
-replace github.com/wiloris/photon-plugin-sdk => ../photon/photon-plugin-sdk
+replace github.com/wiloris/photon/photon-plugin-sdk => ../photon/photon-plugin-sdk
 ```
 
 ### 2.2 Скелет плагина
@@ -100,7 +100,7 @@ import (
 	"fmt"
 	"os"
 
-	sdk "github.com/wiloris/photon-plugin-sdk"
+	sdk "github.com/wiloris/photon/photon-plugin-sdk"
 )
 
 func main() {

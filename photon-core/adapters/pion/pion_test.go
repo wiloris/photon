@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/pion/turn/v3"
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/ports"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Loopback-прогон: два агента в ОДНОМ процессе, доставка блобов — прямой

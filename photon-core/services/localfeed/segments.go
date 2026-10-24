@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Сегменты — знание о ПОЛНОТЕ, а не о содержимом.

@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/ports"
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/p2phost"
-	"github.com/wiloris/photon-core/services/session"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/ports"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/p2phost"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Действия 860–865: P2P-исполнитель хоста (ADR-116 §3); 866–868 —

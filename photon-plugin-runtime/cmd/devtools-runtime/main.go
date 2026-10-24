@@ -39,11 +39,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-plugin-runtime/host"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
-	"github.com/wiloris/photon-plugin-runtime/manifest"
-	"github.com/wiloris/photon-plugin-runtime/permissions"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-plugin-runtime/host"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon/photon-plugin-runtime/permissions"
 )
 
 // Пути к собранным фикстурам передаёт доверенный родитель. Это не канал

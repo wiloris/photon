@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/diag"
 )
 
 // Диагностика инстанса (ADR-130): включена по умолчанию, выключается

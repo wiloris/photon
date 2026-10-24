@@ -24,7 +24,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/wiloris/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
 )
 
 func role() string       { return os.Getenv("PHOTON_TEST_ROLE") }

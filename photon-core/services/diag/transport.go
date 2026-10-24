@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Transport — наблюдающий декоратор поверх ports.Transport (ADR-130 §2.2).

@@ -29,16 +29,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wiloris/photon-core/adapters/aesgcm"
-	bboltadapter "github.com/wiloris/photon-core/adapters/bbolt"
-	ed25519adapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/adapters/pion"
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/adapters/aesgcm"
+	bboltadapter "github.com/wiloris/photon/photon-core/adapters/bbolt"
+	ed25519adapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/adapters/pion"
+	"github.com/wiloris/photon/photon-core/ports"
 
-	"github.com/wiloris/photon-plugin-runtime/coreops"
-	"github.com/wiloris/photon-plugin-runtime/host"
-	"github.com/wiloris/photon-plugin-runtime/manifest"
-	"github.com/wiloris/photon-plugin-runtime/permissions"
+	"github.com/wiloris/photon/photon-plugin-runtime/coreops"
+	"github.com/wiloris/photon/photon-plugin-runtime/host"
+	"github.com/wiloris/photon/photon-plugin-runtime/manifest"
+	"github.com/wiloris/photon/photon-plugin-runtime/permissions"
 )
 
 // p2pEstablishTimeout — потолок согласования P2P в этой композиции.

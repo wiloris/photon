@@ -6,9 +6,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/wiloris/photon-core/p2pmsg"
-	"github.com/wiloris/photon-core/services/p2phost"
-	"github.com/wiloris/photon-plugin-runtime/ipc"
+	"github.com/wiloris/photon/photon-core/p2pmsg"
+	"github.com/wiloris/photon/photon-core/services/p2phost"
+	"github.com/wiloris/photon/photon-plugin-runtime/ipc"
 )
 
 // Исполнитель домена p2p.* (ADR-076, условие 5 из шести).

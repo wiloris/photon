@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"github.com/pion/sctp"
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Признак направления — первый байт вновь открытого потока.

@@ -15,8 +15,8 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
-	quicadapter "github.com/wiloris/photon-core/adapters/quic"
-	"github.com/wiloris/photon-core/ports"
+	quicadapter "github.com/wiloris/photon/photon-core/adapters/quic"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Путь подключения на настоящем транспорте ядра (adapters/quic, quic-go

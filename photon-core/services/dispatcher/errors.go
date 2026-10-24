@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/localfeed"
-	"github.com/wiloris/photon-core/services/outbox"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
+	"github.com/wiloris/photon/photon-core/services/outbox"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Sentinel-ошибки пакета. Классификация — только errors.Is, никогда строковым

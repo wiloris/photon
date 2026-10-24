@@ -12,8 +12,8 @@ import (
 	"github.com/pion/logging"
 	"github.com/pion/transport/v3/vnet"
 	"github.com/pion/turn/v3"
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/ports"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Выбор пути самим ICE, без ForceRelay.

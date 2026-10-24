@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wiloris/photon-core/services/localfeed"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 /*

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // ── T-11b: сервер принял соединение и молчит на уровне протокола ───────────

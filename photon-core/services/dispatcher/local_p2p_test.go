@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	edadapter "github.com/wiloris/photon-core/adapters/ed25519"
-	"github.com/wiloris/photon-core/services/session"
+	edadapter "github.com/wiloris/photon/photon-core/adapters/ed25519"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // ADR-116 §3: P2P-исполнитель через SendAction — ту же точку, что

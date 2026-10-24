@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wiloris/photon-core/p2pmsg"
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/p2pmsg"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // Служебные потоки P2P-сессии (проект записи о служебных потоках к

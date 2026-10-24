@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wiloris/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/ports"
 )
 
 // --- LoginOrRegister ---------------------------------------------------

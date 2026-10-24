@@ -46,11 +46,11 @@ import (
 	"sync"
 	"time"
 
-	quicadapter "github.com/wiloris/photon-core/adapters/quic"
-	"github.com/wiloris/photon-core/ports"
-	photonpb "github.com/wiloris/photon-core/protobuf"
-	"github.com/wiloris/photon-core/services/dispatcher"
-	"github.com/wiloris/photon-core/services/session"
+	quicadapter "github.com/wiloris/photon/photon-core/adapters/quic"
+	"github.com/wiloris/photon/photon-core/ports"
+	photonpb "github.com/wiloris/photon/photon-core/protobuf"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 var (

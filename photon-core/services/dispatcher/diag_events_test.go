@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/diag"
 )
 
 // События сессии, диспетчера, транспорта и подписки (ADR-130 §2.3, §6 п. 2)

@@ -38,7 +38,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/wiloris/photon-core/services/dispatcher"
+	"github.com/wiloris/photon/photon-core/services/dispatcher"
 )
 
 // main требуется для -buildmode=c-shared, тело не используется.

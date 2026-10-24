@@ -20,12 +20,12 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/wiloris/photon-core/ports"
-	"github.com/wiloris/photon-core/services/diag"
-	"github.com/wiloris/photon-core/services/localfeed"
-	"github.com/wiloris/photon-core/services/outbox"
-	"github.com/wiloris/photon-core/services/p2phost"
-	"github.com/wiloris/photon-core/services/session"
+	"github.com/wiloris/photon/photon-core/ports"
+	"github.com/wiloris/photon/photon-core/services/diag"
+	"github.com/wiloris/photon/photon-core/services/localfeed"
+	"github.com/wiloris/photon/photon-core/services/outbox"
+	"github.com/wiloris/photon/photon-core/services/p2phost"
+	"github.com/wiloris/photon/photon-core/services/session"
 )
 
 // Dispatcher — маршрутизатор действий одного инстанса Photon.
