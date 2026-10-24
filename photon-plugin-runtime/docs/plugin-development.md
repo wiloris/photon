@@ -74,8 +74,12 @@ mkdir hello && cd hello
 go mod init example.com/hello
 ```
 
-SDK подключается как обычная зависимость. Пока модуль не опубликован,
-используйте `replace` на каталог с исходниками:
+SDK подключается как обычная зависимость — версия берётся из тега
+`photon-plugin-sdk/vX.Y.Z` репозитория:
+
+```sh
+go get github.com/wiloris/photon/photon-plugin-sdk@v0.1.0
+```
 
 ```
 // go.mod
@@ -83,8 +87,13 @@ module example.com/hello
 
 go 1.22
 
-require github.com/wiloris/photon/photon-plugin-sdk v0.0.0
+require github.com/wiloris/photon/photon-plugin-sdk v0.1.0
+```
 
+Чтобы собрать плагин против локальной копии SDK (например, проверяя правку в
+нём), добавьте `replace` на каталог с исходниками:
+
+```
 replace github.com/wiloris/photon/photon-plugin-sdk => ../photon/photon-plugin-sdk
 ```
 

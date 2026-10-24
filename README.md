@@ -55,11 +55,27 @@ Work with the core through the C ABI (`photon-bindings/c/photon_core.h`,
 
 ### Go modules
 
-`github.com/wiloris/photon/photon-core`, `github.com/wiloris/photon/photon-plugin-sdk`,
-`github.com/wiloris/photon/photon-plugin-runtime`,
-`github.com/wiloris/photon/photon-bindings/c`. There are no version tags yet:
-the modules are built from this repository, where they reference each other
-through relative `replace` directives.
+| module | version tag | depends on |
+|---|---|---|
+| `github.com/wiloris/photon/photon-core` | `photon-core/vX.Y.Z` | — |
+| `github.com/wiloris/photon/photon-plugin-sdk` | `photon-plugin-sdk/vX.Y.Z` | — (no dependencies at all) |
+| `github.com/wiloris/photon/photon-plugin-runtime` | `photon-plugin-runtime/vX.Y.Z` | `photon-core`, `photon-plugin-sdk` |
+| `github.com/wiloris/photon/photon-bindings/c` | `photon-bindings/c/vX.Y.Z` | `photon-core` |
+
+Each module is versioned separately by a tag prefixed with its directory, so
+`go get github.com/wiloris/photon/photon-core@v0.1.0` resolves the tag
+`photon-core/v0.1.0`. The `require` lines between the modules name released
+versions. Inside the repository the modules also carry relative `replace`
+directives, so that a change to `photon-core` is built and tested together with
+the modules that use it; `replace` applies only to builds inside this
+repository and is ignored when a module is used as a dependency. One
+consequence: `go install <command>@<version>` refuses commands from
+`photon-plugin-runtime` (for example `cmd/engram-plugin-host`), because their
+module has `replace` directives; add the module to your own `go.mod` and use
+`go build`, or build from a clone.
+
+`photon-core/tests/transportlab/bridgesim` is a separate module only because it
+needs a newer Go and quic-go; it is a test server and is not versioned.
 
 ## Limitations
 

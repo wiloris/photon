@@ -22,8 +22,10 @@ release a fix before disclosing the issue publicly.
 
 ## Supported versions
 
-Photon has no tagged releases yet. Security fixes are made on the `main`
-branch.
+Photon is at version 0 (`v0.x.y`): only the latest version of each Go module
+is supported. Security fixes are made on the `main` branch and published as a
+new version tag of the affected module (see "Go modules" in
+[`README.md`](README.md)).
 
 ## Scope notes
 

@@ -81,10 +81,26 @@ C-компилятор для cgo (`photon-bindings/c`), `protoc` — для
 
 ## Пути Go-модулей
 
-`github.com/wiloris/photon/photon-core`, `.../photon-plugin-sdk`,
-`.../photon-plugin-runtime`, `.../photon-bindings/c`. Версий-тегов пока нет:
-модули собираются из этого репозитория (между собой они связаны
-относительными `replace`).
+| модуль | тег версии | зависит от |
+|---|---|---|
+| `github.com/wiloris/photon/photon-core` | `photon-core/vX.Y.Z` | — |
+| `github.com/wiloris/photon/photon-plugin-sdk` | `photon-plugin-sdk/vX.Y.Z` | — (зависимостей нет вовсе) |
+| `github.com/wiloris/photon/photon-plugin-runtime` | `photon-plugin-runtime/vX.Y.Z` | `photon-core`, `photon-plugin-sdk` |
+| `github.com/wiloris/photon/photon-bindings/c` | `photon-bindings/c/vX.Y.Z` | `photon-core` |
+
+Каждый модуль версионируется отдельно тегом с префиксом своего каталога:
+`go get github.com/wiloris/photon/photon-core@v0.1.0` находит тег
+`photon-core/v0.1.0`. В `require` между модулями записаны выпущенные версии.
+Внутри репозитория модули дополнительно связаны относительными `replace`, чтобы
+правка `photon-core` собиралась и проверялась вместе с модулями, которые его
+используют; `replace` действует только при сборке в этом репозитории и
+игнорируется, когда модуль подключён как зависимость. Следствие:
+`go install <команда>@<версия>` отказывает командам из `photon-plugin-runtime`
+(например, `cmd/engram-plugin-host`), потому что в их модуле есть `replace`;
+подключите модуль в свой `go.mod` и соберите `go build` либо соберите из клона.
+
+`photon-core/tests/transportlab/bridgesim` — отдельный модуль только потому,
+что ему нужны более новые Go и quic-go; это тестовый сервер, версий у него нет.
 
 ## Лицензия
 
