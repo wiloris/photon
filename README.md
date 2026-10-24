@@ -1,34 +1,39 @@
 # Photon
 
-Photon — платформа для клиентских приложений: ядро на Go с хранилищем,
-идентичностью, криптографией, транспортом QUIC, P2P и встроенной
-диагностикой; единая граница наружу — небольшой C ABI; поверх неё — JVM SDK,
-инструменты разработчика и среда исполнения плагинов.
+**English** · [Русский](README.ru.md)
 
-> **Статус: ранний публичный релиз.** Интерфейсы ядра стабилизированы
-> (C ABI 1.0), но протокол ядра пока привязан к первой серверной реализации,
-> а самостоятельного сервера в репозитории нет — см. «Ограничения».
+Photon is a platform for client applications: a Go core with storage,
+identity, cryptography, QUIC transport, peer-to-peer connections and built-in
+diagnostics; a single small C ABI as its outer boundary; and, on top of it, a
+JVM SDK, developer tools and a plugin runtime.
 
-## Что есть
+> **Status: early public release.** The core interfaces are stable (C ABI 1.0),
+> but the core network protocol is still tied to its first server
+> implementation, and this repository contains no standalone server — see
+> [Limitations](#limitations).
 
-| компонент | каталог | что делает |
+## What is here
+
+| component | directory | what it does |
 |---|---|---|
-| Photon Core | `photon-core/` | порты и адаптеры: QUIC и TCP, хранилище bbolt, AES-GCM, Ed25519, OIDC, P2P (ICE + DTLS + SCTP на pion); сервисы сессии, диспетчеризации действий, журнала диагностики, локальной ленты, очереди отправки, медиа |
-| C ABI | `photon-bindings/c/` | 12 функций `Photon_*`, ABI 1.0 (`photon_core.h`) |
-| JNI-мост | `photon-bindings/jvm/` | Java/Kotlin поверх C ABI |
-| JVM SDK | `photon-sdk/` | `dev.photon.sdk`: `PhotonClient`, конфигурация, события, локальная лента, `diagnostics()` |
-| Плагины | `photon-plugin-runtime/`, `photon-plugin-sdk/` | плагины — отдельные процессы с IPC, манифестом и правами; SDK плагина без зависимостей |
-| Инструменты | `photon-devtools-core/`, `photon-developer-tools/` | Inspector Live, путь подключения, журнал ядра; консольные лаборатории сети, хранилища, криптографии, плагинов |
+| Photon Core | `photon-core/` | ports and adapters: QUIC and TCP, bbolt storage, AES-GCM, Ed25519, OIDC, P2P (ICE + DTLS + SCTP on pion); services for sessions, action dispatch, the diagnostic journal, a local feed, an outbox and media |
+| C ABI | `photon-bindings/c/` | 12 `Photon_*` functions, ABI 1.0 (`photon_core.h`) |
+| JNI bridge | `photon-bindings/jvm/` | Java/Kotlin on top of the C ABI |
+| JVM SDK | `photon-sdk/` | `dev.photon.sdk`: `PhotonClient`, configuration, events, local feed, `diagnostics()` |
+| Plugins | `photon-plugin-runtime/`, `photon-plugin-sdk/` | plugins run as separate processes with IPC, a manifest and permissions; the plugin SDK has no external dependencies |
+| Developer tools | `photon-devtools-core/`, `photon-developer-tools/` | Inspector Live, connection path, core journal; console labs for network, storage, cryptography and plugins. `photon-developer-tools` is the first Photon test client (Linux, JVM) |
 
-Подробно — [`ARCHITECTURE.md`](ARCHITECTURE.md). Спецификации —
+Details: [`ARCHITECTURE.md`](ARCHITECTURE.md) (in Russian). Specifications:
 `photon-core/docs/`, `photon-bindings/docs/`, `photon-plugin-runtime/docs/`.
+Most design documents and code comments are currently in Russian.
 
-## Сборка и проверка
+## Build and test
 
-Требования: Go 1.22 (ядро, bindings, плагины), JDK 21 и Gradle (JVM-модули),
-C-компилятор для cgo (`photon-bindings/c`), `protoc` — для
-`photon-developer-tools`. Тестовому серверу `photon-core/tests/transportlab/bridgesim`
-нужен Go ≥ 1.24 — его подставляет `GOTOOLCHAIN=auto`.
+Requirements: Go 1.22 (core, bindings, plugins), JDK 21 and Gradle (JVM
+modules), a C compiler for cgo (`photon-bindings/c`), and `protoc` for
+`photon-developer-tools`. The test server
+`photon-core/tests/transportlab/bridgesim` needs Go ≥ 1.24, which
+`GOTOOLCHAIN=auto` downloads automatically.
 
 ```sh
 (cd photon-core && go build ./... && go test ./...)
@@ -37,60 +42,75 @@ C-компилятор для cgo (`photon-bindings/c`), `protoc` — для
 (cd photon-plugin-runtime && go test -timeout 600s ./...)
 (cd photon-sdk && gradle test)
 (cd photon-devtools-core && gradle test)
-(cd photon-developer-tools && gradle test)   # собирает .so ядра и JNI
+(cd photon-developer-tools && gradle test)   # builds the core .so and JNI library
 ```
 
-## Использование
+## Usage
 
-С ядром работают через C ABI (`photon-bindings/c/photon_core.h`,
-`photon-bindings/c/README.md`) или из JVM через SDK
-(`photon-bindings/docs/sdk-api.md`). Плагины — по
-`photon-plugin-runtime/docs/plugin-development.md` и примерам
+Work with the core through the C ABI (`photon-bindings/c/photon_core.h`,
+`photon-bindings/c/README.md`) or from the JVM through the SDK
+(`photon-bindings/docs/sdk-api.md`). For plugins, see
+`photon-plugin-runtime/docs/plugin-development.md` and the examples in
 `photon-plugin-runtime/examples/`.
 
-## Ограничения первого релиза
+### Go modules
 
-- **Нет самостоятельного сервера.** Сетевой протокол ядра сложился вокруг
-  первой серверной реализации — плагина Mattermost, который в этот
-  репозиторий не входит; в `photon.proto` есть сущности Mattermost и
-  действия первого приложения на платформе. Для тестов есть только тестовый
-  сервер `bridgesim`.
-- **Транспорт в рабочем пути — только QUIC.** Autodial (лестница IPv6/IPv4 ×
-  QUIC/TCP → маскировка) реализован, но не подключён; серверной стороны TCP
-  нет; транспорта с маскировкой нет.
-- **Изоляция плагинов — только Linux.**
-- **Проверенная платформа — Linux x86-64.** Android, macOS и Windows — в
-  планах (ниже).
+`github.com/wiloris/photon/photon-core`, `github.com/wiloris/photon/photon-plugin-sdk`,
+`github.com/wiloris/photon/photon-plugin-runtime`,
+`github.com/wiloris/photon/photon-bindings/c`. There are no version tags yet:
+the modules are built from this repository, where they reference each other
+through relative `replace` directives.
 
-## Направления развития (не реализовано)
+## Limitations
 
-- **Android** — упаковка ядра (AAR) и среда Android-расширений.
-- **Linux, macOS** — собранные и проверенные C ABI и SDK для настольных ОС
-  (сейчас проверен Linux; под macOS ядро только компилируется).
-- **Photon Server** — собственный сервер протокола; предпосылка —
-  протокол, нейтральный к серверу.
-- **Транспорт** — Autodial в рабочем пути, TCP-сервер, маскировка.
+- **No standalone server.** The core network protocol grew around its first
+  server implementation — a Mattermost plugin that is not part of this
+  repository; `photon.proto` contains Mattermost entities and actions of the
+  first application built on the platform. For tests there is only the test
+  server `bridgesim`.
+- **The working transport path is QUIC only.** Autodial (the IPv6/IPv4 ×
+  QUIC/TCP ladder ending in an obfuscated transport) is implemented but not
+  wired in; there is no TCP server side; there is no obfuscated transport.
+- **Plugin process isolation exists on Linux only.**
+- **Tested platform: Linux x86-64.** Android, macOS and Windows are plans (see
+  below).
 
-## Лицензия
+## Roadmap (not implemented)
 
-GNU Affero General Public License версии 3, только эта версия
-(`AGPL-3.0-only`): более поздние версии лицензии не предлагаются.
-Правообладатель — wiloris. Полный текст — [`LICENSE`](LICENSE), уведомление —
-[`NOTICE`](NOTICE).
+- **Android** — packaging the core (AAR) and an Android extension runtime.
+- **Linux, macOS** — built and tested C ABI and SDK for desktop systems (Linux
+  is tested today; on macOS the core only cross-compiles).
+- **Photon Server** — a dedicated server for the protocol; a prerequisite is a
+  server-neutral protocol.
+- **Transport** — Autodial in the working path, a TCP server, an obfuscated
+  transport.
 
-Коротко о том, что это значит (текст лицензии имеет приоритет над этим
-пересказом):
+## Contributing
 
-- распространяя Photon или работу на его основе — в том числе приложение,
-  которое включает собранное ядро (`libphoton_core.so`), SDK или SDK
-  плагинов, — нужно предоставить получателям полный соответствующий
-  исходный код под `AGPL-3.0-only`;
-- если изменённая версия даёт пользователям работать с ней по сети, этим
-  пользователям нужно предложить её исходный код (§13);
-- производные работы распространяются только под `AGPL-3.0-only`; отдельных
-  исключений для каких-либо продуктов нет.
+Contributions require accepting the [Contributor License Agreement](CLA.md)
+before a pull request is merged; the process is described in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Please report security issues privately
+as described in [`SECURITY.md`](SECURITY.md), not in public issues.
 
-Сторонние компоненты и их лицензии — [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+## License
 
-Ссылки вида `ADR-NNN` в коде и документах указывают на внутренний журнал
-решений проекта, который в этот релиз не входит.
+GNU Affero General Public License version 3 only (`AGPL-3.0-only`); later
+versions of the license are not offered. Copyright holder: wiloris. Full text:
+[`LICENSE`](LICENSE); notice: [`NOTICE`](NOTICE).
+
+In short (the license text prevails over this summary):
+
+- if you distribute Photon or a work based on it — including an application
+  that bundles the built core (`libphoton_core.so`), the SDK or the plugin SDK —
+  you must give recipients the complete corresponding source code under
+  `AGPL-3.0-only`;
+- if a modified version lets users interact with it over a network, you must
+  offer those users its source code (section 13);
+- derivative works are distributed under `AGPL-3.0-only` only; there are no
+  exceptions for particular products.
+
+Third-party components and their licenses:
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+References like `ADR-NNN` in the code and documents point to the project's
+internal decision log, which is not part of this release.
