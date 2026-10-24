@@ -3,8 +3,8 @@ module github.com/wiloris/photon/photon-plugin-runtime
 go 1.22.2
 
 require (
-	github.com/wiloris/photon/photon-core v0.0.0
-	github.com/wiloris/photon/photon-plugin-sdk v0.0.0
+	github.com/wiloris/photon/photon-core v0.1.0
+	github.com/wiloris/photon/photon-plugin-sdk v0.1.0
 	go.etcd.io/bbolt v1.3.11
 )
 

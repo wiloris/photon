@@ -13,6 +13,7 @@ require (
 	github.com/quic-go/quic-go v0.48.2
 	github.com/wlynxg/anet v0.0.3
 	go.etcd.io/bbolt v1.3.11
+	golang.org/x/sys v0.23.0
 	google.golang.org/protobuf v1.34.2
 )
 
@@ -29,6 +30,5 @@ require (
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/mod v0.17.0 // indirect
 	golang.org/x/net v0.28.0 // indirect
-	golang.org/x/sys v0.23.0 // indirect
 	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d // indirect
 )
