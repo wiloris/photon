@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -32,21 +33,68 @@ var legacyHashes = map[string]string{
 	"p2p.go":     "a439e4f66b128b0f399e8169fab7a05f6fe796014875ada6d66163059d785d11",
 }
 
+// legacyModulePaths — сколько раз новый путь модуля стоит в каждой копии: ровно
+// в строках импорта оригинала 8da6ee7. Иное число — не механическая смена пути.
+var legacyModulePaths = map[string]int{"coreops.go": 2, "keys.go": 0, "p2p.go": 3}
+
+// legacyCoreopsSum — хеш копии, приведённой к оригиналу 8da6ee7: строка package
+// и путь модуля в строках импорта — единственные допустимые разницы.
+func legacyCoreopsSum(name string, raw []byte) (string, error) {
+	if n, want := bytes.Count(raw, []byte("github.com/wiloris/photon/")), legacyModulePaths[name]; n != want {
+		return "", fmt.Errorf("%s: путь модуля встречается %d раз, ожидалось %d", name, n, want)
+	}
+	orig := bytes.Replace(raw, []byte("package legacy\n"), []byte("package coreops\n"), 1)
+	// Путь модуля сменён механически перед первым публичным релизом — та же
+	// допустимая разница, что строка package; эталонные хеши прежние.
+	for _, m := range []string{"photon-core", "photon-plugin-runtime", "photon-plugin-sdk"} {
+		orig = bytes.ReplaceAll(orig, []byte("github.com/wiloris/photon/"+m), []byte("github.com/wiloris/"+m))
+	}
+	sum := sha256.Sum256(orig)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func TestLegacyCoreopsCopyIsVerbatim(t *testing.T) {
 	for name, want := range legacyHashes {
 		raw, err := os.ReadFile("internal/legacy/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		orig := bytes.Replace(raw, []byte("package legacy\n"), []byte("package coreops\n"), 1)
-		// Путь модуля сменён механически перед первым публичным релизом — та же
-		// допустимая разница, что строка package; эталонные хеши прежние.
-		for _, m := range []string{"photon-core", "photon-plugin-runtime", "photon-plugin-sdk"} {
-			orig = bytes.ReplaceAll(orig, []byte("github.com/wiloris/photon/"+m), []byte("github.com/wiloris/"+m))
+		if got, err := legacyCoreopsSum(name, raw); err != nil || got != want {
+			t.Fatalf("копия старого coreops изменена: %s → %s %v", name, got, err)
 		}
-		sum := sha256.Sum256(orig)
-		if got := hex.EncodeToString(sum[:]); got != want {
-			t.Fatalf("копия старого coreops изменена: %s → %s", name, got)
+	}
+}
+
+// Отрицательная сторона: сверка ловит изменение каждой копии, в том числе
+// спрятанное за путём модуля.
+func TestLegacyCoreopsCheckDetectsChanges(t *testing.T) {
+	for name, want := range legacyHashes {
+		raw, err := os.ReadFile("internal/legacy/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutations := map[string]func([]byte) []byte{
+			"комментарий в конце": func(b []byte) []byte { return append(b, "\n// x\n"...) },
+			"байт в теле": func(b []byte) []byte {
+				i := bytes.Index(b, []byte("func "))
+				b[i+5] ^= 1
+				return b
+			},
+			"лишняя ссылка на новый путь": func(b []byte) []byte {
+				return append(b, "\n// github.com/wiloris/photon/photon-core\n"...)
+			},
+			"старый путь вместо нового": func(b []byte) []byte {
+				return bytes.Replace(b, []byte("github.com/wiloris/photon/photon-core"), []byte("github.com/wiloris/photon-core"), 1)
+			},
+		}
+		for mname, mutate := range mutations {
+			mutated := mutate(append([]byte(nil), raw...))
+			if bytes.Equal(mutated, raw) {
+				continue // мутация к этому файлу неприменима (например, в нём нет путей)
+			}
+			if got, err := legacyCoreopsSum(name, mutated); err == nil && got == want {
+				t.Errorf("%s / %s: изменение копии не обнаружено", name, mname)
+			}
 		}
 	}
 }

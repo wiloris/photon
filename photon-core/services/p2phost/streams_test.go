@@ -370,16 +370,65 @@ func TestSessionCloseDropsStreamsWithoutLeaks(t *testing.T) {
 // публичным релизом). Обе разницы снимаются перед сверкой, эталонный хеш — прежний.
 const legacySHA256 = "360d3282077e1b7841b1f34571a4a7192fee1497074e2f68268c218a5165ab56"
 
+// legacyModulePathCount — сколько раз новый путь модуля стоит в копии: ровно в
+// трёх строках импорта оригинала. Лишнее или недостающее вхождение — уже не
+// механическая смена пути, и сверка отказывает до хеширования.
+const legacyModulePathCount = 3
+
+// legacyVerbatimSum — хеш копии, приведённой к оригиналу 01fa134: строка
+// package и путь модуля в строках импорта — единственные допустимые разницы.
+func legacyVerbatimSum(raw []byte) (string, error) {
+	newPath, oldPath := []byte("github.com/wiloris/photon/photon-core"), []byte("github.com/wiloris/photon-core")
+	if n := bytes.Count(raw, newPath); n != legacyModulePathCount {
+		return "", fmt.Errorf("путь модуля встречается %d раз, ожидалось %d", n, legacyModulePathCount)
+	}
+	orig := bytes.Replace(raw, []byte("\npackage legacy\n"), []byte("\npackage p2phost\n"), 1)
+	orig = bytes.ReplaceAll(orig, newPath, oldPath)
+	sum := sha256.Sum256(orig)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func TestLegacyCopyIsVerbatim(t *testing.T) {
 	raw, err := os.ReadFile("internal/legacy/p2phost.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	orig := bytes.Replace(raw, []byte("\npackage legacy\n"), []byte("\npackage p2phost\n"), 1)
-	orig = bytes.ReplaceAll(orig, []byte("github.com/wiloris/photon/photon-core"), []byte("github.com/wiloris/photon-core"))
-	sum := sha256.Sum256(orig)
-	if got := hex.EncodeToString(sum[:]); got != legacySHA256 {
-		t.Fatalf("копия старого узла изменена: %s", got)
+	got, err := legacyVerbatimSum(raw)
+	if err != nil || got != legacySHA256 {
+		t.Fatalf("копия старого узла изменена: %s %v", got, err)
+	}
+}
+
+// Отрицательная сторона: сверка ловит изменение копии, в том числе спрятанное
+// за путём модуля.
+func TestLegacyCopyCheckDetectsChanges(t *testing.T) {
+	raw, err := os.ReadFile("internal/legacy/p2phost.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath := "github.com/wiloris/photon/photon-core"
+	mutations := map[string]func([]byte) []byte{
+		"комментарий в конце": func(b []byte) []byte { return append(b, "\n// x\n"...) },
+		"байт в теле": func(b []byte) []byte {
+			i := bytes.Index(b, []byte("func "))
+			b[i+5] ^= 1
+			return b
+		},
+		"импорт заменён на другой пакет": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(newPath+"/p2pmsg"), []byte(newPath+"/ports2"), 1)
+		},
+		"лишний импорт с новым путём": func(b []byte) []byte {
+			return bytes.Replace(b, []byte("import (\n"), []byte("import (\n\t_ \""+newPath+"/ports\"\n"), 1)
+		},
+		"старый путь вместо нового": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(newPath), []byte("github.com/wiloris/photon-core"), 1)
+		},
+	}
+	for name, mutate := range mutations {
+		got, err := legacyVerbatimSum(mutate(append([]byte(nil), raw...)))
+		if err == nil && got == legacySHA256 {
+			t.Errorf("%s: изменение копии не обнаружено", name)
+		}
 	}
 }
 
