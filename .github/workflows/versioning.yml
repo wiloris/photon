@@ -1,0 +1,37 @@
+# Release version checks (VERSIONING.md). Fails on any violation of the
+# versioning rules: malformed or moved tags, gaps in a module's version
+# history, missing release notes, require lines on unreleased versions,
+# disagreeing version constants, a version reused with different content.
+name: versioning
+
+on:
+  push:
+    branches: [main]
+    tags: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  versioning:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The check compares tag objects with the remote: make every local tag
+      # exactly the remote one, annotated tags included.
+      - name: Fetch tags
+        run: git fetch --force --tags origin
+
+      - name: Test the checker
+        run: python3 -m unittest discover -s tools/versioning -v
+
+      - name: Check repository versions
+        run: python3 tools/versioning/check_versions.py check --remote origin --sumdb
+
+      - name: Check the pushed release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python3 tools/versioning/check_versions.py release "$GITHUB_REF_NAME" --pushed --remote origin --sumdb

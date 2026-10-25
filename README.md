@@ -77,6 +77,9 @@ module has `replace` directives; add the module to your own `go.mod` and use
 `photon-core/tests/transportlab/bridgesim` is a separate module only because it
 needs a newer Go and quic-go; it is a test server and is not versioned.
 
+How versions are chosen, what a release must contain and what may never be
+done with a published version: `VERSIONING.md`.
+
 ## Limitations
 
 - **No standalone server.** The core network protocol grew around its first
