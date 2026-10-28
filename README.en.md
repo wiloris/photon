@@ -25,7 +25,7 @@ Keep this page focused on the public project: architecture, entry points, build,
 
 Photon is a standalone Go platform for building client applications. The core is separated from the user interface and any single application. It exposes a compact C ABI and a JVM SDK, with diagnostic tooling and a separate plugin runtime around it.
 
-**ENGRAM is an application built on Photon, not part of the core.** Capabilities useful to multiple clients belong in Photon; ENGRAM-specific behavior belongs in the application or its extensions. This separation is a core architectural principle.
+**Photon is a platform foundation, not an end-user application.** The core exposes reusable infrastructure through defined interfaces; user interfaces and application-specific workflows are built on top of it. This separation is a core architectural principle.
 
 ## Capabilities
 

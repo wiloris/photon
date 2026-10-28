@@ -6,10 +6,9 @@ This guide defines a consistent, restrained use of the Photon name and logo acro
 
 - **Photon** is the platform and core technology.
 - **Photon Core** refers specifically to the Go core module.
-- **ENGRAM** is a client application built on Photon; it is not a synonym for Photon and should not be presented as part of the core.
 - **Photon SDK**, **Photon Developer Tools**, and **Photon Plugin Runtime** are component names. Use the full name on first mention when context may be unclear.
 
-Keep this separation visible in diagrams, feature lists, package descriptions, and marketing copy. Do not imply that a capability belongs to the core if it is provided only by an application, bridge, or plugin.
+Keep the boundary between core infrastructure and application-specific functionality clear in diagrams, feature lists, package descriptions, and public copy. Do not imply that a capability belongs to the core if it is provided only by an adapter or plugin.
 
 ## Logo asset
 
@@ -41,7 +40,7 @@ Do not invent official hex values or claim that a particular font is the officia
 ## Naming and writing
 
 - Write the project name as **Photon**, with an initial capital and the remaining letters lowercase.
-- Use **Photon Core** for the core when the distinction matters; avoid using “Photon” and “ENGRAM” interchangeably.
+- Use **Photon Core** for the Go core module when the distinction matters.
 - Keep technical claims precise. Distinguish implemented, partially integrated, planned, and experimental functionality.
 - Prefer direct, concise descriptions over superlatives such as “revolutionary,” “unbreakable,” or “production-ready” unless a claim is explicitly substantiated.
 - Preserve canonical capitalization for API names, module paths, protocol names, and component names.
@@ -51,7 +50,7 @@ Do not invent official hex values or claim that a particular font is the officia
 - Use the primary logo in README pages and high-level project documentation where it adds recognition.
 - Link to `BRAND.md` when contributors need logo or naming guidance.
 - Do not use the logo to imply endorsement, certification, or affiliation that does not exist.
-- Keep screenshots, architecture diagrams, and ENGRAM-specific visuals clearly labelled so readers can tell which product or component they depict.
+- Label screenshots and architecture diagrams clearly so readers can identify the component or layer they depict.
 
 ## Accessibility
 
