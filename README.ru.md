@@ -1,12 +1,16 @@
-<div align="center">
-  <img src="https://raw.githubusercontent.com/wiloris/photon/assets/photon-geometric-emblem/assets/brand/photon-geometric-emblem.png" alt="Photon geometric emblem" width="180" />
-  <h1>PHOTON</h1>
-  <p><strong>Модульное ядро для связанных приложений.</strong></p>
-  <p>Ядро на Go · C ABI · JVM SDK · Инструменты разработчика · Среда плагинов</p>
-  <p>
-    <a href="README.md">English</a> · <a href="README.ru.md">Русский</a>
-  </p>
-</div>
+<table>
+  <tr>
+    <td width="132" align="center" valign="middle">
+      <img src="https://raw.githubusercontent.com/wiloris/photon/assets/photon-geometric-emblem/assets/brand/photon-geometric-emblem.png" alt="Эмблема PHOTON" width="112" />
+    </td>
+    <td valign="middle">
+      <h1>PHOTON</h1>
+      <p><strong>Модульное ядро для связанных приложений.</strong></p>
+      <p>Ядро на Go · C ABI · JVM SDK · Инструменты разработчика · Среда плагинов</p>
+      <p><a href="README.md">English</a> · <a href="README.ru.md">Русский</a></p>
+    </td>
+  </tr>
+</table>
 
 ---
 
