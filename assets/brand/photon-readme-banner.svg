@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">PHOTON — Modular core for connected applications</title>
+  <desc id="desc">Photon geometric emblem and platform capabilities on a dark technical background.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.58" stop-color="#111e32"/>
+      <stop offset="1" stop-color="#172a40"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#60a5fa"/>
+    </linearGradient>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M28 0H0V28" fill="none" stroke="#9bb6d2" stroke-opacity=".08" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#38bdf8" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="340" rx="24" fill="url(#bg)"/>
+  <rect width="1200" height="340" rx="24" fill="url(#grid)"/>
+  <ellipse cx="230" cy="170" rx="260" ry="230" fill="url(#glow)"/>
+  <g fill="none" stroke="url(#accent)" stroke-opacity=".25" stroke-width="1.5">
+    <path d="M850 0L1200 250M930 0L1200 193M1010 0L1200 136M1090 0L1200 79"/>
+    <path d="M880 340L1200 120M970 340L1200 182M1060 340L1200 244"/>
+    <circle cx="1040" cy="170" r="116"/><circle cx="1040" cy="170" r="148"/>
+  </g>
+  <rect x="42" y="42" width="244" height="256" rx="20" fill="#ffffff" fill-opacity=".045" stroke="#c4d7ec" stroke-opacity=".14"/>
+  <image href="https://raw.githubusercontent.com/wiloris/photon/assets/photon-geometric-emblem/assets/brand/photon-geometric-emblem.png" x="62" y="62" width="204" height="204" preserveAspectRatio="xMidYMid meet"/>
+  <path d="M80 282H248" stroke="url(#accent)" stroke-width="3" stroke-linecap="round"/>
+  <text x="332" y="112" fill="#e7f1ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" letter-spacing="5">CONNECTED APPLICATIONS</text>
+  <text x="326" y="190" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="76" font-weight="750" letter-spacing="2">PHOTON</text>
+  <rect x="332" y="214" width="54" height="4" rx="2" fill="url(#accent)"/>
+  <text x="332" y="251" fill="#c5d4e6" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22">A modular core for connected applications.</text>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="600" fill="#d9e8f8">
+    <rect x="332" y="278" width="108" height="30" rx="15" fill="#ffffff" fill-opacity=".07" stroke="#a7c9e8" stroke-opacity=".18"/><text x="386" y="297" text-anchor="middle">GO CORE</text>
+    <rect x="450" y="278" width="88" height="30" rx="15" fill="#ffffff" fill-opacity=".07" stroke="#a7c9e8" stroke-opacity=".18"/><text x="494" y="297" text-anchor="middle">C ABI</text>
+    <rect x="548" y="278" width="96" height="30" rx="15" fill="#ffffff" fill-opacity=".07" stroke="#a7c9e8" stroke-opacity=".18"/><text x="596" y="297" text-anchor="middle">JVM SDK</text>
+    <rect x="654" y="278" width="170" height="30" rx="15" fill="#ffffff" fill-opacity=".07" stroke="#a7c9e8" stroke-opacity=".18"/><text x="739" y="297" text-anchor="middle">DEVELOPER TOOLS</text>
+  </g>
+  <text x="1150" y="312" fill="#7f9bb8" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" text-anchor="end" letter-spacing="2">CORE · SDK · RUNTIME</text>
+</svg>
