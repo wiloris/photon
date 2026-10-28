@@ -1,6 +1,14 @@
-# Photon
+<div align="center">
+  <img src="https://raw.githubusercontent.com/wiloris/photon/assets/photon-geometric-emblem/assets/brand/photon-geometric-emblem.png" alt="Photon geometric emblem" width="180" />
+  <h1>PHOTON</h1>
+  <p><strong>Модульное ядро для связанных приложений.</strong></p>
+  <p>Ядро на Go · C ABI · JVM SDK · Инструменты разработчика · Среда плагинов</p>
+  <p>
+    <a href="README.md">English</a> · <a href="README.ru.md">Русский</a>
+  </p>
+</div>
 
-[English](README.md) · **Русский**
+---
 
 Photon — платформа для клиентских приложений: ядро на Go с хранилищем,
 идентичностью, криптографией, транспортом QUIC, P2P и встроенной
