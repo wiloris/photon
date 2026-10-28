@@ -1,6 +1,14 @@
-# Photon
+<div align="center">
+  <img src="https://raw.githubusercontent.com/wiloris/photon/assets/photon-geometric-emblem/assets/brand/photon-geometric-emblem.png" alt="Photon geometric emblem" width="180" />
+  <h1>PHOTON</h1>
+  <p><strong>A modular core for connected applications.</strong></p>
+  <p>Go core · C ABI · JVM SDK · Developer tools · Plugin runtime</p>
+  <p>
+    <a href="README.md">English</a> · <a href="README.ru.md">Русский</a>
+  </p>
+</div>
 
-**English** · [Русский](README.ru.md)
+---
 
 Photon is a platform for client applications: a Go core with storage,
 identity, cryptography, QUIC transport, peer-to-peer connections and built-in
